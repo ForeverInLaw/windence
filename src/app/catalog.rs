@@ -426,7 +426,7 @@ impl ArtistPage {
                         album.artwork_url.as_deref(),
                         152.,
                         14.,
-                        "music.note",
+                        "music",
                     ))
                     .child(
                         div()
@@ -711,7 +711,7 @@ impl Render for PlaylistPage {
                         artwork_url.as_deref(),
                         176.,
                         28.,
-                        "music.note.list",
+                        "list-music",
                     ))
                     .child(
                         div()
@@ -736,7 +736,7 @@ impl Render for PlaylistPage {
                                         components::icon_button(
                                             palette,
                                             "playlist-pin",
-                                            if pinned { "pin.fill" } else { "pin" },
+                                            if pinned { "pin-fill" } else { "pin" },
                                         )
                                         .bg(rgb(if pinned {
                                             palette.selection
@@ -817,7 +817,7 @@ impl Render for ArtistPage {
                         artwork_url.as_deref(),
                         144.,
                         72.,
-                        "person.fill",
+                        "user",
                     ))
                     .child(
                         div()
@@ -930,7 +930,7 @@ impl Render for AlbumPage {
                         artwork_url.as_deref(),
                         176.,
                         28.,
-                        "music.note",
+                        "music",
                     ))
                     .child(
                         div()

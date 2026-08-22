@@ -2859,18 +2859,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-symbols"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96928d6fc8d3b8a9b4e4bb5b128e654cf6106203216993f37dbb7ddec9d72e15"
-dependencies = [
- "gpui",
- "image",
- "objc",
- "smallvec",
-]
-
-[[package]]
 name = "gpui_apple"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed#e0931d5a9dbf4f781b336fdf448739e74a2ac0b5"
@@ -3684,7 +3672,6 @@ dependencies = [
  "qoi",
  "ravif",
  "rayon",
- "rgb",
  "tiff",
  "zune-core 0.5.3",
  "zune-jpeg 0.5.15",
@@ -7531,7 +7518,6 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
- "gpui-symbols",
  "gpui_platform",
  "keyring",
  "librespot",

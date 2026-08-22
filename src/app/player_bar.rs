@@ -71,11 +71,7 @@ impl PlayerBar {
                 palette.surface_raised,
             )
         };
-        let volume_icon = if volume == 0. {
-            "speaker.slash.fill"
-        } else {
-            "speaker.wave.2.fill"
-        };
+        let volume_icon = if volume == 0. { "volume-x" } else { "volume-2" };
         let duration_ms = now_playing.as_ref().map_or(0, |track| track.duration_ms);
         let progress = if duration_ms == 0 {
             0.
@@ -111,7 +107,7 @@ impl PlayerBar {
                             player_artwork.as_deref(),
                             56.,
                             12.,
-                            "music.note",
+                            "music",
                         )
                     } else {
                         div()
@@ -160,10 +156,11 @@ impl PlayerBar {
                             .items_center()
                             .gap(px(8.))
                             .child(
-                                components::icon_button(palette, "previous", "backward.end.fill")
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                components::icon_button(palette, "previous", "skip-back").on_click(
+                                    cx.listener(|this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.previous(cx));
-                                    })),
+                                    }),
+                                ),
                             )
                             .child(
                                 components::button(palette, "play-toggle")
@@ -176,7 +173,7 @@ impl PlayerBar {
                                             .into_any_element()
                                     } else {
                                         components::icon(
-                                            if playing { "pause.fill" } else { "play.fill" },
+                                            if playing { "pause" } else { "play" },
                                             16.,
                                             palette.on_accent,
                                         )
@@ -187,10 +184,11 @@ impl PlayerBar {
                                     })),
                             )
                             .child(
-                                components::icon_button(palette, "next", "forward.end.fill")
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                components::icon_button(palette, "next", "skip-forward").on_click(
+                                    cx.listener(|this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.next(cx));
-                                    })),
+                                    }),
+                                ),
                             ),
                     )
                     .child(
@@ -264,31 +262,20 @@ impl PlayerBar {
                     .justify_end()
                     .gap(px(8.))
                     .child(
-                        components::icon_button_with(
-                            palette,
-                            "queue-toggle",
-                            "music.note.list",
-                            17.,
-                            SymbolWeight::Semibold,
-                        )
-                        .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let open = !this.queue_open;
-                            this.set_queue_open(open, cx);
-                            cx.emit(ToggleQueue);
-                        })),
+                        components::icon_button_with(palette, "queue-toggle", "list-music", 17.)
+                            .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let open = !this.queue_open;
+                                this.set_queue_open(open, cx);
+                                cx.emit(ToggleQueue);
+                            })),
                     )
                     .child(
-                        components::icon_button_with(
-                            palette,
-                            "volume",
-                            volume_icon,
-                            17.,
-                            SymbolWeight::Semibold,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.player.update(cx, |player, cx| player.toggle_mute(cx));
-                        })),
+                        components::icon_button_with(palette, "volume", volume_icon, 17.).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.player.update(cx, |player, cx| player.toggle_mute(cx));
+                            }),
+                        ),
                     )
                     .when(!compact, |controls| {
                         controls.child(
@@ -407,7 +394,7 @@ impl QueueDrawer {
                             .child("Queue"),
                     )
                     .child(
-                        components::icon_button(palette, "close-queue", "xmark")
+                        components::icon_button(palette, "close-queue", "close")
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )
@@ -494,7 +481,7 @@ impl QueueDrawer {
                 track.artwork_url.as_deref(),
                 if current { 48. } else { 40. },
                 8.,
-                "music.note",
+                "music",
             ))
             .child(
                 div()

@@ -14,9 +14,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use directories::ProjectDirs;
 
-const ACTIVATE_MESSAGE: &[u8] = b"activate\n";
-const ACTIVATE_ACKNOWLEDGMENT: &[u8] = b"ok\n";
-const ACTIVATION_TIMEOUT: Duration = Duration::from_millis(250);
+use super::{ACTIVATE_ACKNOWLEDGMENT, ACTIVATE_MESSAGE, ACTIVATION_TIMEOUT};
 
 pub enum Instance {
     Primary(Arc<InstanceLifecycle>),

@@ -128,47 +128,48 @@ impl Sidebar {
                 route == target || (target == Route::Playlists && route == Route::Playlist);
             // The pill carries selection and hover, sized to what it visually
             // covers: the icon when collapsed, the whole row when expanded.
-            let fill = div()
-                .h(px(42.))
-                .rounded(px(12.))
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .pr(px(NAV_ROW_PAD))
-                .when(selected, |fill| fill.bg(rgb(palette.selection)))
-                .hover(|style| style.bg(rgb(palette.surface_raised)))
-                .child(
-                    div().w(px(20.)).flex_none().flex().items_center().child(
+            let fill =
+                div()
+                    .h(px(42.))
+                    .rounded(px(12.))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .pr(px(NAV_ROW_PAD))
+                    .when(selected, |fill| fill.bg(rgb(palette.selection)))
+                    .hover(|style| style.bg(rgb(palette.surface_raised)))
+                    .child(div().w(px(20.)).flex_none().flex().items_center().child(
                         components::icon(
                             if selected { selected_icon } else { icon },
                             17.,
                             palette.text_primary,
-                        )
-                        .weight(SymbolWeight::Semibold),
-                    ),
-                )
-                .child(div().whitespace_nowrap().child(label).with_animation(
-                    (id, animation_id),
-                    row_animation.clone(),
-                    move |label, delta| {
-                        label.opacity(start_progress + (target_progress - start_progress) * delta)
-                    },
-                ))
-                .with_animation(
-                    (fill_id, animation_id),
-                    row_animation.clone(),
-                    move |fill, delta| {
-                        let progress = start_progress + (target_progress - start_progress) * delta;
-                        let (width, left, pad) = sidebar_fill_geometry(
-                            NAV_ROW_PAD,
-                            NAV_GLYPH_WIDTH,
-                            row_width,
-                            progress,
-                        );
-                        fill.w(px(width)).ml(px(left)).pl(px(pad))
-                    },
-                );
+                        ),
+                    ))
+                    .child(div().whitespace_nowrap().child(label).with_animation(
+                        (id, animation_id),
+                        row_animation.clone(),
+                        move |label, delta| {
+                            label.opacity(
+                                start_progress + (target_progress - start_progress) * delta,
+                            )
+                        },
+                    ))
+                    .with_animation(
+                        (fill_id, animation_id),
+                        row_animation.clone(),
+                        move |fill, delta| {
+                            let progress =
+                                start_progress + (target_progress - start_progress) * delta;
+                            let (width, left, pad) = sidebar_fill_geometry(
+                                NAV_ROW_PAD,
+                                NAV_GLYPH_WIDTH,
+                                row_width,
+                                progress,
+                            );
+                            fill.w(px(width)).ml(px(left)).pl(px(pad))
+                        },
+                    );
             components::button(palette, id)
                 .w_full()
                 .h(px(42.))
@@ -322,7 +323,7 @@ impl Sidebar {
                                 "nav-library-fill",
                                 "Liked Songs",
                                 "heart",
-                                "heart.fill",
+                                "heart-fill",
                                 Route::LikedSongs,
                                 cx,
                             ))
@@ -331,7 +332,7 @@ impl Sidebar {
                                 "nav-favorites-fill",
                                 "Favorites",
                                 "star",
-                                "star.fill",
+                                "star-fill",
                                 Route::Favorites,
                                 cx,
                             ))
@@ -339,8 +340,8 @@ impl Sidebar {
                                 "nav-playlist",
                                 "nav-playlist-fill",
                                 "Playlists",
-                                "music.note.list",
-                                "music.note.list",
+                                "list-music",
+                                "list-music",
                                 Route::Playlists,
                                 cx,
                             ))
@@ -349,7 +350,7 @@ impl Sidebar {
                                 "nav-recent-fill",
                                 "Recently played",
                                 "clock",
-                                "clock.fill",
+                                "clock",
                                 Route::Recent,
                                 cx,
                             )),

@@ -26,6 +26,12 @@ impl SystemMediaControls {
     /// Returns `None` when the platform refuses them, which is not fatal: the
     /// app simply goes without media keys.
     pub(super) fn attach(player: Entity<player::Player>, cx: &mut App) -> Option<Self> {
+        // Windows SMTC requires the window handle, which arrives with the
+        // raw-window-handle wiring; until then Windows builds run without
+        // system media controls.
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
         let mut controls = MediaControls::new(PlatformConfig {
             display_name: "Cadence",
             dbus_name: "cadence",

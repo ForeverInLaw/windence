@@ -171,6 +171,9 @@ fn close_window(handle: Option<gpui::AnyWindowHandle>, cx: &mut App) {
 
 /// Pins the sign-in window over main as one unit: the pair moves together,
 /// the sign-in window cannot fall behind main, and neither closes separately.
+/// Only AppKit can do window-level modality today, so this is a no-op
+/// elsewhere.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 fn lock_onboarding_over_main(cx: &mut App) {
     #[cfg(target_os = "macos")]
     {

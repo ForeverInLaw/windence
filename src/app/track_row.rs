@@ -203,7 +203,7 @@ impl RenderOnce for TrackRow {
                         self.track.artwork_url.as_deref(),
                         40.,
                         8.,
-                        "music.note",
+                        "music",
                     ))
                     .child(
                         // Cross-axis stretch (the default) hands each line a
@@ -243,7 +243,7 @@ impl RenderOnce for TrackRow {
                     .rounded(px(18.))
                     .hover(|style| style.bg(rgb(palette.control)))
                     .child(components::icon(
-                        if self.favorite { "star.fill" } else { "star" },
+                        if self.favorite { "star-fill" } else { "star" },
                         15.,
                         if self.favorite {
                             palette.text_primary
@@ -369,7 +369,7 @@ impl RenderOnce for PlaylistRow {
                 self.playlist.artwork_url.as_deref(),
                 48.,
                 10.,
-                "music.note.list",
+                "list-music",
             ))
             .child(
                 div()

@@ -59,14 +59,14 @@ impl Settings {
                                     .gap(px(4.))
                                     .child(self.appearance_option(
                                         "settings-appearance-system",
-                                        "circle.lefthalf.filled",
+                                        "sun-moon",
                                         "System",
                                         ThemePreference::System,
                                         cx,
                                     ))
                                     .child(self.appearance_option(
                                         "settings-appearance-light",
-                                        "sun.max",
+                                        "sun",
                                         "Light",
                                         ThemePreference::Light,
                                         cx,
@@ -185,7 +185,7 @@ impl Settings {
                                                             .justify_start()
                                                             .child(client_id)
                                                             .child(components::icon(
-                                                                "arrow.up.right",
+                                                                "external-link",
                                                                 11.,
                                                                 palette.link,
                                                             ))

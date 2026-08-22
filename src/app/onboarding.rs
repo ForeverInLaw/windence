@@ -395,9 +395,8 @@ impl Onboarding {
                                     .child(
                                         components::icon_button_with(appearance::Appearance::palette(cx),
                                             "copy-spotify-redirect",
-                                            "square.on.square",
+                                            "copy",
                                             16.,
-                                            SymbolWeight::Regular,
                                         )
                                             .size(px(36.))
                                             .mr(px(6.))

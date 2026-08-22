@@ -103,7 +103,7 @@ impl Toolbar {
             .bg(rgb(palette.surface))
             .text_size(px(14.))
             .text_color(rgb(palette.text_muted))
-            .child(components::icon("magnifyingglass", 16., palette.text_muted))
+            .child(components::icon("search", 16., palette.text_muted))
             .child(
                 Input::new(&self.search_input)
                     .appearance(false)
@@ -215,7 +215,7 @@ impl Toolbar {
                         components::menu_item(
                             palette,
                             "account-settings",
-                            "gearshape",
+                            "settings",
                             "Settings",
                             false,
                         )
@@ -227,19 +227,13 @@ impl Toolbar {
             )
             .when(self.session.read(cx).is_ready(), |menu| {
                 menu.child(
-                    components::menu_item(
-                        palette,
-                        "account-logout",
-                        "rectangle.portrait.and.arrow.right",
-                        "Logout",
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.menu_open = false;
-                        cx.emit(ToolbarEvent::Logout);
-                        cx.notify();
-                    })),
+                    components::menu_item(palette, "account-logout", "log-out", "Logout", true)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.menu_open = false;
+                            cx.emit(ToolbarEvent::Logout);
+                            cx.notify();
+                        })),
                 )
             })
     }
@@ -271,7 +265,7 @@ impl Render for Toolbar {
                     .gap(px(10.))
                     .when_some(self.back_target, |group, origin| {
                         group.child(
-                            components::icon_button(palette, "detail-back", "chevron.left")
+                            components::icon_button(palette, "detail-back", "chevron-left")
                                 .on_click(cx.listener(move |_, _, _, cx| {
                                     cx.emit(ToolbarEvent::Navigate(origin));
                                 })),

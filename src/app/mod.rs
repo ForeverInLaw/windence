@@ -22,7 +22,6 @@ use gpui_component::{
     switch::Switch,
     theme::ThemeMode,
 };
-use gpui_symbols::{Icon, RenderingMode, SymbolScale, SymbolWeight};
 use spotify_gpui_client::{
     backend::{Backend, BackendCommand, BackendEvent, BackendHandle, LibraryReload, Reply},
     lifecycle::{Instance, InstanceLifecycle},
@@ -348,6 +347,7 @@ type BackendEvents = tokio::sync::mpsc::UnboundedReceiver<BackendEvent>;
 
 mod actions;
 mod appearance;
+mod assets;
 mod bootstrap;
 mod catalog;
 mod chrome;
@@ -464,7 +464,6 @@ mod tests {
         volume_for_pointer,
     };
     use gpui::WindowAppearance;
-    use gpui_symbols::SfSymbol;
     use spotify_gpui_client::storage::ThemePreference;
 
     #[test]
@@ -594,47 +593,59 @@ mod tests {
         let (width, left, pad) = sidebar_fill_geometry(NAV_ROW_PAD, NAV_GLYPH_WIDTH, 200., 1.);
         assert_eq!((width, left, pad), (200., 0., NAV_ROW_PAD));
     }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use gpui::AssetSource as _;
+
+    /// Every icon name the UI references, through `components::icon`,
+    /// `icon_button`, `menu_item`, or `artwork`'s fallback. A name missing
+    /// here renders blank at runtime; keeping this list complete makes its
+    /// absence fail the suite instead.
+    const REFERENCED_ICONS: &[&str] = &[
+        "chevron-left",
+        "clock",
+        "close",
+        "copy",
+        "ellipsis",
+        "external-link",
+        "heart",
+        "heart-fill",
+        "key",
+        "list-music",
+        "log-out",
+        "music",
+        "pause",
+        "pin",
+        "pin-fill",
+        "play",
+        "search",
+        "settings",
+        "skip-back",
+        "skip-forward",
+        "star",
+        "star-fill",
+        "sun",
+        "sun-moon",
+        "moon",
+        "user",
+        "volume-2",
+        "volume-x",
+    ];
 
     #[test]
-    fn all_used_symbols_are_available() {
-        let symbols = [
-            "waveform",
-            "heart",
-            "heart.fill",
-            "star",
-            "star.fill",
-            "clock",
-            "clock.fill",
-            "magnifyingglass",
-            "music.note.list",
-            "music.note",
-            "person.fill",
-            "chevron.left",
-            "xmark",
-            "backward.end.fill",
-            "pause.fill",
-            "play.fill",
-            "forward.end.fill",
-            "list.bullet",
-            "key",
-            "checkmark",
-            "gearshape",
-            "rectangle.portrait.and.arrow.right",
-            "pin",
-            "pin.fill",
-            "speaker.slash.fill",
-            "speaker.wave.2.fill",
-            "ellipsis",
-            "circle.lefthalf.filled",
-            "sun.max",
-            "moon",
-        ];
-
-        for symbol in symbols {
+    fn all_referenced_icons_resolve_through_the_asset_source() {
+        for name in REFERENCED_ICONS {
+            let path = super::assets::icon_path(name);
+            let loaded = super::assets::AppAssets
+                .load(&path)
+                .expect("asset load must not error");
             assert!(
-                SfSymbol::new(symbol).size(18.).render_rgba().is_some(),
-                "SF Symbol `{symbol}` is unavailable"
+                loaded.is_some(),
+                "icon `{name}` ({path}) is missing from the asset source"
             );
+            assert!(!loaded.unwrap().is_empty(), "icon `{name}` is empty");
         }
     }
 }
