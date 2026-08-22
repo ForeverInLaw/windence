@@ -596,7 +596,8 @@ impl Render for Onboarding {
     }
 }
 
-/// Where the OAuth tokens actually live, per the keyring backend in use.
+/// Where the OAuth tokens actually live, selected per target OS to match
+/// the keyring default backend each platform compiles in.
 fn token_storage_note() -> &'static str {
     #[cfg(target_os = "macos")]
     {

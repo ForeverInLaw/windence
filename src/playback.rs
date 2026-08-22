@@ -335,7 +335,7 @@ fn playback_token_entry() -> Result<Entry> {
 
 /// Why a failed credential read most likely failed, per platform: the
 /// macOS keychain may prompt for access and need an explicit allow.
-fn playback_keychain_error_context() -> &'static str {
+fn playback_credential_error_context() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         "could not read playback credentials from Keychain; choose Always Allow when macOS asks"
@@ -365,7 +365,7 @@ fn save_playback_refresh_token(refresh_token: &str) -> Result<()> {
 async fn load_playback_refresh_token() -> Result<Option<String>> {
     credential_worker::run(playback_refresh_token)
         .await
-        .context(playback_keychain_error_context())
+        .context(playback_credential_error_context())
 }
 
 async fn persist_playback_refresh_token(refresh_token: String) -> Result<()> {
