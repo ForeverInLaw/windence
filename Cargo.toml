@@ -50,7 +50,12 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["wa
 gpui_platform = { git = "https://github.com/zed-industries/zed" }
 
 [build-dependencies]
-# librespot 0.8's build script is incompatible with vergen 9.1.
+# Unused by us; this pin is a resolver constraint. librespot 0.8 builds through
+# vergen-gitcl 1.0.8, whose spec (vergen ^9.0.6 + vergen-lib ^0.1.6) splits into
+# two vergen-lib copies once vergen >= 9.1 resolves, failing librespot-core's
+# build script with E0277 (librespot#1681, rustyhorde/vergen#478). Revisit when
+# a librespot release moves past vergen-gitcl 1.x; until then vergen 10 is
+# unreachable and Dependabot bumps of this line must be declined.
 vergen = "=9.0.6"
 
 [profile.dev]
