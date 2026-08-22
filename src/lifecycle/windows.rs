@@ -206,3 +206,32 @@ async fn answer(server: &mut NamedPipeServer, activation_tx: &async_channel::Sen
         let _ = activation_tx.try_send(());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Instance, InstanceLifecycle};
+
+    #[test]
+    fn second_instance_activates_primary() {
+        // Named pipes leave nothing behind when a process dies, so unlike
+        // the Unix transport there is no stale-path recovery to cover.
+        let name = format!("cadence-lifecycle-test-{}", std::process::id());
+        let Instance::Primary(primary) =
+            InstanceLifecycle::acquire_at(&name).expect("primary should start")
+        else {
+            panic!("first instance was not primary");
+        };
+
+        assert!(matches!(
+            InstanceLifecycle::acquire_at(&name),
+            Ok(Instance::Secondary)
+        ));
+        for _ in 0..20 {
+            if primary.take_activation() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("primary did not receive activation");
+    }
+}

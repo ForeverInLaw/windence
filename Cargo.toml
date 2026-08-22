@@ -38,6 +38,7 @@ log = "0.4.33"
 # The GPUI platform crate's extra features are per-OS: font-kit is a macOS
 # need, wayland/x11 are Linux needs; Windows ships Win32 + DirectWrite as
 # defaults, so it takes the crate bare.
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
 objc = "0.2"
@@ -47,11 +48,6 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["wa
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { git = "https://github.com/zed-industries/zed" }
-
-# Redirects crates.io gpui (pulled in by gpui-symbols) onto the same git
-# checkout as ours.
-[patch.crates-io]
-gpui = { version = "=0.2.2", git = "https://github.com/zed-industries/zed" }
 
 [build-dependencies]
 # librespot 0.8's build script is incompatible with vergen 9.1.

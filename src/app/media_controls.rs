@@ -1,8 +1,8 @@
 use super::*;
 
-use souvlaki::{
-    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
-};
+#[cfg(target_os = "macos")]
+use souvlaki::PlatformConfig;
+use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition};
 
 /// What the last push to the system told it, so a once-a-second position tick
 /// does not re-send artwork and titles that have not changed.
@@ -24,14 +24,9 @@ impl SystemMediaControls {
     /// Attaches to the system controls, forwarding their commands to `player`.
     ///
     /// Returns `None` when the platform refuses them, which is not fatal: the
-    /// app simply goes without media keys.
+    /// app simply goes without system media controls.
+    #[cfg(target_os = "macos")]
     pub(super) fn attach(player: Entity<player::Player>, cx: &mut App) -> Option<Self> {
-        // Windows SMTC requires the window handle, which arrives with the
-        // raw-window-handle wiring; until then Windows builds run without
-        // system media controls.
-        if !cfg!(target_os = "macos") {
-            return None;
-        }
         let mut controls = MediaControls::new(PlatformConfig {
             display_name: "Cadence",
             dbus_name: "cadence",
@@ -61,6 +56,14 @@ impl SystemMediaControls {
             controls,
             published: None,
         })
+    }
+
+    /// Off macOS the attach is compiled out for now: Windows SMTC requires
+    /// the window handle, which arrives with the raw-window-handle wiring,
+    /// and until then builds run without system media controls.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn attach(_player: Entity<player::Player>, _cx: &mut App) -> Option<Self> {
+        None
     }
 
     /// Pushes the player's state to the system, skipping what it already knows.
@@ -104,7 +107,12 @@ impl SystemMediaControls {
     }
 }
 
+// Off macOS nothing calls into the mapping layer yet: the SMTC attach that
+// would drive it is compiled out until the window-handle wiring lands. The
+// layer itself stays compiled and tested everywhere so its behavior does not
+// drift while it waits.
 /// The player action a system command asks for.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Transport {
     Play,
@@ -116,6 +124,7 @@ pub(super) enum Transport {
 }
 
 /// Translates a system command, ignoring the ones Cadence does not offer.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn transport_for(event: MediaControlEvent) -> Option<Transport> {
     match event {
         MediaControlEvent::Play => Some(Transport::Play),
@@ -130,6 +139,7 @@ fn transport_for(event: MediaControlEvent) -> Option<Transport> {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn apply(event: MediaControlEvent, player: &mut player::Player, cx: &mut Context<player::Player>) {
     match transport_for(event) {
         Some(Transport::Play) => player.set_playing(true, cx),

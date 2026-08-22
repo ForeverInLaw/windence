@@ -133,6 +133,9 @@ impl Player {
     }
 
     /// Moves to `playing`, doing nothing if playback is already in that state.
+    // Driven by the system media controls, which attach on macOS only until
+    // the Windows SMTC window-handle wiring lands.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(super) fn set_playing(&mut self, playing: bool, cx: &mut Context<Self>) {
         if self.playing != playing {
             self.toggle(cx);

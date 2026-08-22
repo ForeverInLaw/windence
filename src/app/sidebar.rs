@@ -243,7 +243,7 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(components::icon("chevron.left", 17., palette.text_primary))
+                    .child(components::icon("chevron-left", 17., palette.text_primary))
                     .with_animation(
                         ("sidebar-chevron", animation_id),
                         row_animation.clone(),
