@@ -224,7 +224,7 @@ impl Onboarding {
                         .mt(px(12.))
                         .text_size(px(11.))
                         .text_color(rgb(palette.text_muted))
-                        .child("No client secret needed. Tokens stay in Keychain."),
+                        .child(token_storage_note()),
                 )
             })
             .child(div().flex_1())
@@ -593,5 +593,21 @@ impl Onboarding {
 impl Render for Onboarding {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.page(cx)
+    }
+}
+
+/// Where the OAuth tokens actually live, per the keyring backend in use.
+fn token_storage_note() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "No client secret needed. Tokens stay in Keychain."
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "No client secret needed. Tokens stay in Windows Credential Manager."
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "No client secret needed. Tokens stay in the system credential store."
     }
 }

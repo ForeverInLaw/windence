@@ -133,9 +133,7 @@ impl Playback {
                 .build()
                 .context("could not configure librespot authorization")?;
         let saved_refresh_token = if load_saved_token {
-            load_playback_refresh_token().await.context(
-                "could not read playback credentials from Keychain; choose Always Allow when macOS asks",
-            )?
+            load_playback_refresh_token().await?
         } else {
             None
         };
@@ -335,6 +333,19 @@ fn playback_token_entry() -> Result<Entry> {
     Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).map_err(Into::into)
 }
 
+/// Why a failed credential read most likely failed, per platform: the
+/// macOS keychain may prompt for access and need an explicit allow.
+fn playback_keychain_error_context() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "could not read playback credentials from Keychain; choose Always Allow when macOS asks"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "could not read playback credentials from the system credential store"
+    }
+}
+
 fn playback_refresh_token() -> Result<Option<String>> {
     match playback_token_entry()?.get_password() {
         Ok(token) if token == LOGGED_OUT_CREDENTIAL => Ok(None),
@@ -352,7 +363,9 @@ fn save_playback_refresh_token(refresh_token: &str) -> Result<()> {
 }
 
 async fn load_playback_refresh_token() -> Result<Option<String>> {
-    credential_worker::run(playback_refresh_token).await
+    credential_worker::run(playback_refresh_token)
+        .await
+        .context(playback_keychain_error_context())
 }
 
 async fn persist_playback_refresh_token(refresh_token: String) -> Result<()> {
