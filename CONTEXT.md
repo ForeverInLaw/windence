@@ -56,6 +56,10 @@ _Avoid_: Autoplay, Smart Shuffle
 A preference-gated behaviour that appends recommended tracks when the queue reaches its end.
 _Avoid_: Smart Shuffle (injects while the queue still runs), Radio
 
+**DJ X**:
+Spotify's AI-curated personal lineup, served as one Spotify-owned playlist whose tracks the server keeps rewriting for the listening account. Cadence treats it as an ordinary context: starting it snapshots the current lineup into the queue. Voice commentary and spoken requests are part of Spotify's own client, not of the context.
+_Avoid_: DJX, AI DJ, mix
+
 **Date Added**:
 When a track entered the context it is listed in: a playlist's own add history, or the moment it was liked. It belongs to the listing, not to the track — the same track carries different dates in different contexts. Shown as a relative age during the first month, as an absolute date after that.
 _Avoid_: release date (the album's), liked at
