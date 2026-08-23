@@ -53,6 +53,7 @@ impl PlayerBar {
         let volume = player.volume();
         let shuffle_mode = player.shuffle_mode();
         let shuffle_supported = player.shuffle_supported();
+        let shuffle_smart_supported = player.shuffle_smart_supported();
         let live_track = now_playing.is_some();
         let player_artwork = now_playing
             .as_ref()
@@ -158,12 +159,18 @@ impl PlayerBar {
                             .items_center()
                             .gap(px(8.))
                             .child(
-                                shuffle_toggle(palette, shuffle_mode, shuffle_supported).on_click(
-                                    cx.listener(|this, _, _, cx| {
+                                shuffle_toggle(
+                                    palette,
+                                    shuffle_mode,
+                                    shuffle_supported,
+                                    shuffle_smart_supported,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.player
                                             .update(cx, |player, cx| player.cycle_shuffle(cx));
-                                    }),
-                                ),
+                                    },
+                                )),
                             )
                             .child(
                                 components::icon_button(palette, "previous", "skip-back").on_click(
@@ -348,11 +355,21 @@ impl Render for PlayerBar {
     }
 }
 
-/// The Off ↔ Shuffle toggle left of the transport cluster: dimmed while off,
-/// highlighted on the selection pill while on, and half-faded where toggling
-/// would be a no-op (no live queue, or a track-radio context).
-fn shuffle_toggle(palette: CadencePalette, mode: ShuffleMode, supported: bool) -> Stateful<Div> {
+/// The three-state shuffle toggle left of the transport cluster: dimmed
+/// while off, highlighted on the selection pill while on (shuffle arrows,
+/// or the sparkles once Smart Shuffle is weaving recommendations in), and
+/// half-faded where toggling would be a no-op.
+fn shuffle_toggle(
+    palette: CadencePalette,
+    mode: ShuffleMode,
+    supported: bool,
+    smart_supported: bool,
+) -> Stateful<Div> {
     let active = mode.shuffles();
+    let icon = match mode {
+        ShuffleMode::Smart => "sparkles",
+        _ => "shuffle",
+    };
     components::button(palette, "shuffle-toggle")
         .size(px(40.))
         .flex_none()
@@ -361,8 +378,13 @@ fn shuffle_toggle(palette: CadencePalette, mode: ShuffleMode, supported: bool) -
         .when(!active && supported, |button| {
             button.hover(|style| style.bg(rgb(palette.control)))
         })
+        // Smart stays reachable only where the backend can act on it; the
+        // plain shuffle state is always offered on a live context.
+        .when(mode == ShuffleMode::Smart && !smart_supported, |button| {
+            button.opacity(0.5)
+        })
         .child(components::icon(
-            "shuffle",
+            icon,
             16.,
             if active {
                 palette.text_primary
@@ -400,6 +422,7 @@ impl QueueDrawer {
         let context_offset = usize::from(player.now_playing().is_some());
         let playback_context = player.context().clone();
         let now_playing = player.now_playing().cloned();
+        let now_playing_injected = player.now_playing_injected();
 
         div()
             .occlude()
@@ -437,7 +460,7 @@ impl QueueDrawer {
             .child(
                 now_playing
                     .map(|track| {
-                        self.row(palette, "queue-current", track, true)
+                        self.row(palette, "queue-current", track, true, now_playing_injected)
                             .into_any_element()
                     })
                     .unwrap_or_else(|| {
@@ -461,18 +484,27 @@ impl QueueDrawer {
                                 range
                                     .map(|index| {
                                         let track = queue[index].clone();
+                                        let injected =
+                                            this.player.read(cx).queue_track_injected(index);
                                         let playback_context = playback_context.clone();
-                                        this.row(palette, ("queue-track", index), track, false)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.player.update(cx, |player, cx| {
-                                                    player.play_context(
-                                                        playback_context.to_vec(),
-                                                        index + context_offset,
-                                                        cx,
-                                                    )
-                                                });
-                                            }))
-                                            .into_any_element()
+                                        this.row(
+                                            palette,
+                                            ("queue-track", index),
+                                            track,
+                                            false,
+                                            injected,
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.player.update(cx, |player, cx| {
+                                                player.play_context(
+                                                    playback_context.to_vec(),
+                                                    index + context_offset,
+                                                    player.context_kind(),
+                                                    cx,
+                                                )
+                                            });
+                                        }))
+                                        .into_any_element()
                                     })
                                     .collect()
                             }),
@@ -489,6 +521,7 @@ impl QueueDrawer {
         id: impl Into<ElementId>,
         track: model::Track,
         current: bool,
+        injected: bool,
     ) -> Stateful<Div> {
         div()
             .id(id)
@@ -544,6 +577,16 @@ impl QueueDrawer {
                             .child(track.artist.clone()),
                     ),
             )
+            .child(if injected {
+                // Smart Shuffle injections carry their own mark, so the
+                // listener can tell recommendations from context tracks.
+                div()
+                    .flex_none()
+                    .child(components::icon("sparkles", 14., palette.link))
+                    .into_any_element()
+            } else {
+                div().flex_none().into_any_element()
+            })
             .child(
                 div()
                     .w(px(44.))

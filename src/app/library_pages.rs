@@ -135,8 +135,9 @@ impl Render for LibraryTracksPage {
             };
             components::empty_state(palette, message).into_any_element()
         } else {
-            self.tracks
-                .update(cx, |list, cx| list.show(section.list_id(), tracks, cx));
+            self.tracks.update(cx, |list, cx| {
+                list.show(section.list_id(), tracks, ContextKind::Collection, cx)
+            });
             self.tracks.clone().into_any_element()
         };
 

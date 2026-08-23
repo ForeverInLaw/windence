@@ -12,5 +12,5 @@ Why: librespot's `Player` loads exactly one track at a time (`player.load(...)`)
 ## Consequences
 
 - Shuffle state is per-device and local. It does not appear in Spotify connect state; other clients and devices are unaffected and unaware.
-- Schema v6 persists the base context order, the active permutation, and the mode, so a restart keeps both the shuffled queue and a working toggle-off.
+- Schema v6 persists the base context order, the active permutation, and the mode, so a restart keeps both the shuffled queue and a working toggle-off. The port's v7 snapshot adds the context kind (collection vs album) and per-track injected marks, so the Smart Shuffle gate and its woven-in recommendations survive a restart too.
 - All ordering rules sit behind the backend queue boundary; if librespot ever exposes a usable non-spirc shuffle primitive, only that layer moves.

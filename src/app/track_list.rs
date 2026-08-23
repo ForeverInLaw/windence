@@ -12,6 +12,8 @@ pub(super) struct TrackList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
     tracks: Arc<[model::Track]>,
+    /// Where this list's playback starts from, which gates Smart Shuffle.
+    context_kind: ContextKind,
     /// The row whose action menu is open, keyed by source ID and row index so
     /// the same track appearing twice opens only the row that was clicked.
     menu_open: Option<String>,
@@ -29,6 +31,7 @@ impl TrackList {
         Self {
             id: None,
             tracks: Arc::default(),
+            context_kind: ContextKind::default(),
             menu_open: None,
             current_album_id: None,
             library: services::AppServices::library(cx),
@@ -39,6 +42,8 @@ impl TrackList {
 
     /// Shows `tracks` under `id`, which pages vary per playlist or album so
     /// that opening a different one starts back at the top of the list.
+    /// `context_kind` rides along so starting playback from any row carries
+    /// the right Smart Shuffle gate.
     ///
     /// Pages call this from `render`, so the early return below is what keeps
     /// the notify cycle finite: callers must pass a stored `Arc` clone, not a
@@ -47,6 +52,7 @@ impl TrackList {
         &mut self,
         id: impl Into<ElementId>,
         tracks: Arc<[model::Track]>,
+        context_kind: ContextKind,
         cx: &mut Context<Self>,
     ) {
         let id = Some(id.into());
@@ -55,6 +61,7 @@ impl TrackList {
         }
         self.id = id;
         self.tracks = tracks;
+        self.context_kind = context_kind;
         self.menu_open = None;
         cx.notify();
     }
@@ -110,8 +117,10 @@ impl TrackList {
 
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
         let tracks = self.tracks.to_vec();
-        self.player
-            .update(cx, |player, cx| player.play_context(tracks, index, cx));
+        let kind = self.context_kind;
+        self.player.update(cx, |player, cx| {
+            player.play_context(tracks, index, kind, cx)
+        });
     }
 
     fn action_menu(

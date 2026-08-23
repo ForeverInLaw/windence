@@ -12,14 +12,26 @@ impl EventEmitter<PlaybackUnavailable> for Player {}
 pub(super) struct Player {
     backend: BackendHandle,
     now_playing: Option<model::Track>,
+    /// Whether the track playing now was injected by Smart Shuffle; it
+    /// keeps its mark in the queue panel until it finishes.
+    now_playing_injected: bool,
     context: Arc<[model::Track]>,
     queue: Arc<[model::Track]>,
+    /// Which upcoming tracks are Smart Shuffle injections, aligned with
+    /// `queue`.
+    queue_injected: Arc<[bool]>,
+    /// The kind of context playback started from, kept so re-playing a
+    /// queued track hands the backend the same kind again.
+    context_kind: ContextKind,
     playing: bool,
     loading: bool,
     /// The shuffle toggle's value and whether it can act: a live,
     /// non-radio context. A radio is already a recommendation stream.
     shuffle_mode: ShuffleMode,
     shuffle_supported: bool,
+    /// Whether the toggle's third state (Smart Shuffle) may act on this
+    /// context: playlist-like and long enough.
+    shuffle_smart_supported: bool,
     /// Position and play state to reapply once a reconnected player is ready.
     restore: Option<(u32, bool)>,
     position_ms: u32,
@@ -35,12 +47,16 @@ impl Player {
         Self {
             backend,
             now_playing: None,
+            now_playing_injected: false,
             context: Arc::default(),
             queue: Arc::default(),
+            queue_injected: Arc::default(),
+            context_kind: ContextKind::default(),
             playing: false,
             loading: false,
             shuffle_mode: ShuffleMode::Off,
             shuffle_supported: false,
+            shuffle_smart_supported: false,
             restore: None,
             position_ms: 0,
             saved_position_ms: 0,
@@ -55,12 +71,27 @@ impl Player {
         self.now_playing.as_ref()
     }
 
+    /// Whether the track playing now was injected by Smart Shuffle.
+    pub(super) fn now_playing_injected(&self) -> bool {
+        self.now_playing_injected
+    }
+
     pub(super) fn context(&self) -> &Arc<[model::Track]> {
         &self.context
     }
 
+    /// The kind of the context playback started from.
+    pub(super) fn context_kind(&self) -> ContextKind {
+        self.context_kind
+    }
+
     pub(super) fn queue(&self) -> &Arc<[model::Track]> {
         &self.queue
+    }
+
+    /// Whether the upcoming track at `index` is a Smart Shuffle injection.
+    pub(super) fn queue_track_injected(&self, index: usize) -> bool {
+        self.queue_injected.get(index).copied().unwrap_or(false)
     }
 
     pub(super) fn playing(&self) -> bool {
@@ -79,6 +110,11 @@ impl Player {
     /// contexts, whose toggle would be a no-op.
     pub(super) fn shuffle_supported(&self) -> bool {
         self.shuffle_supported
+    }
+
+    /// Whether the toggle's Smart Shuffle state may act on this context.
+    pub(super) fn shuffle_smart_supported(&self) -> bool {
+        self.shuffle_smart_supported
     }
 
     pub(super) fn position_ms(&self) -> u32 {
@@ -180,13 +216,17 @@ impl Player {
     }
 
     /// Starts a context at `index`, inheriting the global shuffle toggle.
+    /// The kind gates Smart Shuffle: albums and short lists get plain
+    /// shuffle even where the global toggle says Smart (the backend clamps
+    /// too; this keeps the optimistic path honest).
     pub(super) fn play_context(
         &mut self,
         tracks: Vec<model::Track>,
         index: usize,
+        kind: ContextKind,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.send_play_context(tracks, index, false, cx)
+        self.send_play_context(tracks, index, false, kind, cx)
     }
 
     /// Starts a context shuffled and moves the global toggle to Shuffle,
@@ -195,9 +235,10 @@ impl Player {
         &mut self,
         tracks: Vec<model::Track>,
         index: usize,
+        kind: ContextKind,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.send_play_context(tracks, index, true, cx)
+        self.send_play_context(tracks, index, true, kind, cx)
     }
 
     fn send_play_context(
@@ -205,13 +246,16 @@ impl Player {
         tracks: Vec<model::Track>,
         index: usize,
         shuffled: bool,
+        kind: ContextKind,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.context_kind = kind;
         let started = self.send(
             BackendCommand::PlayContext {
                 tracks,
                 index,
                 shuffled,
+                kind,
             },
             cx,
         );
@@ -224,14 +268,15 @@ impl Player {
         started
     }
 
-    /// Moves the toggle to its next value. The backend confirms with a
-    /// `ShuffleChanged` event; until one arrives the optimistic update keeps
-    /// the button responsive.
+    /// Moves the toggle to its next value: Off → Shuffle → Smart → Off,
+    /// with Smart skipped where it cannot act. The backend confirms with a
+    /// `ShuffleChanged` event; until one arrives the optimistic update
+    /// keeps the button responsive.
     pub(super) fn cycle_shuffle(&mut self, cx: &mut Context<Self>) {
         if !self.shuffle_supported {
             return;
         }
-        let next = self.shuffle_mode.toggled();
+        let next = self.shuffle_mode.toggled(self.shuffle_smart_supported);
         if self.deliver(BackendCommand::SetShuffleMode(next), cx) {
             self.shuffle_mode = next;
         }
@@ -336,23 +381,39 @@ impl Player {
         self.saved_position_ms = position_ms;
     }
 
-    fn adopt_context(&mut self, current: model::Track, next: Vec<model::Track>) {
+    fn adopt_context(
+        &mut self,
+        current: model::Track,
+        next: Vec<model::Track>,
+        injected: Vec<bool>,
+    ) {
         self.context = std::iter::once(current.clone())
             .chain(next.iter().cloned())
             .collect::<Vec<_>>()
             .into();
+        // Entry 0 is the playing track's own flag; the rest align with the
+        // upcoming queue.
+        let (current_injected, upcoming) = match injected.split_first() {
+            Some((first, rest)) => (*first, rest),
+            None => (false, [].as_slice()),
+        };
         self.now_playing = Some(current);
+        self.now_playing_injected = current_injected;
+        self.queue_injected = upcoming.to_vec().into();
         self.queue = next.into();
     }
 
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.now_playing = None;
+        self.now_playing_injected = false;
         self.context = Arc::default();
         self.queue = Arc::default();
+        self.queue_injected = Arc::default();
         self.playing = false;
         self.loading = false;
         self.shuffle_mode = ShuffleMode::Off;
         self.shuffle_supported = false;
+        self.shuffle_smart_supported = false;
         self.restore = None;
         self.position_ms = 0;
         self.saved_position_ms = 0;
@@ -456,19 +517,24 @@ impl Player {
             BackendEvent::PlaybackSnapshotLoaded {
                 current,
                 next,
+                injected,
                 position_ms,
             } => {
-                self.adopt_context(current, next);
+                self.adopt_context(current, next, injected);
                 self.position_ms = position_ms;
                 self.saved_position_ms = position_ms;
                 self.playing = false;
                 self.loading = false;
             }
-            BackendEvent::PlaybackContext { current, next } => {
+            BackendEvent::PlaybackContext {
+                current,
+                next,
+                injected,
+            } => {
                 let changed = self.now_playing.as_ref().is_none_or(|track| {
                     track.provider != current.provider || track.source_id != current.source_id
                 });
-                self.adopt_context(current, next);
+                self.adopt_context(current, next, injected);
                 if changed {
                     self.loading = true;
                     self.position_ms = 0;
@@ -476,9 +542,14 @@ impl Player {
                     self.restore = None;
                 }
             }
-            BackendEvent::ShuffleChanged { mode, supported } => {
+            BackendEvent::ShuffleChanged {
+                mode,
+                supported,
+                smart_supported,
+            } => {
                 self.shuffle_mode = mode;
                 self.shuffle_supported = supported;
+                self.shuffle_smart_supported = smart_supported;
             }
             BackendEvent::PlaybackFailed(error) => {
                 self.error = Some(error);
@@ -486,13 +557,16 @@ impl Player {
             BackendEvent::TrackFailed { spotify_uri, error } => {
                 if self.live_track_matches(&spotify_uri) {
                     self.now_playing = None;
+                    self.now_playing_injected = false;
                     self.context = Arc::default();
                     self.queue = Arc::default();
+                    self.queue_injected = Arc::default();
                     self.playing = false;
                     self.loading = false;
                     // No live queue left for the toggle to act on.
                     self.shuffle_mode = ShuffleMode::Off;
                     self.shuffle_supported = false;
+                    self.shuffle_smart_supported = false;
                 }
                 cx.notify();
                 return Some(BackendEvent::TrackFailed { spotify_uri, error });

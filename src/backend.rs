@@ -2976,10 +2976,11 @@ fn restore_saved_playback(
     restore_context_track(playback, shuffle, tracks, index, position_ms, false, events)
 }
 
-/// Per-track injected flags for everything after `index`, aligned with the
-/// `next` half of a playback-context event.
+/// Per-track injected flags from the playing track onward — entry 0 is the
+/// current track, the rest align with the `next` half of a playback-context
+/// event.
 fn injected_flags(shuffle: &ShuffleState, index: usize, tracks_len: usize) -> Vec<bool> {
-    ((index + 1)..tracks_len)
+    (index..tracks_len)
         .map(|slot| shuffle.origins.get(slot) == Some(&Origin::Injected))
         .collect()
 }
@@ -3237,7 +3238,7 @@ mod tests {
     }
 
     #[test]
-    fn injected_flags_mark_only_smart_shuffle_entries_after_the_playing_track() {
+    fn injected_flags_mark_only_smart_shuffle_entries_from_the_playing_track_on() {
         let shuffle = ShuffleState {
             origins: vec![
                 Origin::Context { ordinal: 0 },
@@ -3248,8 +3249,11 @@ mod tests {
             ..ShuffleState::default()
         };
 
-        assert_eq!(injected_flags(&shuffle, 0, 4), vec![true, false, false]);
-        // Everything before the playing track is out of view.
-        assert!(injected_flags(&shuffle, 3, 4).is_empty());
+        // Entry 0 is the playing track; the rest align with `next`.
+        assert_eq!(
+            injected_flags(&shuffle, 0, 4),
+            vec![false, true, false, false]
+        );
+        assert_eq!(injected_flags(&shuffle, 1, 4), vec![true, false, false]);
     }
 }

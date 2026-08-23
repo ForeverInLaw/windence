@@ -187,8 +187,9 @@ impl PlaylistPage {
             return;
         }
         let tracks = tracks.to_vec();
-        self.player
-            .update(cx, |player, cx| player.play_context(tracks, 0, cx));
+        self.player.update(cx, |player, cx| {
+            player.play_context(tracks, 0, ContextKind::Collection, cx)
+        });
     }
 
     /// Starts the context shuffled and moves the global toggle to Shuffle.
@@ -197,8 +198,9 @@ impl PlaylistPage {
             return;
         }
         let tracks = tracks.to_vec();
-        self.player
-            .update(cx, |player, cx| player.play_context_shuffled(tracks, 0, cx));
+        self.player.update(cx, |player, cx| {
+            player.play_context_shuffled(tracks, 0, ContextKind::Collection, cx)
+        });
     }
 
     pub(super) fn open(&mut self, playlist: model::Playlist, cx: &mut Context<Self>) {
@@ -516,8 +518,9 @@ impl AlbumPage {
             return;
         }
         let tracks = tracks.to_vec();
-        self.player
-            .update(cx, |player, cx| player.play_context(tracks, 0, cx));
+        self.player.update(cx, |player, cx| {
+            player.play_context(tracks, 0, ContextKind::Album, cx)
+        });
     }
 
     /// Starts the album shuffled; albums get plain shuffle only.
@@ -526,8 +529,9 @@ impl AlbumPage {
             return;
         }
         let tracks = tracks.to_vec();
-        self.player
-            .update(cx, |player, cx| player.play_context_shuffled(tracks, 0, cx));
+        self.player.update(cx, |player, cx| {
+            player.play_context_shuffled(tracks, 0, ContextKind::Album, cx)
+        });
     }
 
     /// Shows `album`, refetching unless the cached copy is still fresh.
@@ -618,8 +622,9 @@ impl Render for SearchPage {
             components::empty_state(palette, "Unable to search Spotify").into_any_element()
         } else if kind == SearchKind::Tracks && !tracks.is_empty() {
             let list_id = (ElementId::from("search-tracks"), self.results_query.clone());
-            self.track_list
-                .update(cx, |list, cx| list.show(list_id, tracks, cx));
+            self.track_list.update(cx, |list, cx| {
+                list.show(list_id, tracks, ContextKind::Collection, cx)
+            });
             self.track_list.clone().into_any_element()
         } else if kind == SearchKind::Playlists && !playlists.is_empty() {
             let list_id = (
@@ -709,8 +714,9 @@ impl Render for PlaylistPage {
                 ElementId::from("playlist-tracks"),
                 playlist.source_id.clone(),
             );
-            self.track_list
-                .update(cx, |list, cx| list.show(list_id, tracks.clone(), cx));
+            self.track_list.update(cx, |list, cx| {
+                list.show(list_id, tracks.clone(), ContextKind::Album, cx)
+            });
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
             components::empty_state(palette, "No playlist selected").into_any_element()
@@ -829,8 +835,9 @@ impl Render for ArtistPage {
             components::empty_state(palette, "Loading artist…").into_any_element()
         } else if section == ArtistSection::Popular && !tracks.is_empty() {
             let list_id = (ElementId::from("artist-popular"), source_id);
-            self.track_list
-                .update(cx, |list, cx| list.show(list_id, tracks, cx));
+            self.track_list.update(cx, |list, cx| {
+                list.show(list_id, tracks, ContextKind::Collection, cx)
+            });
             self.track_list.clone().into_any_element()
         } else if section == ArtistSection::Popular {
             components::empty_state(palette, "No popular tracks available").into_any_element()
@@ -943,8 +950,9 @@ impl Render for AlbumPage {
                 .and_then(|album| album.source_id.clone())
                 .expect("open only loads albums that have a source id");
             let list_id = (ElementId::from("album-tracks"), source_id);
-            self.track_list
-                .update(cx, |list, cx| list.show(list_id, tracks.clone(), cx));
+            self.track_list.update(cx, |list, cx| {
+                list.show(list_id, tracks.clone(), ContextKind::Album, cx)
+            });
             self.track_list.clone().into_any_element()
         } else if loaded {
             components::empty_state(palette, "This album has no playable tracks").into_any_element()
