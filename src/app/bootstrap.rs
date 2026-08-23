@@ -144,26 +144,24 @@ mod tests {
         let cadence = gpui::KeyContext::try_from("Cadence").unwrap();
 
         #[cfg(target_os = "macos")]
-        let (matching, not_matching) = (
-            ["secondary-k", "cmd-k"],
-            ["ctrl-k", "alt-k"],
-        );
+        let (matching, not_matching) = (["secondary-k", "cmd-k"], ["ctrl-k", "alt-k"]);
         #[cfg(not(target_os = "macos"))]
-        let (matching, not_matching) = (
-            ["secondary-k", "ctrl-k"],
-            ["cmd-k", "alt-k"],
-        );
+        let (matching, not_matching) = (["secondary-k", "ctrl-k"], ["cmd-k", "alt-k"]);
 
         for source in matching {
             let keystroke = gpui::Keystroke::parse(source).unwrap();
-            let (bindings, _) =
-                keymap.bindings_for_input(std::slice::from_ref(&keystroke), std::slice::from_ref(&cadence));
+            let (bindings, _) = keymap.bindings_for_input(
+                std::slice::from_ref(&keystroke),
+                std::slice::from_ref(&cadence),
+            );
             assert_eq!(bindings.len(), 1, "{source} must open search");
         }
         for source in not_matching {
             let keystroke = gpui::Keystroke::parse(source).unwrap();
-            let (bindings, _) =
-                keymap.bindings_for_input(std::slice::from_ref(&keystroke), std::slice::from_ref(&cadence));
+            let (bindings, _) = keymap.bindings_for_input(
+                std::slice::from_ref(&keystroke),
+                std::slice::from_ref(&cadence),
+            );
             assert!(bindings.is_empty(), "{source} must not open search");
         }
     }
