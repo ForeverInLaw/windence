@@ -2,8 +2,10 @@
 
 The Windows port draws macOS-style traffic lights itself and hands each dot to
 the OS through a GPUI `WindowControlArea` (`Close`, `Min`, `Max`). Dragging the
-frameless window works through separate strips marked `WindowControlArea::Drag`:
-the sidebar's top padding and the toolbar's middle gap.
+frameless window works through separate strips marked `WindowControlArea::Drag`,
+carved around the cluster band: on the main window they cover the sidebar's top
+padding and the toolbar's middle gap; the onboarding window drags from its top
+edge.
 
 At the pinned Zed rev, GPUI resolves which control area covers the cursor in
 two steps. The mouse hit test collects **every** hitbox under the point —

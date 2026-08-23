@@ -196,6 +196,22 @@ const TRAFFIC_LIGHT_INSET_Y: f32 = 9.;
 const TRAFFIC_LIGHT_BAND_RIGHT: f32 = TRAFFIC_LIGHT_INSET_X + TRAFFIC_LIGHT_CLUSTER_WIDTH;
 /// Bottom edge of the cluster's dot row.
 const TRAFFIC_LIGHT_BAND_BOTTOM: f32 = TRAFFIC_LIGHT_INSET_Y + TRAFFIC_LIGHT_SIZE;
+
+/// One rect of a window drag strip, anchored by insets so it tracks animated
+/// parents. A strip is built from rects like this so it never covers the
+/// traffic-light dots: GPUI resolves overlapping control areas by paint
+/// order, and any Drag area painted before the lights overlay would swallow
+/// the dots' clicks (ADR-0002).
+pub(super) fn window_drag_strip(top: f32, left: f32, height: f32) -> Div {
+    div()
+        .absolute()
+        .top(px(top))
+        .left(px(left))
+        .right_0()
+        .h(px(height))
+        .window_control_area(WindowControlArea::Drag)
+}
+
 /// The hover-and-selection pill behind a collapsed sidebar row.
 const SIDEBAR_FILL_COLLAPSED: f32 = 42.;
 /// How far the collapsed pill sits in from the row's left edge.

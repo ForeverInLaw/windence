@@ -3,6 +3,24 @@ use super::*;
 pub(super) const SPOTIFY_DASHBOARD_URL: &str = "https://developer.spotify.com/dashboard";
 pub(super) const SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
 
+/// Height of the window drag strip along the onboarding top edge. Sits inside
+/// the rail's 56px padding and the forms' 48px padding, so it covers nothing
+/// interactive.
+const ONBOARDING_TOP_STRIP_HEIGHT: f32 = 44.;
+
+/// The frameless onboarding window drags from its top edge, carved around the
+/// traffic lights like the main window's sidebar strip (see sidebar.rs).
+fn onboarding_drag_strips() -> [Div; 2] {
+    [
+        window_drag_strip(0., TRAFFIC_LIGHT_BAND_RIGHT, ONBOARDING_TOP_STRIP_HEIGHT),
+        window_drag_strip(
+            TRAFFIC_LIGHT_BAND_BOTTOM,
+            0.,
+            ONBOARDING_TOP_STRIP_HEIGHT - TRAFFIC_LIGHT_BAND_BOTTOM,
+        ),
+    ]
+}
+
 /// What the setup screens ask the workspace to do.
 pub(super) enum OnboardingEvent {
     Authenticate,
@@ -138,7 +156,8 @@ impl Onboarding {
             // The lights float over the window, so they live outside the
             // scroll container above.
             .when(cfg!(target_os = "windows"), |page| {
-                page.child(super::chrome::windows_traffic_lights())
+                page.children(onboarding_drag_strips())
+                    .child(super::chrome::windows_traffic_lights())
             })
     }
 

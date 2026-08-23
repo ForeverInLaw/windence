@@ -36,18 +36,6 @@ fn expanded_sidebar_width(compact_layout: bool) -> f32 {
     if compact_layout { 200. } else { 232. }
 }
 
-/// One rect of the top drag strip, anchored on the panel's edges so it
-/// follows the animated width.
-fn drag_strip(top: f32, left: f32, height: f32) -> Div {
-    div()
-        .absolute()
-        .top(px(top))
-        .left(px(left))
-        .right_0()
-        .h(px(height))
-        .window_control_area(WindowControlArea::Drag)
-}
-
 impl Sidebar {
     pub(super) fn new(collapsed: bool, cx: &mut App) -> Self {
         let width = if collapsed {
@@ -313,12 +301,12 @@ impl Sidebar {
                 // anchor on the panel edges and follow the animated width;
                 // below the dot row the full width drags again.
                 sidebar
-                    .child(drag_strip(
+                    .child(window_drag_strip(
                         0.,
                         TRAFFIC_LIGHT_BAND_RIGHT,
                         SIDEBAR_TOP_PADDING,
                     ))
-                    .child(drag_strip(
+                    .child(window_drag_strip(
                         TRAFFIC_LIGHT_BAND_BOTTOM,
                         0.,
                         SIDEBAR_TOP_PADDING - TRAFFIC_LIGHT_BAND_BOTTOM,
