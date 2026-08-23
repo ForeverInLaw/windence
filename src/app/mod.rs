@@ -23,7 +23,11 @@ use gpui_component::{
     theme::ThemeMode,
 };
 use spotify_gpui_client::{
-    backend::{Backend, BackendCommand, BackendEvent, BackendHandle, LibraryReload, Reply},
+    backend::{
+        Backend, BackendCommand, BackendEvent, BackendHandle, LibraryReload, PlaylistContents,
+        Reply,
+    },
+    dj,
     lifecycle::{Instance, InstanceLifecycle},
     model,
     shuffle::{ContextKind, ShuffleMode},

@@ -147,6 +147,9 @@ pub(super) struct PlaylistPage {
     selected: Option<model::Playlist>,
     tracks: Arc<[model::ListedTrack]>,
     loaded: bool,
+    /// Spotify refuses to serve this playlist to this account or region —
+    /// a restriction with its own empty state, not a load error.
+    unavailable: bool,
     error: Option<String>,
     request: Option<gpui::Task<()>>,
     library: Entity<library::Library>,
@@ -166,6 +169,7 @@ impl PlaylistPage {
             selected: None,
             tracks: Arc::default(),
             loaded: false,
+            unavailable: false,
             error: None,
             request: None,
             library: services::AppServices::library(cx),
@@ -174,6 +178,13 @@ impl PlaylistPage {
             _list_subscription: page::forward(&track_list, cx),
             track_list,
         }
+    }
+
+    /// The source id of the playlist on the page, if one is open.
+    pub(super) fn open_source_id(&self) -> Option<&str> {
+        self.selected
+            .as_ref()
+            .map(|playlist| playlist.source_id.as_str())
     }
 
     /// Takes down any open row menu, for a route change no click drove.
@@ -208,6 +219,7 @@ impl PlaylistPage {
         self.selected = Some(playlist.clone());
         self.tracks = Arc::default();
         self.loaded = false;
+        self.unavailable = false;
         self.error = None;
         let reply = request(&self.backend, |respond| BackendCommand::LoadPlaylist {
             playlist,
@@ -219,10 +231,21 @@ impl PlaylistPage {
                 page.request = None;
                 page.loaded = true;
                 match result {
-                    Ok(tracks) => {
+                    Ok(PlaylistContents::Loaded {
+                        playlist: refreshed,
+                        tracks,
+                    }) => {
+                        if let Some(refreshed) = refreshed {
+                            page.selected = Some(refreshed);
+                        }
                         page.tracks = tracks.into();
                         page.error = None;
                         cx.emit(PageEvent::Loaded);
+                    }
+                    Ok(PlaylistContents::NotOffered) => {
+                        // A Spotify restriction gets its own state and no
+                        // error banner: it is not a failure.
+                        page.unavailable = true;
                     }
                     Err(error) => {
                         page.error = Some(error.clone());
@@ -240,6 +263,7 @@ impl PlaylistPage {
         self.selected = None;
         self.tracks = Arc::default();
         self.loaded = false;
+        self.unavailable = false;
         self.error = None;
         cx.notify();
     }
@@ -698,21 +722,33 @@ impl Render for PlaylistPage {
             .selected
             .as_ref()
             .is_some_and(|playlist| self.library.read(cx).is_playlist_pinned(playlist));
-        let (name, detail) = self.selected.as_ref().map_or_else(
-            || ("Playlist".to_owned(), "Spotify playlist".to_owned()),
-            |playlist| {
-                (
-                    playlist.name.clone(),
-                    format!("Spotify playlist · {} tracks", playlist.track_count),
-                )
-            },
-        );
+        // The identity drives every page decision: which actions are hidden,
+        // the artwork fallback, and whether the header already has a count.
+        let source_id = self
+            .selected
+            .as_ref()
+            .map(|playlist| playlist.source_id.clone())
+            .unwrap_or_default();
+        let is_dj = dj::matches(&source_id);
+        let (name, detail) = match self.selected.as_ref() {
+            None => ("Playlist".to_owned(), "Spotify playlist".to_owned()),
+            Some(playlist) if is_dj && !loaded => {
+                (playlist.name.clone(), "Spotify playlist".to_owned())
+            }
+            Some(playlist) => (
+                playlist.name.clone(),
+                format!("Spotify playlist · {} tracks", playlist.track_count),
+            ),
+        };
         let artwork_url = self
             .selected
             .as_ref()
             .and_then(|playlist| playlist.artwork_url.clone());
         let list = if let Some(error) = self.error.as_deref() {
             components::empty_state(palette, format!("Unable to load playlist: {error}"))
+                .into_any_element()
+        } else if self.unavailable {
+            components::empty_state(palette, "DJ X is not available on this account or region")
                 .into_any_element()
         } else if let Some(playlist) = self.selected.as_ref().filter(|_| !tracks.is_empty()) {
             let list_id = (
@@ -746,7 +782,7 @@ impl Render for PlaylistPage {
                         artwork_url.as_deref(),
                         176.,
                         28.,
-                        "list-music",
+                        if is_dj { "bot" } else { "list-music" },
                     ))
                     .child(
                         div()
@@ -767,42 +803,49 @@ impl Render for PlaylistPage {
                                                 this.play(cx);
                                             })),
                                     )
-                                    .child(
-                                        components::icon_button(
-                                            palette,
-                                            "playlist-shuffle",
-                                            "shuffle",
+                                    // DJ X is curated and mixed by Spotify and
+                                    // already has a permanent sidebar row: its
+                                    // page offers no shuffle-play and no pin.
+                                    .when(!dj::shuffle_hidden(&source_id), |actions| {
+                                        actions.child(
+                                            components::icon_button(
+                                                palette,
+                                                "playlist-shuffle",
+                                                "shuffle",
+                                            )
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.play_shuffled(cx);
+                                                }),
+                                            ),
                                         )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.play_shuffled(cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        components::icon_button(
-                                            palette,
-                                            "playlist-pin",
-                                            if pinned { "pin-fill" } else { "pin" },
+                                    })
+                                    .when(!dj::pin_hidden(&source_id), |actions| {
+                                        actions.child(
+                                            components::icon_button(
+                                                palette,
+                                                "playlist-pin",
+                                                if pinned { "pin-fill" } else { "pin" },
+                                            )
+                                            .bg(rgb(if pinned {
+                                                palette.selection
+                                            } else {
+                                                palette.control
+                                            }))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    if let Some(playlist) = this.selected.clone() {
+                                                        this.library.update(cx, |library, cx| {
+                                                            library.set_playlist_pinned(
+                                                                playlist, !pinned, cx,
+                                                            )
+                                                        });
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            ),
                                         )
-                                        .bg(rgb(if pinned {
-                                            palette.selection
-                                        } else {
-                                            palette.control
-                                        }))
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                if let Some(playlist) = this.selected.clone() {
-                                                    this.library.update(cx, |library, cx| {
-                                                        library.set_playlist_pinned(
-                                                            playlist, !pinned, cx,
-                                                        )
-                                                    });
-                                                }
-                                                cx.notify();
-                                            }),
-                                        ),
-                                    ),
+                                    }),
                             ),
                     ),
             )

@@ -14,6 +14,14 @@ pub(super) enum SidebarEvent {
     },
 }
 
+/// What clicking a library row does. Every row but one navigates; DJ X is
+/// a permanent synthetic entry that opens its playlist page.
+#[derive(Clone, Copy)]
+enum NavTarget {
+    Route(Route),
+    DjX,
+}
+
 /// The library navigation rail.
 pub(super) struct Sidebar {
     library: Entity<library::Library>,
@@ -22,6 +30,8 @@ pub(super) struct Sidebar {
     route: Route,
     /// Where a pinned playlist should return to when the listener backs out.
     pinned_origin: Route,
+    /// The playlist page is showing the DJ lineup, so its row highlights.
+    dj_open: bool,
     compact_layout: bool,
     collapsed: bool,
     transition_generation: u64,
@@ -48,6 +58,7 @@ impl Sidebar {
             brand_mark: services::AppServices::brand_mark(cx),
             route: Route::LikedSongs,
             pinned_origin: Route::LikedSongs,
+            dj_open: false,
             compact_layout: false,
             collapsed,
             transition_generation: 0,
@@ -61,11 +72,13 @@ impl Sidebar {
         &mut self,
         route: Route,
         pinned_origin: Route,
+        dj_open: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.route != route || self.pinned_origin != pinned_origin {
+        if self.route != route || self.pinned_origin != pinned_origin || self.dj_open != dj_open {
             self.route = route;
             self.pinned_origin = pinned_origin;
+            self.dj_open = dj_open;
             cx.notify();
         }
     }
@@ -126,10 +139,16 @@ impl Sidebar {
                         label: &'static str,
                         icon: &'static str,
                         selected_icon: &'static str,
-                        target: Route,
+                        target: NavTarget,
                         cx: &mut Context<Self>| {
-            let selected =
-                route == target || (target == Route::Playlists && route == Route::Playlist);
+            let selected = match target {
+                NavTarget::Route(target) => {
+                    route == target || (target == Route::Playlists && route == Route::Playlist)
+                }
+                // DJ X shares the playlist page with every other playlist;
+                // only its own row lights up when it is the one open.
+                NavTarget::DjX => self.dj_open && route == Route::Playlist,
+            };
             // The pill carries selection and hover, sized to what it visually
             // covers: the icon when collapsed, the whole row when expanded.
             let fill =
@@ -186,7 +205,13 @@ impl Sidebar {
                 .text_size(px(14.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(fill)
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(SidebarEvent::Navigate(target))))
+                .on_click(cx.listener(move |_, _, _, cx| match target {
+                    NavTarget::Route(target) => cx.emit(SidebarEvent::Navigate(target)),
+                    NavTarget::DjX => cx.emit(SidebarEvent::OpenPlaylist {
+                        playlist: dj::playlist(),
+                        origin: pinned_origin,
+                    }),
+                }))
         };
         let mut pinned_section = div()
             .flex()
@@ -350,7 +375,7 @@ impl Sidebar {
                                 "Liked Songs",
                                 "heart",
                                 "heart-fill",
-                                Route::LikedSongs,
+                                NavTarget::Route(Route::LikedSongs),
                                 cx,
                             ))
                             .child(nav_item(
@@ -359,7 +384,7 @@ impl Sidebar {
                                 "Favorites",
                                 "star",
                                 "star-fill",
-                                Route::Favorites,
+                                NavTarget::Route(Route::Favorites),
                                 cx,
                             ))
                             .child(nav_item(
@@ -368,7 +393,7 @@ impl Sidebar {
                                 "Playlists",
                                 "list-music",
                                 "list-music",
-                                Route::Playlists,
+                                NavTarget::Route(Route::Playlists),
                                 cx,
                             ))
                             .child(nav_item(
@@ -377,7 +402,16 @@ impl Sidebar {
                                 "Recently played",
                                 "clock",
                                 "clock",
-                                Route::Recent,
+                                NavTarget::Route(Route::Recent),
+                                cx,
+                            ))
+                            .child(nav_item(
+                                "nav-dj",
+                                "nav-dj-fill",
+                                dj::DISPLAY_NAME,
+                                "bot",
+                                "bot",
+                                NavTarget::DjX,
                                 cx,
                             )),
                     )

@@ -229,8 +229,15 @@ impl Workspace {
     fn settle_navigation(&mut self, cx: &mut Context<Self>) {
         let route = self.router.route();
         let pinned_origin = self.router.pinned_origin();
+        // The playlist page is shared by every playlist; only DJ X's row in
+        // the sidebar highlights on it.
+        let dj_open = self
+            .playlist
+            .read(cx)
+            .open_source_id()
+            .is_some_and(dj::matches);
         self.sidebar.update(cx, |sidebar, cx| {
-            sidebar.show_route(route, pinned_origin, cx)
+            sidebar.show_route(route, pinned_origin, dj_open, cx)
         });
         self.close_queue(cx);
         self.close_account_menu(cx);
