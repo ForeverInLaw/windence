@@ -67,9 +67,9 @@ pub fn pin_hidden(source_id: &str) -> bool {
 }
 
 /// Whether the shuffle-play action is hidden on a playlist's page: the
-/// lineup is already curated and mixed by Spotify, so reordering it adds
-/// nothing. This is the entire shuffle treatment — no DJ-specific ordering
-/// code exists anywhere else.
+/// lineup is already curated by Spotify, so reordering it adds nothing.
+/// This is the entire shuffle treatment — no DJ-specific ordering code
+/// exists anywhere else.
 pub fn shuffle_hidden(source_id: &str) -> bool {
     matches(source_id)
 }

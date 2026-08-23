@@ -313,13 +313,10 @@ impl Playback {
                 )
                 .context("the DJ playlist endpoint returned invalid metadata")?
             }
-            Err(error) => {
-                return Ok(if dj::refusal(error.kind) {
-                    dj::Lineup::NotOffered
-                } else {
-                    return Err(error.into());
-                });
-            }
+            // Not found or forbidden means this account or region has no
+            // DJ at all; anything else is a transport failure.
+            Err(error) if dj::refusal(error.kind) => return Ok(dj::Lineup::NotOffered),
+            Err(error) => return Err(error.into()),
         };
         let contents = content.contents.get_or_default();
         if content.length() <= 0 || contents.items.is_empty() {
@@ -362,7 +359,10 @@ impl Playback {
                     track,
                     added_at: proto_convert::added_at(&item),
                 }),
-                Err(_) => failures += 1,
+                Err(error) => {
+                    failures += 1;
+                    log::warn!("dropping a DJ lineup track: {error:#}");
+                }
             }
         }
         if listed.is_empty() && failures > 0 {

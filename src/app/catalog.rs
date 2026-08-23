@@ -803,9 +803,9 @@ impl Render for PlaylistPage {
                                                 this.play(cx);
                                             })),
                                     )
-                                    // DJ X is curated and mixed by Spotify and
-                                    // already has a permanent sidebar row: its
-                                    // page offers no shuffle-play and no pin.
+                                    // DJ X is curated by Spotify and already
+                                    // has a permanent sidebar row: its page
+                                    // offers no shuffle-play and no pin.
                                     .when(!dj::shuffle_hidden(&source_id), |actions| {
                                         actions.child(
                                             components::icon_button(
