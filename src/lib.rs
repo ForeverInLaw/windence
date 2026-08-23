@@ -6,5 +6,6 @@ pub mod model;
 mod oauth_callback;
 mod oauth_page;
 pub mod playback;
+pub mod shuffle;
 pub mod spotify;
 pub mod storage;

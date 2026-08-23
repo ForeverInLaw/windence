@@ -40,6 +40,10 @@ _Avoid_: suggestion, bonus track
 Randomised play order for the queue. Switching it on keeps the playing track in place and shuffles what follows; switching it off restores the original context order.
 _Avoid_: random, mix, Smart Shuffle (adds injections)
 
+**Anchor**:
+A queued track pinned to its slot because it arrived after the context did: Play next inserts, Add-to-queue appends, Autoplay extensions. Shuffling and unshuffling reorder context tracks around anchors and never move one.
+_Avoid_: Injected Track (says why a track is queued, not where it sits)
+
 **Smart Shuffle**:
 Shuffle plus injection: about one injected track between every three context tracks, fetched from Spotify recommendations. Switching it off removes the injected tracks and restores the original order.
 _Avoid_: Autoplay (works only at the end of the queue), Radio (replaces the whole queue)

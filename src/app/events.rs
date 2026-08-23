@@ -72,6 +72,7 @@ impl Workspace {
                 | BackendEvent::EndOfTrack { .. }
                 | BackendEvent::PositionChanged { .. }
                 | BackendEvent::PlaybackSnapshotLoaded { .. }
+                | BackendEvent::ShuffleChanged { .. }
                 | BackendEvent::PlaybackContext { .. }
                 | BackendEvent::PlaybackFailed(_) => {}
             }

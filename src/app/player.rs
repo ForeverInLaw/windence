@@ -16,6 +16,10 @@ pub(super) struct Player {
     queue: Arc<[model::Track]>,
     playing: bool,
     loading: bool,
+    /// The shuffle toggle's value and whether it can act: a live,
+    /// non-radio context. A radio is already a recommendation stream.
+    shuffle_mode: ShuffleMode,
+    shuffle_supported: bool,
     /// Position and play state to reapply once a reconnected player is ready.
     restore: Option<(u32, bool)>,
     position_ms: u32,
@@ -35,6 +39,8 @@ impl Player {
             queue: Arc::default(),
             playing: false,
             loading: false,
+            shuffle_mode: ShuffleMode::Off,
+            shuffle_supported: false,
             restore: None,
             position_ms: 0,
             saved_position_ms: 0,
@@ -63,6 +69,16 @@ impl Player {
 
     pub(super) fn loading(&self) -> bool {
         self.loading
+    }
+
+    pub(super) fn shuffle_mode(&self) -> ShuffleMode {
+        self.shuffle_mode
+    }
+
+    /// False until a live queue is known and always false for radio
+    /// contexts, whose toggle would be a no-op.
+    pub(super) fn shuffle_supported(&self) -> bool {
+        self.shuffle_supported
     }
 
     pub(super) fn position_ms(&self) -> u32 {
@@ -163,13 +179,42 @@ impl Player {
         cx.notify();
     }
 
+    /// Starts a context at `index`, inheriting the global shuffle toggle.
     pub(super) fn play_context(
         &mut self,
         tracks: Vec<model::Track>,
         index: usize,
         cx: &mut Context<Self>,
     ) -> bool {
-        let started = self.send(BackendCommand::PlayContext { tracks, index }, cx);
+        self.send_play_context(tracks, index, false, cx)
+    }
+
+    /// Starts a context shuffled and moves the global toggle to Shuffle,
+    /// as the playlist and album shuffle-play controls do.
+    pub(super) fn play_context_shuffled(
+        &mut self,
+        tracks: Vec<model::Track>,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.send_play_context(tracks, index, true, cx)
+    }
+
+    fn send_play_context(
+        &mut self,
+        tracks: Vec<model::Track>,
+        index: usize,
+        shuffled: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let started = self.send(
+            BackendCommand::PlayContext {
+                tracks,
+                index,
+                shuffled,
+            },
+            cx,
+        );
         if started {
             self.position_ms = 0;
             self.playing = false;
@@ -177,6 +222,20 @@ impl Player {
         }
         cx.notify();
         started
+    }
+
+    /// Moves the toggle to its next value. The backend confirms with a
+    /// `ShuffleChanged` event; until one arrives the optimistic update keeps
+    /// the button responsive.
+    pub(super) fn cycle_shuffle(&mut self, cx: &mut Context<Self>) {
+        if !self.shuffle_supported {
+            return;
+        }
+        let next = self.shuffle_mode.toggled();
+        if self.deliver(BackendCommand::SetShuffleMode(next), cx) {
+            self.shuffle_mode = next;
+        }
+        cx.notify();
     }
 
     pub(super) fn play_next(&mut self, track: model::Track, cx: &mut Context<Self>) -> bool {
@@ -292,6 +351,8 @@ impl Player {
         self.queue = Arc::default();
         self.playing = false;
         self.loading = false;
+        self.shuffle_mode = ShuffleMode::Off;
+        self.shuffle_supported = false;
         self.restore = None;
         self.position_ms = 0;
         self.saved_position_ms = 0;
@@ -415,6 +476,10 @@ impl Player {
                     self.restore = None;
                 }
             }
+            BackendEvent::ShuffleChanged { mode, supported } => {
+                self.shuffle_mode = mode;
+                self.shuffle_supported = supported;
+            }
             BackendEvent::PlaybackFailed(error) => {
                 self.error = Some(error);
             }
@@ -425,6 +490,9 @@ impl Player {
                     self.queue = Arc::default();
                     self.playing = false;
                     self.loading = false;
+                    // No live queue left for the toggle to act on.
+                    self.shuffle_mode = ShuffleMode::Off;
+                    self.shuffle_supported = false;
                 }
                 cx.notify();
                 return Some(BackendEvent::TrackFailed { spotify_uri, error });

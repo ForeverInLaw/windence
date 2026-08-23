@@ -26,6 +26,7 @@ use spotify_gpui_client::{
     backend::{Backend, BackendCommand, BackendEvent, BackendHandle, LibraryReload, Reply},
     lifecycle::{Instance, InstanceLifecycle},
     model,
+    shuffle::ShuffleMode,
     spotify::{self, ClientIdSource, valid_client_id},
     storage::{AppPreferences, Store, ThemePreference},
 };
@@ -646,6 +647,7 @@ mod icon_tests {
         "play",
         "search",
         "settings",
+        "shuffle",
         "skip-back",
         "skip-forward",
         "star",

@@ -16,6 +16,7 @@ use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use crate::{
     model::{Album, Artist, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
+    shuffle::{ShuffleMode, ShuffleRng, ShuffleState},
     spotify::{
         ClientIdSource, Spotify, SpotifyConfiguration, resolve_configuration, valid_client_id,
     },
@@ -195,9 +196,13 @@ impl BlockingStore {
         tracks: Vec<Track>,
         index: usize,
         position_ms: u32,
+        shuffle: ShuffleState,
+        radio: bool,
     ) -> Result<()> {
-        self.call(move |store| store.set_playback_state(&tracks, index, position_ms))
-            .await
+        self.call(move |store| {
+            store.set_playback_state(&tracks, index, position_ms, &shuffle, radio)
+        })
+        .await
     }
 
     async fn update_playback_position(&self, position_ms: u32) -> Result<()> {
@@ -288,9 +293,13 @@ pub enum BackendCommand {
     PlayContext {
         tracks: Vec<Track>,
         index: usize,
+        /// Start this context shuffled and move the global toggle to
+        /// Shuffle, as the playlist and album shuffle-play controls do.
+        shuffled: bool,
     },
     PlayNext(Track),
     AppendToQueue(Track),
+    SetShuffleMode(ShuffleMode),
     RestorePlayback {
         position_ms: u32,
         playing: bool,
@@ -382,6 +391,13 @@ pub enum BackendEvent {
     PlaybackContext {
         current: Track,
         next: Vec<Track>,
+    },
+    /// The player-bar shuffle toggle's value and whether it can act at all
+    /// (a live, non-radio context). Sent whenever the queue's shuffle state
+    /// changes or a queue is first adopted.
+    ShuffleChanged {
+        mode: ShuffleMode,
+        supported: bool,
     },
     PlaybackSnapshotLoaded {
         current: Track,
@@ -625,6 +641,12 @@ async fn start(
                 .unwrap_or_default()
                 .to_vec(),
             position_ms: snapshot.position_ms,
+        });
+        // The restored queue may be shuffled; the toggle reflects that from
+        // the first frame.
+        let _ = events.send(BackendEvent::ShuffleChanged {
+            mode: snapshot.shuffle.mode,
+            supported: !snapshot.radio,
         });
     }
     let environment_client_id = std::env::var("SPOTIFY_CLIENT_ID").ok();
@@ -998,9 +1020,14 @@ impl Worker {
                 );
                 Ok(())
             }
-            BackendCommand::PlayContext { tracks, index } => self.play_context(tracks, index).await,
+            BackendCommand::PlayContext {
+                tracks,
+                index,
+                shuffled,
+            } => self.play_context(tracks, index, shuffled).await,
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
+            BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
             BackendCommand::RestorePlayback {
                 position_ms,
                 playing,
@@ -1216,12 +1243,31 @@ impl Worker {
         }));
     }
 
-    async fn play_context(&mut self, tracks: Vec<Track>, index: usize) -> Result<()> {
+    async fn play_context(
+        &mut self,
+        mut tracks: Vec<Track>,
+        index: usize,
+        shuffled: bool,
+    ) -> Result<()> {
         self.radio.cancel(&self.events);
         let spotify_uri = tracks
             .get(index)
             .and_then(|track| track.spotify_uri.clone())
             .unwrap_or_default();
+        // A fresh context inherits the global toggle: starting while Shuffle
+        // is on begins shuffled, with the original order snapshotted first.
+        let mut shuffle = ShuffleState::for_context(&tracks, self.queue.shuffle.mode);
+        if shuffled && shuffle.mode == ShuffleMode::Off {
+            shuffle.mode = ShuffleMode::Shuffle;
+        }
+        if shuffle.mode.shuffles() {
+            shuffle.set_mode(
+                ShuffleMode::Shuffle,
+                &mut tracks,
+                index,
+                &mut ShuffleRng::from_entropy(),
+            );
+        }
         match load_context_track(
             &self.connection.player,
             &tracks,
@@ -1233,6 +1279,8 @@ impl Worker {
         {
             Ok(()) => {
                 self.queue.tracks = tracks;
+                self.queue.shuffle = shuffle;
+                self.queue.radio = false;
                 self.commit_loaded_queue(index).await;
             }
             Err(error) => {
@@ -1248,24 +1296,49 @@ impl Worker {
 
     async fn play_next(&mut self, track: Track) -> Result<()> {
         let index = self.queue.index.context("Nothing is currently playing")?;
-        let mut updated_tracks = self.queue.tracks.clone();
-        updated_tracks.insert(index + 1, track);
-        self.replace_queue(updated_tracks, index).await
+        // Anchored straight after the playing track: shuffling and
+        // unshuffling never move it.
+        self.queue.tracks.insert(index + 1, track);
+        self.queue.shuffle.insert_anchor(index + 1);
+        self.commit_queue_change(index).await
     }
 
     async fn append_to_queue(&mut self, track: Track) -> Result<()> {
         let index = self.queue.index.context("Nothing is currently playing")?;
-        let mut updated_tracks = self.queue.tracks.clone();
-        updated_tracks.push(track);
-        self.replace_queue(updated_tracks, index).await
+        self.queue.tracks.push(track);
+        self.queue.shuffle.push_anchor();
+        self.commit_queue_change(index).await
     }
 
-    async fn replace_queue(&mut self, tracks: Vec<Track>, index: usize) -> Result<()> {
+    async fn set_shuffle_mode(&mut self, mode: ShuffleMode) -> Result<()> {
+        let index = self.queue.index.context("Nothing is currently playing")?;
+        if self.queue.radio {
+            // A radio is already a recommendation stream; ignore the toggle.
+            return Ok(());
+        }
+        self.queue.shuffle.set_mode(
+            mode,
+            &mut self.queue.tracks,
+            index,
+            &mut ShuffleRng::from_entropy(),
+        );
+        self.commit_queue_change(index).await
+    }
+
+    /// Saves the queue as it stands and tells the UI about both halves of
+    /// the change: the play order and the toggle behind it.
+    async fn commit_queue_change(&mut self, index: usize) -> Result<()> {
         self.store
-            .set_playback_state(tracks.clone(), index, self.queue.position_ms)
+            .set_playback_state(
+                self.queue.tracks.clone(),
+                index,
+                self.queue.position_ms,
+                self.queue.shuffle.clone(),
+                self.queue.radio,
+            )
             .await?;
-        self.queue.tracks = tracks;
         send_playback_context(&self.queue.tracks, index, &self.events);
+        send_shuffle_changed(&self.queue, &self.events);
         Ok(())
     }
 
@@ -1425,11 +1498,7 @@ impl Worker {
         self.queue.index = Some(index);
         self.queue.position_ms = 0;
         self.queue.ended = false;
-        if let Err(error) = self
-            .store
-            .set_playback_state(self.queue.tracks.clone(), index, 0)
-            .await
-        {
+        if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
         }
         self.maybe_prefetch_autoplay();
@@ -1550,6 +1619,11 @@ impl Worker {
                 {
                     Ok(()) => {
                         self.queue.tracks = tracks;
+                        // A radio ignores shuffle, but the global mode
+                        // survives underneath so a later context inherits it.
+                        self.queue.shuffle =
+                            ShuffleState::for_context(&self.queue.tracks, self.queue.shuffle.mode);
+                        self.queue.radio = true;
                         self.commit_loaded_queue(0).await;
                         let _ = self.events.send(BackendEvent::RadioStarted { request_id });
                     }
@@ -1646,6 +1720,8 @@ impl Worker {
         abort_task(&mut self.connection.reconnect);
         self.connection.reconnect_pending = false;
         self.queue.tracks.clear();
+        self.queue.shuffle = ShuffleState::default();
+        self.queue.radio = false;
         self.queue.index = None;
         // A fresh session must not inherit the ended special-casing.
         self.queue.ended = false;
@@ -1760,10 +1836,14 @@ impl Worker {
             self.autoplay.fruitless_seed = seed_id;
             return;
         }
-        let mut updated = self.queue.tracks.clone();
-        updated.extend(additions);
         let ended = self.queue.ended;
-        if let Err(error) = self.replace_queue(updated, index).await {
+        // Autoplay additions are recommendations, not context: they anchor
+        // to their slots at the queue's end and stay put through toggles.
+        for track in additions {
+            self.queue.tracks.push(track);
+            self.queue.shuffle.push_anchor();
+        }
+        if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
             return;
         }
@@ -1801,6 +1881,10 @@ impl Worker {
 #[derive(Default)]
 struct PlayQueue {
     tracks: Vec<Track>,
+    /// Shuffle bookkeeping aligned with `tracks`: mode, base order, origins.
+    shuffle: ShuffleState,
+    /// A track-radio context ignores the toggle entirely.
+    radio: bool,
     index: Option<usize>,
     position_ms: u32,
     /// The last track finished with nothing after it. librespot sits in
@@ -1814,6 +1898,8 @@ impl PlayQueue {
         match snapshot {
             Some(snapshot) => Self {
                 tracks: snapshot.tracks,
+                shuffle: snapshot.shuffle,
+                radio: snapshot.radio,
                 index: Some(snapshot.index),
                 position_ms: snapshot.position_ms,
                 ended: false,
@@ -2595,6 +2681,14 @@ fn send_playback_context(tracks: &[Track], index: usize, events: &UnboundedSende
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
         });
     }
+}
+
+/// Tells the UI what the shuffle toggle should show for this queue.
+fn send_shuffle_changed(queue: &PlayQueue, events: &UnboundedSender<BackendEvent>) {
+    let _ = events.send(BackendEvent::ShuffleChanged {
+        mode: queue.shuffle.mode,
+        supported: !queue.radio && queue.index.is_some(),
+    });
 }
 
 fn send_error(events: &UnboundedSender<BackendEvent>, error: impl std::fmt::Display) {

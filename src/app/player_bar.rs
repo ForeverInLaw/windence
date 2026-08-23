@@ -51,6 +51,8 @@ impl PlayerBar {
         let loading = player.loading();
         let position_ms = player.position_ms();
         let volume = player.volume();
+        let shuffle_mode = player.shuffle_mode();
+        let shuffle_supported = player.shuffle_supported();
         let live_track = now_playing.is_some();
         let player_artwork = now_playing
             .as_ref()
@@ -155,6 +157,14 @@ impl PlayerBar {
                             .flex()
                             .items_center()
                             .gap(px(8.))
+                            .child(
+                                shuffle_toggle(palette, shuffle_mode, shuffle_supported).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.player
+                                            .update(cx, |player, cx| player.cycle_shuffle(cx));
+                                    }),
+                                ),
+                            )
                             .child(
                                 components::icon_button(palette, "previous", "skip-back").on_click(
                                     cx.listener(|this, _, _, cx| {
@@ -336,6 +346,31 @@ impl Render for PlayerBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.bar(window, cx)
     }
+}
+
+/// The Off ↔ Shuffle toggle left of the transport cluster: dimmed while off,
+/// highlighted on the selection pill while on, and half-faded where toggling
+/// would be a no-op (no live queue, or a track-radio context).
+fn shuffle_toggle(palette: CadencePalette, mode: ShuffleMode, supported: bool) -> Stateful<Div> {
+    let active = mode.shuffles();
+    components::button(palette, "shuffle-toggle")
+        .size(px(40.))
+        .flex_none()
+        .rounded(px(20.))
+        .when(active, |button| button.bg(rgb(palette.selection)))
+        .when(!active && supported, |button| {
+            button.hover(|style| style.bg(rgb(palette.control)))
+        })
+        .child(components::icon(
+            "shuffle",
+            16.,
+            if active {
+                palette.text_primary
+            } else {
+                palette.text_muted
+            },
+        ))
+        .when(!supported, |button| button.opacity(0.5))
 }
 
 /// Raised when the listener dismisses the queue panel.

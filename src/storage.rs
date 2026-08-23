@@ -10,11 +10,12 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Playlist, QueueItem, Track};
+use crate::shuffle::{ShuffleMode, ShuffleState};
 
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -47,6 +48,11 @@ pub struct PlaybackSnapshot {
     pub tracks: Vec<Track>,
     pub index: usize,
     pub position_ms: u32,
+    /// The queue's shuffle bookkeeping: mode, base order, per-track origins.
+    pub shuffle: ShuffleState,
+    /// A track-radio context is already a recommendation stream; its toggle
+    /// stays a no-op across a restart.
+    pub radio: bool,
 }
 
 /// What a cheap library reload compares before committing to a full walk:
@@ -277,6 +283,17 @@ impl Store {
 
              PRAGMA user_version = 5;
              COMMIT;",
+            )?;
+        }
+        if version < 6 {
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE playback_state ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]';
+                 ALTER TABLE playback_state ADD COLUMN origins_json TEXT NOT NULL DEFAULT '[]';
+                 ALTER TABLE playback_state ADD COLUMN shuffle_mode TEXT NOT NULL DEFAULT 'off';
+                 ALTER TABLE playback_state ADD COLUMN radio INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 6;
+                 COMMIT;",
             )?;
         }
         Ok(())
@@ -560,6 +577,8 @@ impl Store {
         tracks: &[Track],
         index: usize,
         position_ms: u32,
+        shuffle: &ShuffleState,
+        radio: bool,
     ) -> Result<()> {
         anyhow::ensure!(
             tracks.get(index).is_some(),
@@ -567,17 +586,27 @@ impl Store {
         );
         let index = i64::try_from(index).context("playback index exceeds SQLite range")?;
         self.connection.execute(
-            "INSERT INTO playback_state (id, tracks_json, current_index, position_ms, updated_at)
-             VALUES (1, ?1, ?2, ?3, unixepoch())
+            "INSERT INTO playback_state
+                 (id, tracks_json, current_index, position_ms, context_json, origins_json,
+                  shuffle_mode, radio, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())
              ON CONFLICT (id) DO UPDATE SET
                  tracks_json = excluded.tracks_json,
                  current_index = excluded.current_index,
                  position_ms = excluded.position_ms,
+                 context_json = excluded.context_json,
+                 origins_json = excluded.origins_json,
+                 shuffle_mode = excluded.shuffle_mode,
+                 radio = excluded.radio,
                  updated_at = excluded.updated_at",
             params![
                 serde_json::to_string(tracks)?,
                 index,
-                i64::from(position_ms)
+                i64::from(position_ms),
+                serde_json::to_string(&shuffle.context)?,
+                serde_json::to_string(&shuffle.ordinals())?,
+                shuffle_mode_as_str(shuffle.mode),
+                i64::from(radio),
             ],
         )?;
         Ok(())
@@ -593,17 +622,24 @@ impl Store {
 
     pub fn playback_state(&self) -> Result<Option<PlaybackSnapshot>> {
         let state = self.connection.query_row(
-            "SELECT tracks_json, current_index, position_ms FROM playback_state WHERE id = 1",
+            "SELECT tracks_json, current_index, position_ms, context_json, origins_json,
+                    shuffle_mode, radio
+             FROM playback_state WHERE id = 1",
             [],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         );
-        let (tracks_json, index, position_ms) = match state {
+        let (tracks_json, index, position_ms, context_json, origins_json, mode, radio) = match state
+        {
             Ok(state) => state,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -614,11 +650,22 @@ impl Store {
             tracks.get(index).is_some(),
             "stored playback index is out of bounds"
         );
+        // Anything malformed in the shuffle columns degrades to an unshuffled
+        // queue instead of failing the whole restore.
+        let context: Vec<Track> = serde_json::from_str(&context_json).unwrap_or_default();
+        let ordinals: Vec<Option<usize>> = serde_json::from_str(&origins_json).unwrap_or_default();
         Ok(Some(PlaybackSnapshot {
+            shuffle: ShuffleState::restored(
+                tracks.len(),
+                parse_shuffle_mode(&mode),
+                context,
+                ordinals,
+            ),
             tracks,
             index,
             position_ms: u32::try_from(position_ms)
                 .context("stored playback position is invalid")?,
+            radio: radio != 0,
         }))
     }
 
@@ -714,6 +761,22 @@ impl Store {
     }
 }
 
+fn shuffle_mode_as_str(mode: ShuffleMode) -> &'static str {
+    match mode {
+        ShuffleMode::Off => "off",
+        ShuffleMode::Shuffle => "shuffle",
+        ShuffleMode::Smart => "smart",
+    }
+}
+
+fn parse_shuffle_mode(value: &str) -> ShuffleMode {
+    match value {
+        "shuffle" => ShuffleMode::Shuffle,
+        "smart" => ShuffleMode::Smart,
+        _ => ShuffleMode::Off,
+    }
+}
+
 /// One-time move of a database created under the pre-port Windows path
 /// (`...\Cadence\Cadence\data`) to its platform-correct home. Best effort:
 /// when nothing needs moving or a rename fails, the app simply starts with
@@ -753,6 +816,7 @@ mod tests {
         relocate_legacy_windows_database,
     };
     use crate::model::{Playlist, Provider, QueueItem, Track};
+    use crate::shuffle::{ShuffleMode, ShuffleRng, ShuffleState};
     use rusqlite::Connection;
     use std::path::PathBuf;
 
@@ -927,17 +991,68 @@ mod tests {
         let store = Store::in_memory().unwrap();
         let tracks = vec![track("one"), track("two")];
 
-        store.set_playback_state(&tracks, 1, 42_000).unwrap();
+        store
+            .set_playback_state(&tracks, 1, 42_000, &ShuffleState::default(), false)
+            .unwrap();
         let state = store.playback_state().unwrap().unwrap();
         assert_eq!(state.tracks, tracks);
         assert_eq!(state.index, 1);
         assert_eq!(state.position_ms, 42_000);
+        assert_eq!(state.shuffle.mode, ShuffleMode::Off);
+        assert!(!state.radio);
 
         store.update_playback_position(45_000).unwrap();
         assert_eq!(store.playback_state().unwrap().unwrap().position_ms, 45_000);
 
         store.clear_playback_state().unwrap();
         assert!(store.playback_state().unwrap().is_none());
+    }
+
+    #[test]
+    fn shuffle_bookkeeping_round_trips_with_the_playback_state() {
+        let store = Store::in_memory().unwrap();
+        let mut queue = vec![track("one"), track("two"), track("three"), track("four")];
+        let mut shuffle = ShuffleState::for_context(&queue, ShuffleMode::Shuffle);
+        shuffle.set_mode(
+            ShuffleMode::Shuffle,
+            &mut queue,
+            1,
+            &mut ShuffleRng::from_seed(7),
+        );
+        queue.insert(2, track("next"));
+        shuffle.insert_anchor(2);
+
+        store
+            .set_playback_state(&queue, 1, 500, &shuffle, true)
+            .unwrap();
+
+        let state = store.playback_state().unwrap().unwrap();
+        assert_eq!(state.shuffle.mode, ShuffleMode::Shuffle);
+        assert_eq!(state.shuffle.context.len(), 4);
+        assert_eq!(state.shuffle.origins, shuffle.origins);
+        assert!(state.radio);
+    }
+
+    #[test]
+    fn malformed_shuffle_columns_degrade_to_an_unshuffled_queue() {
+        let store = Store::in_memory().unwrap();
+        let tracks = vec![track("one"), track("two")];
+        store
+            .set_playback_state(&tracks, 0, 0, &ShuffleState::default(), false)
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE playback_state SET origins_json = '[0]', shuffle_mode = 'shuffle',
+                        context_json = '[]'",
+                [],
+            )
+            .unwrap();
+
+        let state = store.playback_state().unwrap().unwrap();
+
+        assert_eq!(state.shuffle.mode, ShuffleMode::Off);
+        assert!(state.shuffle.context.is_empty());
     }
 
     #[test]
@@ -1082,6 +1197,111 @@ mod tests {
         drop(store);
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.saved_library_fingerprint().unwrap(), Some(saved));
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn schema_version_five_databases_migrate_and_keep_their_playback_contents() {
+        let path = temporary_database("migration-v5");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     CREATE TABLE favorites (
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         track_json TEXT NOT NULL,
+                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                         PRIMARY KEY (provider, source_id)
+                     );
+                     CREATE TABLE pinned_playlists (
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         playlist_json TEXT NOT NULL,
+                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                         PRIMARY KEY (provider, source_id)
+                     );
+                     CREATE TABLE history (
+                         id INTEGER PRIMARY KEY,
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         track_json TEXT NOT NULL,
+                         played_at INTEGER NOT NULL DEFAULT (unixepoch())
+                     );
+                     CREATE TABLE queue (
+                         position INTEGER PRIMARY KEY,
+                         item_id INTEGER NOT NULL,
+                         track_json TEXT NOT NULL
+                     );
+                     CREATE TABLE liked_tracks_cache (
+                         position INTEGER PRIMARY KEY,
+                         track_json TEXT NOT NULL,
+                         refreshed_at INTEGER NOT NULL
+                     );
+                     CREATE TABLE playback_state (
+                         id INTEGER PRIMARY KEY CHECK (id = 1),
+                         tracks_json TEXT NOT NULL,
+                         current_index INTEGER NOT NULL,
+                         position_ms INTEGER NOT NULL,
+                         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+                     );
+                     CREATE TABLE preferences (
+                         key TEXT PRIMARY KEY,
+                         value TEXT NOT NULL
+                     );
+                     CREATE TABLE library_playlists_cache (
+                         position INTEGER PRIMARY KEY,
+                         playlist_json TEXT NOT NULL
+                     );
+                     CREATE TABLE library_fingerprint (
+                         id INTEGER PRIMARY KEY CHECK (id = 1),
+                         fingerprint_json TEXT NOT NULL
+                     );
+                     PRAGMA user_version = 5;
+                     COMMIT;",
+                )
+                .unwrap();
+            let saved = serde_json::to_string(&vec![track("one"), track("two")]).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO playback_state (id, tracks_json, current_index, position_ms)
+                     VALUES (1, ?1, 1, 30_000)",
+                    [&saved],
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+
+        // The migrated snapshot keeps its queue and reads as unshuffled: the
+        // toggle-off bookkeeping simply starts empty.
+        let state = store.playback_state().unwrap().unwrap();
+        assert_eq!(
+            state
+                .tracks
+                .iter()
+                .map(|t| t.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+        assert_eq!(state.index, 1);
+        assert_eq!(state.shuffle.mode, ShuffleMode::Off);
+
+        // And it accepts shuffle-aware writes across a reopen.
+        store
+            .set_playback_state(&state.tracks, 0, 0, &ShuffleState::default(), false)
+            .unwrap();
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.playback_state().unwrap().unwrap().index, 0);
         drop(reopened);
         let _ = std::fs::remove_file(&path);
     }

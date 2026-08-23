@@ -191,6 +191,16 @@ impl PlaylistPage {
             .update(cx, |player, cx| player.play_context(tracks, 0, cx));
     }
 
+    /// Starts the context shuffled and moves the global toggle to Shuffle.
+    pub(super) fn play_shuffled(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+        if tracks.is_empty() {
+            return;
+        }
+        let tracks = tracks.to_vec();
+        self.player
+            .update(cx, |player, cx| player.play_context_shuffled(tracks, 0, cx));
+    }
+
     pub(super) fn open(&mut self, playlist: model::Playlist, cx: &mut Context<Self>) {
         self.selected = Some(playlist.clone());
         self.tracks = Arc::default();
@@ -510,6 +520,16 @@ impl AlbumPage {
             .update(cx, |player, cx| player.play_context(tracks, 0, cx));
     }
 
+    /// Starts the album shuffled; albums get plain shuffle only.
+    pub(super) fn play_shuffled(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+        if tracks.is_empty() {
+            return;
+        }
+        let tracks = tracks.to_vec();
+        self.player
+            .update(cx, |player, cx| player.play_context_shuffled(tracks, 0, cx));
+    }
+
     /// Shows `album`, refetching unless the cached copy is still fresh.
     /// Reports whether this is a different album than the one already shown.
     pub(super) fn open(&mut self, album: model::AlbumRef, cx: &mut Context<Self>) -> bool {
@@ -700,6 +720,7 @@ impl Render for PlaylistPage {
             components::empty_state(palette, "Loading playlist…").into_any_element()
         };
         let playback_tracks = tracks;
+        let shuffle_tracks = playback_tracks.clone();
 
         components::page("playlist-page")
             .pt(px(8.))
@@ -731,6 +752,18 @@ impl Render for PlaylistPage {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.play(&playback_tracks, cx);
                                             })),
+                                    )
+                                    .child(
+                                        components::icon_button(
+                                            palette,
+                                            "playlist-shuffle",
+                                            "shuffle",
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.play_shuffled(&shuffle_tracks, cx);
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         components::icon_button(
@@ -919,6 +952,7 @@ impl Render for AlbumPage {
             components::empty_state(palette, "Loading album…").into_any_element()
         };
         let playback_tracks = tracks;
+        let shuffle_tracks = playback_tracks.clone();
 
         components::page("album-page")
             .pt(px(8.))
@@ -941,11 +975,28 @@ impl Render for AlbumPage {
                             .child(components::page_title(palette, name))
                             .child(components::page_detail(palette, detail))
                             .child(
-                                components::pill(palette, "album-play", "Play", true).on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.play(&playback_tracks, cx);
-                                    }),
-                                ),
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .mt(px(8.))
+                                    .child(
+                                        components::pill(palette, "album-play", "Play", true)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.play(&playback_tracks, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        components::icon_button(
+                                            palette,
+                                            "album-shuffle",
+                                            "shuffle",
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.play_shuffled(&shuffle_tracks, cx);
+                                            }),
+                                        ),
+                                    ),
                             ),
                     ),
             )
