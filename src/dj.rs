@@ -10,7 +10,17 @@
 
 use librespot::core::error::ErrorKind;
 
-use crate::model::{Playlist, Provider};
+use crate::model::{ListedTrack, Playlist, Provider};
+
+/// What resolving the lineup delivered.
+#[derive(Debug)]
+pub enum Lineup {
+    /// The fresh lineup plus the refreshed entry the page header shows:
+    /// real track count and artwork, still named "DJ X".
+    Fresh(Playlist, Vec<ListedTrack>),
+    /// Spotify does not offer the lineup to this account or region.
+    NotOffered,
+}
 
 /// The well-known ID of the Spotify-owned DJ playlist. Stable since 2023:
 /// no following, no discovery, no configuration.
@@ -77,8 +87,10 @@ pub fn refusal(error_kind: ErrorKind) -> bool {
 mod tests {
     use librespot::core::error::ErrorKind;
 
-    use super::{DISPLAY_NAME, SOURCE_ID, matches, pin_hidden, playlist, refusal,
-        refreshed_playlist, shuffle_hidden};
+    use super::{
+        DISPLAY_NAME, SOURCE_ID, matches, pin_hidden, playlist, refreshed_playlist, refusal,
+        shuffle_hidden,
+    };
 
     #[test]
     fn only_the_hardcoded_identity_matches() {
@@ -121,12 +133,12 @@ mod tests {
 
     #[test]
     fn pin_and_shuffle_are_hidden_exactly_on_the_dj_page() {
-        [(SOURCE_ID, true), ("37i9dQZF1DXcBWIGoYBM5M", false)].into_iter().for_each(
-            |(source_id, hidden)| {
+        [(SOURCE_ID, true), ("37i9dQZF1DXcBWIGoYBM5M", false)]
+            .into_iter()
+            .for_each(|(source_id, hidden)| {
                 assert_eq!(pin_hidden(source_id), hidden, "pin for {source_id}");
                 assert_eq!(shuffle_hidden(source_id), hidden, "shuffle for {source_id}");
-            },
-        );
+            });
     }
 
     #[test]

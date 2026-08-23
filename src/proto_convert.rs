@@ -101,9 +101,7 @@ fn album_ref(album: &metadata::Album) -> AlbumRef {
     let source_id = base62(album.gid());
     AlbumRef {
         name: album.name().to_owned(),
-        spotify_uri: source_id
-            .as_deref()
-            .map(|id| format!("spotify:album:{id}")),
+        spotify_uri: source_id.as_deref().map(|id| format!("spotify:album:{id}")),
         source_id,
         artwork_url: cover_artwork(album),
     }
@@ -186,7 +184,8 @@ mod tests {
                 gid: Some(GID_B.to_vec()),
                 name: Some("Nightline".to_owned()),
                 ..Default::default()
-            }).into(),
+            })
+            .into(),
             ..Default::default()
         }
     }
@@ -377,4 +376,3 @@ mod tests {
         assert_eq!(base62(&[]), None);
     }
 }
-
