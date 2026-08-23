@@ -116,7 +116,12 @@ pub(super) fn open_main_window(cx: &mut App) {
         },
     );
     match opened {
-        Ok(handle) => services::AppServices::set_main_window(Some(handle.into()), cx),
+        Ok(handle) => {
+            let handle = handle.into();
+            services::AppServices::set_main_window(Some(handle), cx);
+            // Windows SMTC needs this window's handle; a no-op elsewhere.
+            services::AppServices::attach_media_controls(handle, cx);
+        }
         Err(error) => log::error!("could not open the Cadence window: {error}"),
     }
 }

@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(target_os = "macos")]
 use souvlaki::PlatformConfig;
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition};
 
@@ -13,8 +12,9 @@ struct Published {
     position_seconds: u64,
 }
 
-/// Publishes now-playing information to macOS and accepts the transport
-/// commands it sends back, so Cadence can be driven without its window.
+/// Publishes now-playing information to the system media overlay and accepts
+/// the transport commands it sends back, so Cadence can be driven without its
+/// window.
 pub(super) struct SystemMediaControls {
     controls: MediaControls,
     published: Option<Published>,
@@ -23,14 +23,52 @@ pub(super) struct SystemMediaControls {
 impl SystemMediaControls {
     /// Attaches to the system controls, forwarding their commands to `player`.
     ///
+    /// macOS hangs the controls off the process, so this works before any
+    /// window exists.
+    ///
     /// Returns `None` when the platform refuses them, which is not fatal: the
     /// app simply goes without system media controls.
     #[cfg(target_os = "macos")]
     pub(super) fn attach(player: Entity<player::Player>, cx: &mut App) -> Option<Self> {
+        Self::start(player, None, cx)
+    }
+
+    /// Windows SMTC binds to a window rather than the process, so the handle
+    /// comes from a GPUI window once one exists; see
+    /// `AppServices::attach_media_controls`, which retries per window open.
+    /// A window whose handle cannot be read simply goes without controls:
+    /// souvlaki's Windows backend would panic on a missing one.
+    #[cfg(target_os = "windows")]
+    pub(super) fn attach_to_window(
+        player: Entity<player::Player>,
+        window: &gpui::Window,
+        cx: &mut App,
+    ) -> Option<Self> {
+        let hwnd = window_hwnd(window)?;
+        Self::start(player, Some(hwnd), cx)
+    }
+
+    /// Off macOS the startup attach has nothing to hand the system: Linux has
+    /// no integration wired up, and Windows SMTC binds to a window rather than
+    /// the process, so it goes through `attach_to_window` once one exists.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn attach(_player: Entity<player::Player>, _cx: &mut App) -> Option<Self> {
+        None
+    }
+
+    /// The shared attach body: hands the system a config (with the window to
+    /// bind to where its platform wants one), forwards its commands onto the
+    /// foreground executor, and translates them there into player actions.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    fn start(
+        player: Entity<player::Player>,
+        hwnd: Option<*mut std::ffi::c_void>,
+        cx: &mut App,
+    ) -> Option<Self> {
         let mut controls = MediaControls::new(PlatformConfig {
             display_name: "Cadence",
             dbus_name: "cadence",
-            hwnd: None,
+            hwnd,
         })
         .ok()?;
 
@@ -56,14 +94,6 @@ impl SystemMediaControls {
             controls,
             published: None,
         })
-    }
-
-    /// Off macOS the attach is compiled out for now: Windows SMTC requires
-    /// the window handle, which arrives with the raw-window-handle wiring,
-    /// and until then builds run without system media controls.
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn attach(_player: Entity<player::Player>, _cx: &mut App) -> Option<Self> {
-        None
     }
 
     /// Pushes the player's state to the system, skipping what it already knows.
@@ -107,12 +137,23 @@ impl SystemMediaControls {
     }
 }
 
-// Off macOS nothing calls into the mapping layer yet: the SMTC attach that
-// would drive it is compiled out until the window-handle wiring lands. The
-// layer itself stays compiled and tested everywhere so its behavior does not
-// drift while it waits.
+/// The HWND behind a GPUI window, or `None` when the window handle is
+/// unavailable or not a Win32 one.
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &gpui::Window) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::RawWindowHandle;
+    let handle = raw_window_handle::HasWindowHandle::window_handle(window).ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
+        _ => None,
+    }
+}
+
+// Linux still has no caller for the mapping layer: only macOS and Windows
+// attach today. The layer itself stays compiled and tested everywhere so its
+// behavior does not drift while it waits.
 /// The player action a system command asks for.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Transport {
     Play,
@@ -124,7 +165,7 @@ pub(super) enum Transport {
 }
 
 /// Translates a system command, ignoring the ones Cadence does not offer.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 fn transport_for(event: MediaControlEvent) -> Option<Transport> {
     match event {
         MediaControlEvent::Play => Some(Transport::Play),
@@ -139,7 +180,7 @@ fn transport_for(event: MediaControlEvent) -> Option<Transport> {
     }
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 fn apply(event: MediaControlEvent, player: &mut player::Player, cx: &mut Context<player::Player>) {
     match transport_for(event) {
         Some(Transport::Play) => player.set_playing(true, cx),

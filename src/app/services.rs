@@ -16,7 +16,11 @@ pub(super) struct AppServices {
     library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     brand_mark: Arc<gpui::Image>,
+    /// The system media controls. Where they bind to a window (Windows),
+    /// `media_controls_window` names it: when that window closes the binding
+    /// dies with it, so both drop together and a reopened window re-attaches.
     media_controls: Option<media_controls::SystemMediaControls>,
+    media_controls_window: Option<gpui::AnyWindowHandle>,
     /// The window currently showing these services, if one is open.
     root: Option<gpui::WeakEntity<Workspace>>,
     /// The open main and sign-in windows. Slots are cleared when gpui reports
@@ -91,6 +95,7 @@ impl AppServices {
             image_cache,
             brand_mark,
             media_controls,
+            media_controls_window: None,
             root: None,
             main_window: None,
             onboarding_window: None,
@@ -246,6 +251,36 @@ impl AppServices {
         true
     }
 
+    /// Binds the system media controls to a freshly opened main window on
+    /// platforms that hang them off a window handle (Windows SMTC). A no-op
+    /// once attached; where the controls attached without a window at startup
+    /// (macOS) there is nothing to bind, so this is never called.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    pub(super) fn attach_media_controls(handle: gpui::AnyWindowHandle, cx: &mut App) {
+        if cx.global::<Self>().media_controls.is_some() {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let player = Self::player(cx);
+            match handle.update(cx, |_, window, cx| {
+                media_controls::SystemMediaControls::attach_to_window(player, window, cx)
+            }) {
+                Ok(Some(mut controls)) => {
+                    // Playback runs on without a window, so state may have
+                    // piled up while none existed; push it now rather than
+                    // waiting for the next player tick.
+                    controls.sync(Self::player(cx).read(cx));
+                    let services = cx.global_mut::<Self>();
+                    services.media_controls = Some(controls);
+                    services.media_controls_window = Some(handle);
+                }
+                Ok(None) => log::warn!("system media controls unavailable"),
+                Err(error) => log::warn!("system media controls unavailable: {error}"),
+            }
+        }
+    }
+
     /// Drops window slots whose window gpui no longer lists as open.
     fn prune_closed_windows(cx: &mut App) {
         let open = cx.windows();
@@ -261,6 +296,15 @@ impl AppServices {
             .is_some_and(|handle| !open.contains(&handle))
         {
             services.onboarding_window = None;
+        }
+        // Windows SMTC lives inside its host window; once that is gone the
+        // binding is dead, so drop it and let the next window open re-attach.
+        if services
+            .media_controls_window
+            .is_some_and(|handle| !open.contains(&handle))
+        {
+            services.media_controls = None;
+            services.media_controls_window = None;
         }
     }
 
