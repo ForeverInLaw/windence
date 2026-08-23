@@ -10,7 +10,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Playlist, QueueItem, Track};
-use crate::shuffle::{ShuffleMode, ShuffleState};
+use crate::shuffle::{Origin, ShuffleMode, ShuffleState};
 
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
@@ -604,7 +604,7 @@ impl Store {
                 index,
                 i64::from(position_ms),
                 serde_json::to_string(&shuffle.context)?,
-                serde_json::to_string(&shuffle.ordinals())?,
+                serde_json::to_string(&shuffle.origins)?,
                 shuffle_mode_as_str(shuffle.mode),
                 i64::from(radio),
             ],
@@ -653,14 +653,9 @@ impl Store {
         // Anything malformed in the shuffle columns degrades to an unshuffled
         // queue instead of failing the whole restore.
         let context: Vec<Track> = serde_json::from_str(&context_json).unwrap_or_default();
-        let ordinals: Vec<Option<usize>> = serde_json::from_str(&origins_json).unwrap_or_default();
+        let origins: Vec<Origin> = serde_json::from_str(&origins_json).unwrap_or_default();
         Ok(Some(PlaybackSnapshot {
-            shuffle: ShuffleState::restored(
-                tracks.len(),
-                parse_shuffle_mode(&mode),
-                context,
-                ordinals,
-            ),
+            shuffle: ShuffleState::restored(tracks.len(), parse_shuffle_mode(&mode), context, origins),
             tracks,
             index,
             position_ms: u32::try_from(position_ms)
@@ -816,7 +811,7 @@ mod tests {
         relocate_legacy_windows_database,
     };
     use crate::model::{Playlist, Provider, QueueItem, Track};
-    use crate::shuffle::{ShuffleMode, ShuffleRng, ShuffleState};
+    use crate::shuffle::{Origin, ShuffleMode, ShuffleRng, ShuffleState};
     use rusqlite::Connection;
     use std::path::PathBuf;
 
@@ -1031,6 +1026,51 @@ mod tests {
         assert_eq!(state.shuffle.context.len(), 4);
         assert_eq!(state.shuffle.origins, shuffle.origins);
         assert!(state.radio);
+    }
+
+    #[test]
+    fn injected_origins_round_trip_through_the_playback_state() {
+        let store = Store::in_memory().unwrap();
+        let mut queue = vec![track("one"), track("smart"), track("two"), track("three")];
+        let mut shuffle = ShuffleState::for_context(
+            &[track("one"), track("two"), track("three")],
+            ShuffleMode::Smart,
+        );
+        shuffle.origins.insert(1, Origin::Injected);
+
+        store
+            .set_playback_state(&queue, 0, 0, &shuffle, false)
+            .unwrap();
+
+        // Re-read through the raw column too, so the on-disk shape —
+        // numbers, nulls, and the "injected" string — is pinned down.
+        let stored: String = store
+            .connection
+            .query_row("SELECT origins_json FROM playback_state WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, r#"[0,"injected",1,2]"#);
+
+        queue.remove(1);
+        shuffle.origins.remove(1);
+        queue.insert(3, track("next"));
+        shuffle.insert_anchor(3);
+        store
+            .set_playback_state(&queue, 0, 0, &shuffle, false)
+            .unwrap();
+
+        let state = store.playback_state().unwrap().unwrap();
+        assert_eq!(state.shuffle.mode, ShuffleMode::Smart);
+        assert_eq!(
+            state.shuffle.origins,
+            vec![
+                Origin::Context { ordinal: 0 },
+                Origin::Context { ordinal: 1 },
+                Origin::Context { ordinal: 2 },
+                Origin::Anchor,
+            ]
+        );
     }
 
     #[test]
