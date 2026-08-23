@@ -5,69 +5,88 @@
 <h1 align="center">Cadence</h1>
 
 <p align="center">
-  A minimal Spotify player for macOS.<br>
-  Native, responsive, and typically uses around 120 MB of RAM.
+  A minimal Spotify player for Windows.<br>
+  Native and responsive, built with Rust and GPUI.
 </p>
 
 <p align="center">
-  <a href="https://github.com/infomiho/cadence/actions/workflows/ci.yml"><img src="https://github.com/infomiho/cadence/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="MIT license"></a>
 </p>
 
 ![Cadence showing the Liked Songs library](assets/cadence.webp)
 
-## Features
+This repository is the Windows-only Port of
+[infomiho/cadence](https://github.com/infomiho/cadence), a minimal Spotify
+player for macOS. There are no installers yet; you build and run from source.
 
-- Search tracks and playlists
-- Play music locally with queue, history, favorites, and radio
-- Browse native artist and album pages
-- Light, dark, and system appearances
-- Persistent playback and library state
+## Status
+
+The Port does not play sound yet. Audio output lands in Milestone 2.
+Everything around it already works:
+
+- Sign in with Spotify through your default browser
+- Browse your saved tracks in a scrollable library view
+- Search tracks and playlists; native artist and album pages
+- Queue, history, and favorites visible in the UI
+- Control playback from Windows system media controls (SMTC)
+- Light, dark, and follow-system appearances
+- Playback position and library state survive restarts
 
 ## Built With
 
-**Rust** + **GPUI** + **librespot** + **rspotify** + **SQLite** + **SDL2**
+**Rust** + **GPUI** + **rspotify** + **SQLite**
 
-GPUI renders the native GPU-accelerated interface, librespot handles playback,
-rspotify connects to the Spotify Web API, and SQLite keeps local state.
+GPUI renders the GPU-accelerated interface, rspotify connects to the Spotify
+Web API, and SQLite keeps local state. The librespot and SDL2 audio stack is
+already included; Milestone 2 wires it up for sound.
+
+## Requirements
+
+Building needs a 64-bit Windows 10 or 11 machine with:
+
+- [Rust](https://rustup.rs) — `rustup` reads `rust-toolchain.toml` and
+  installs the pinned toolchain by itself.
+- [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/)
+  with the **Desktop development with C++** workload — provides the MSVC
+  compiler and the Windows SDK.
+- [CMake](https://cmake.org/download/) — builds the bundled SDL2 from source.
+
+You also need a Spotify Premium account.
 
 ## Set Up Spotify
 
-Cadence requires macOS and Spotify Premium. On first launch, Cadence guides you
-through creating a Spotify developer app and entering its Client ID. Client IDs
-are public; Cadence never needs your client secret.
+On first launch, Cadence guides you through these steps inside the app.
+Client IDs are public; Cadence never asks for your client secret.
 
 1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 2. Add `http://127.0.0.1:8888/callback` as a redirect URI.
 3. Copy the Client ID from **Basic Information** and enter it in Cadence.
 
-Cadence stores the Client ID in app preferences and keeps login and playback
-tokens in macOS Keychain.
+Cadence keeps the Client ID and app preferences in its local SQLite database,
+and login and playback tokens in Windows Credential Manager. No secret is
+ever written to a plaintext file.
 
 ## Run From Source
 
-Building Cadence requires Rust and Apple's Metal Toolchain. Developers can skip
-the setup screen by setting `SPOTIFY_CLIENT_ID` at launch:
-
 ```sh
-SPOTIFY_CLIENT_ID="your-client-id" cargo run
+cargo run
 ```
 
-For a stable local signature and fewer Keychain prompts during development:
+During development you can skip the setup screen by setting the
+`SPOTIFY_CLIENT_ID` environment variable at launch:
 
-```sh
-SPOTIFY_CLIENT_ID="your-client-id" ./scripts/run-signed.sh
+```powershell
+$env:SPOTIFY_CLIENT_ID = "your-client-id"; cargo run
 ```
 
-## Releases
+## About Upstream
 
-Version tags publish an optimized macOS app and SHA-256 checksum on the
-[releases page](https://github.com/infomiho/cadence/releases). Current builds
-use an ad-hoc signature and are not notarized, so macOS may require using
-**Open** from the app's context menu on first launch.
-
-Release builds do not include a shared Spotify Client ID. Each person configures
-their own Spotify developer app on first launch. The logo attribution is in
+The macOS original lives at
+[infomiho/cadence](https://github.com/infomiho/cadence); its README covers
+macOS builds and releases. The macOS sources stay in this repository, but
+compile-time checks exclude them from Windows builds. That keeps merges from
+upstream routine. The packaging scripts under `scripts/` are macOS-only and
+do not run on Windows. The logo attribution is in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## License
