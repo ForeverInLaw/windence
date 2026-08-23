@@ -19,7 +19,7 @@ use crate::{
     spotify::{
         ClientIdSource, Spotify, SpotifyConfiguration, resolve_configuration, valid_client_id,
     },
-    storage::{PlaybackSnapshot, Store},
+    storage::{LibraryFingerprint, PlaybackSnapshot, Store},
 };
 
 const CATALOG_TIMEOUT_SECONDS: u64 = 30;
@@ -123,6 +123,17 @@ impl BlockingStore {
         self.call(|store| store.liked_tracks()).await
     }
 
+    /// The persisted library cache: what the last completed load stored,
+    /// served when a boot probe proves it still matches Spotify.
+    async fn library_cache(&self) -> Result<(Vec<Track>, Vec<Playlist>)> {
+        self.call(|store| Ok((store.liked_tracks()?, store.cached_playlists()?)))
+            .await
+    }
+
+    async fn saved_library_fingerprint(&self) -> Result<Option<LibraryFingerprint>> {
+        self.call(|store| store.saved_library_fingerprint()).await
+    }
+
     async fn favorites(&self) -> Result<Vec<Track>> {
         self.call(|store| store.favorites()).await
     }
@@ -150,25 +161,29 @@ impl BlockingStore {
             .await
     }
 
-    async fn replace_liked_tracks(&self, tracks: Vec<Track>) -> Result<()> {
-        self.call(move |store| store.replace_liked_tracks(&tracks))
-            .await
-    }
-
-    async fn replace_liked_tracks_if_current(
+    /// Persists the whole library cache atomically, unless a newer account
+    /// generation superseded this load. The fingerprint goes in the same
+    /// transaction as the contents it vouches for.
+    async fn replace_library_cache_if_current(
         &self,
-        tracks: Vec<Track>,
+        liked_tracks: Vec<Track>,
+        playlists: Vec<Playlist>,
+        fingerprint: LibraryFingerprint,
         current_generation: Arc<AtomicU64>,
         generation: u64,
-    ) -> Result<Option<Vec<Track>>> {
+    ) -> Result<Option<(Vec<Track>, Vec<Playlist>)>> {
         self.call(move |store| {
             if current_generation.load(Ordering::Acquire) != generation {
                 return Ok(None);
             }
-            store.replace_liked_tracks(&tracks)?;
-            Ok(Some(tracks))
+            store.replace_library_cache(&liked_tracks, &playlists, &fingerprint)?;
+            Ok(Some((liked_tracks, playlists)))
         })
         .await
+    }
+
+    async fn clear_library_cache(&self) -> Result<()> {
+        self.call(|store| store.clear_library_cache()).await
     }
 
     async fn clear_playback_state(&self) -> Result<()> {
@@ -218,43 +233,6 @@ pub type TrackAndPlaylistResults = (Vec<Track>, Vec<Playlist>);
 pub enum LibraryReload {
     Unchanged,
     Fresh(TrackAndPlaylistResults),
-}
-
-/// What a cheap reload compares before committing to a full walk: the first
-/// pages and Spotify's totals for both collections. The totals catch
-/// removals past the first page; the heads catch additions and renames; the
-/// snapshot ids catch edits inside a playlist, which move neither list.
-#[derive(Debug, PartialEq)]
-struct LibraryFingerprint {
-    liked_head: Vec<String>,
-    liked_total: u32,
-    playlist_head: Vec<(String, String, String)>,
-    playlist_total: u32,
-}
-
-impl LibraryFingerprint {
-    fn new(liked: &(Vec<Track>, u32), playlists: &(Vec<(Playlist, String)>, u32)) -> Self {
-        Self {
-            liked_head: liked
-                .0
-                .iter()
-                .map(|track| track.source_id.clone())
-                .collect(),
-            liked_total: liked.1,
-            playlist_head: playlists
-                .0
-                .iter()
-                .map(|(playlist, snapshot)| {
-                    (
-                        playlist.source_id.clone(),
-                        playlist.name.clone(),
-                        snapshot.clone(),
-                    )
-                })
-                .collect(),
-            playlist_total: playlists.1,
-        }
-    }
 }
 
 type SharedFingerprint = Arc<std::sync::Mutex<Option<LibraryFingerprint>>>;
@@ -1086,7 +1064,7 @@ impl Worker {
         if let Err(error) = delete_playback_refresh_token().await {
             send_error(&self.events, error);
         }
-        if let Err(error) = self.store.replace_liked_tracks(Vec::new()).await {
+        if let Err(error) = self.store.clear_library_cache().await {
             send_error(&self.events, error);
         }
         if let Err(error) = self.store.clear_playback_state().await {
@@ -1212,24 +1190,26 @@ impl Worker {
             let loaded = match loaded {
                 Ok(ProbedLibrary::Unchanged) => Ok(LibraryReload::Unchanged),
                 Ok(ProbedLibrary::Changed {
-                    contents: (liked_tracks, playlists),
+                    contents,
                     fingerprint: probed,
-                }) => match persist_library_cache(
-                    &store,
-                    liked_tracks,
-                    playlists,
-                    current_generation,
-                    generation,
-                )
-                .await
-                {
-                    Ok(Some(contents)) => {
-                        commit_fingerprint(&fingerprint, probed);
-                        Ok(LibraryReload::Fresh(contents))
+                }) => {
+                    match persist_library_cache(
+                        &store,
+                        contents,
+                        probed.clone(),
+                        current_generation,
+                        generation,
+                    )
+                    .await
+                    {
+                        Ok(Some(contents)) => {
+                            commit_fingerprint(&fingerprint, probed);
+                            Ok(LibraryReload::Fresh(contents))
+                        }
+                        Ok(None) => Err(anyhow!("Spotify account changed while loading")),
+                        Err(error) => Err(error),
                     }
-                    Ok(None) => Err(anyhow!("Spotify account changed while loading")),
-                    Err(error) => Err(error),
-                },
+                }
                 Err(error) => Err(error),
             };
             let _ = respond.send(loaded);
@@ -1997,8 +1977,9 @@ struct CatalogFetches {
     playlist: Option<tokio::task::JoinHandle<()>>,
     artist: Option<tokio::task::JoinHandle<()>>,
     album: Option<tokio::task::JoinHandle<()>>,
-    /// Seeded by the first full reload; lets later reloads answer Unchanged
-    /// from the head probes alone.
+    /// Seeded from the database at boot and kept current by every load;
+    /// lets later reloads answer Unchanged from the head probes alone,
+    /// across restarts.
     library_fingerprint: SharedFingerprint,
 }
 
@@ -2256,6 +2237,21 @@ async fn probe_and_load_library(
     })
 }
 
+/// Whether the local caches may stand in for a library whose fingerprint
+/// matched Spotify's heads: non-empty, or empty because the account is
+/// (both saved totals zero).
+fn boot_cache_is_plausible(
+    persisted: &Option<LibraryFingerprint>,
+    cache: &(Vec<Track>, Vec<Playlist>),
+) -> bool {
+    let non_empty = !cache.0.is_empty() || !cache.1.is_empty();
+    let account_is_empty = matches!(
+        persisted,
+        Some(saved) if saved.liked_total == 0 && saved.playlist_total == 0
+    );
+    non_empty || account_is_empty
+}
+
 fn spawn_library_load(
     spotify: Spotify,
     store: BlockingStore,
@@ -2279,10 +2275,26 @@ fn spawn_library_load(
             }
         };
         let library_load = async {
-            // Boot must deliver contents, never Unchanged: forget any
-            // previous fingerprint so the probe seeds a fresh one, and the
-            // first revalidation after launch stays a two-request check.
-            clear_fingerprint(&fingerprint);
+            // Seed the probe with the fingerprint the previous session
+            // saved: when Spotify still matches it, boot answers from the
+            // local cache instead of walking the whole library. A fresh
+            // database has no fingerprint, so the probe seeds one and boot
+            // fetches as before.
+            let persisted = match store.saved_library_fingerprint().await {
+                Ok(persisted) => {
+                    if let Some(saved) = &persisted {
+                        commit_fingerprint(&fingerprint, saved.clone());
+                    } else {
+                        clear_fingerprint(&fingerprint);
+                    }
+                    persisted
+                }
+                Err(error) => {
+                    send_error(&events, error);
+                    clear_fingerprint(&fingerprint);
+                    None
+                }
+            };
             let library = tokio::time::timeout(
                 Duration::from_secs(60),
                 probe_and_load_library(&spotify, &fingerprint),
@@ -2293,21 +2305,44 @@ fn spawn_library_load(
             }
             match library {
                 Ok(Ok(ProbedLibrary::Unchanged)) => {
-                    // Unreachable with the fingerprint cleared above; fail
-                    // loudly rather than boot with an empty library.
-                    let _ = events.send(BackendEvent::CatalogFailed {
-                        generation,
-                        error: "library probe answered Unchanged during boot".to_owned(),
-                    });
+                    // The persisted fingerprint matched Spotify's heads, so
+                    // the caches written beside it hold the account's
+                    // current contents. An implausible cache cannot happen
+                    // through normal operation (fingerprint and contents
+                    // share one transaction); fail loudly rather than boot
+                    // with a silently empty library.
+                    match store.library_cache().await {
+                        Ok(cache) if boot_cache_is_plausible(&persisted, &cache) => {
+                            let _ = events.send(BackendEvent::LibraryLoaded {
+                                generation,
+                                liked_tracks: cache.0,
+                                playlists: cache.1,
+                            });
+                            let _ = events.send(BackendEvent::CatalogReady { generation });
+                        }
+                        Ok(_) => {
+                            let _ = events.send(BackendEvent::CatalogFailed {
+                                generation,
+                                error: "library cache is missing although its fingerprint matched"
+                                    .to_owned(),
+                            });
+                        }
+                        Err(error) => {
+                            let _ = events.send(BackendEvent::CatalogFailed {
+                                generation,
+                                error: error.to_string(),
+                            });
+                        }
+                    }
                 }
                 Ok(Ok(ProbedLibrary::Changed {
-                    contents: (liked_tracks, playlists),
+                    contents,
                     fingerprint: probed,
                 })) => {
                     match persist_library_cache(
                         &store,
-                        liked_tracks,
-                        playlists,
+                        contents,
+                        probed.clone(),
                         current_generation.clone(),
                         generation,
                     )
@@ -2351,15 +2386,20 @@ fn spawn_library_load(
 
 async fn persist_library_cache(
     store: &BlockingStore,
-    liked_tracks: Vec<Track>,
-    playlists: Vec<Playlist>,
+    contents: TrackAndPlaylistResults,
+    fingerprint: LibraryFingerprint,
     current_generation: Arc<AtomicU64>,
     generation: u64,
-) -> Result<Option<(Vec<Track>, Vec<Playlist>)>> {
-    let liked_tracks = store
-        .replace_liked_tracks_if_current(liked_tracks, current_generation, generation)
-        .await?;
-    Ok(liked_tracks.map(|liked_tracks| (liked_tracks, playlists)))
+) -> Result<Option<TrackAndPlaylistResults>> {
+    store
+        .replace_library_cache_if_current(
+            contents.0,
+            contents.1,
+            fingerprint,
+            current_generation,
+            generation,
+        )
+        .await
 }
 
 async fn authorize_account(
@@ -2396,7 +2436,7 @@ async fn logout_account(store: BlockingStore, spotify: Spotify) -> Result<()> {
         store.set_playback_credentials_invalidated(true).await,
         spotify.logout().await,
         delete_playback_refresh_token().await,
-        store.replace_liked_tracks(Vec::new()).await,
+        store.clear_library_cache().await,
         store.clear_playback_state().await,
     ] {
         if let Err(error) = result {

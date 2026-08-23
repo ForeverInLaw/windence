@@ -1,10 +1,20 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result};
+#[cfg(not(target_os = "windows"))]
 use directories::ProjectDirs;
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{Playlist, QueueItem, Track};
+
+const DATABASE_FILE: &str = "cadence.sqlite3";
+
+/// Highest schema version this build knows how to migrate to.
+const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -39,17 +49,62 @@ pub struct PlaybackSnapshot {
     pub position_ms: u32,
 }
 
+/// What a cheap library reload compares before committing to a full walk:
+/// the first pages and Spotify's totals for both collections. The totals
+/// catch removals past the first page; the heads catch additions and
+/// renames; the snapshot ids catch edits inside a playlist, which move
+/// neither list.
+///
+/// Persisted next to the caches it vouches for, so a restart seeds its
+/// first probe from disk instead of refetching everything.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LibraryFingerprint {
+    pub liked_head: Vec<String>,
+    pub liked_total: u32,
+    pub playlist_head: Vec<(String, String, String)>,
+    pub playlist_total: u32,
+}
+
+impl LibraryFingerprint {
+    pub(crate) fn new(
+        liked: &(Vec<Track>, u32),
+        playlists: &(Vec<(Playlist, String)>, u32),
+    ) -> Self {
+        Self {
+            liked_head: liked
+                .0
+                .iter()
+                .map(|track| track.source_id.clone())
+                .collect(),
+            liked_total: liked.1,
+            playlist_head: playlists
+                .0
+                .iter()
+                .map(|(playlist, snapshot)| {
+                    (
+                        playlist.source_id.clone(),
+                        playlist.name.clone(),
+                        snapshot.clone(),
+                    )
+                })
+                .collect(),
+            playlist_total: playlists.1,
+        }
+    }
+}
+
 pub struct Store {
     connection: Connection,
 }
 
 impl Store {
     pub fn open_default() -> Result<Self> {
-        let project = ProjectDirs::from("com", "Cadence", "Cadence")
-            .context("could not resolve the Cadence data directory")?;
-        std::fs::create_dir_all(project.data_dir())
+        let data_dir = Self::data_dir()?;
+        #[cfg(target_os = "windows")]
+        relocate_legacy_windows_database(&data_dir);
+        std::fs::create_dir_all(&data_dir)
             .context("could not create the Cadence data directory")?;
-        Self::open(project.data_dir().join("cadence.sqlite3"))
+        Self::open(data_dir.join(DATABASE_FILE))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -68,6 +123,24 @@ impl Store {
         Ok(store)
     }
 
+    /// Per-user application data directory. On Windows that is Roaming
+    /// AppData plus the app name; `directories` instead mirrors XDG there
+    /// (`...\AppData\Roaming\Cadence\Cadence\data`), so the path is resolved
+    /// by hand. Other platforms keep the upstream mapping.
+    #[cfg(target_os = "windows")]
+    fn data_dir() -> Result<PathBuf> {
+        let base = directories::BaseDirs::new()
+            .context("could not resolve the per-user data directory")?;
+        Ok(base.data_dir().join("Cadence"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn data_dir() -> Result<PathBuf> {
+        let project = ProjectDirs::from("com", "Cadence", "Cadence")
+            .context("could not resolve the Cadence data directory")?;
+        Ok(project.data_dir().to_owned())
+    }
+
     fn migrate(&self) -> Result<()> {
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -76,10 +149,10 @@ impl Store {
         let version: u32 = self
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 4 {
+        if version > SCHEMA_VERSION {
             anyhow::bail!("database schema version {version} is newer than this Cadence build");
         }
-        if version == 4 {
+        if version == SCHEMA_VERSION {
             return Ok(());
         }
         if version == 0 {
@@ -177,7 +250,7 @@ impl Store {
                   PRAGMA user_version = 4;
                   COMMIT;",
             )?;
-        } else {
+        } else if version == 3 {
             self.connection.execute_batch(
                 "BEGIN IMMEDIATE;
                  CREATE TABLE preferences (
@@ -186,6 +259,24 @@ impl Store {
                  );
                  PRAGMA user_version = 4;
                  COMMIT;",
+            )?;
+        }
+        if version < 5 {
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+
+             CREATE TABLE IF NOT EXISTS library_playlists_cache (
+                 position INTEGER PRIMARY KEY,
+                 playlist_json TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS library_fingerprint (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 fingerprint_json TEXT NOT NULL
+             );
+
+             PRAGMA user_version = 5;
+             COMMIT;",
             )?;
         }
         Ok(())
@@ -536,10 +627,40 @@ impl Store {
         Ok(())
     }
 
-    pub fn replace_liked_tracks(&mut self, tracks: &[Track]) -> Result<()> {
+    pub fn cached_playlists(&self) -> Result<Vec<Playlist>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT playlist_json FROM library_playlists_cache ORDER BY position")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    pub fn saved_library_fingerprint(&self) -> Result<Option<LibraryFingerprint>> {
+        let json = match self.connection.query_row(
+            "SELECT fingerprint_json FROM library_fingerprint WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(json) => json,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(serde_json::from_str(&json)?))
+    }
+
+    /// Replaces the whole library cache — liked tracks, playlists, and the
+    /// fingerprint vouching for both — in one transaction. The fingerprint
+    /// must never be committed over missing or partial contents: a later
+    /// probe would answer Unchanged and serve a hole as the whole library.
+    pub fn replace_library_cache(
+        &mut self,
+        liked_tracks: &[Track],
+        playlists: &[Playlist],
+        fingerprint: &LibraryFingerprint,
+    ) -> Result<()> {
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM liked_tracks_cache", [])?;
-        for (position, track) in tracks
+        for (position, track) in liked_tracks
             .iter()
             .filter(|track| track.is_displayable())
             .enumerate()
@@ -552,6 +673,32 @@ impl Store {
                 params![position, serde_json::to_string(track)?],
             )?;
         }
+        transaction.execute("DELETE FROM library_playlists_cache", [])?;
+        for (position, playlist) in playlists.iter().enumerate() {
+            let position =
+                i64::try_from(position).context("playlist cache position exceeds SQLite range")?;
+            transaction.execute(
+                "INSERT INTO library_playlists_cache (position, playlist_json)
+                 VALUES (?1, ?2)",
+                params![position, serde_json::to_string(playlist)?],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO library_fingerprint (id, fingerprint_json) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET fingerprint_json = excluded.fingerprint_json",
+            params![serde_json::to_string(fingerprint)?],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Drops the cached catalog: liked tracks, playlists, and the
+    /// fingerprint that answers for them.
+    pub fn clear_library_cache(&mut self) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM liked_tracks_cache", [])?;
+        transaction.execute("DELETE FROM library_playlists_cache", [])?;
+        transaction.execute("DELETE FROM library_fingerprint", [])?;
         transaction.commit()?;
         Ok(())
     }
@@ -567,10 +714,47 @@ impl Store {
     }
 }
 
+/// One-time move of a database created under the pre-port Windows path
+/// (`...\Cadence\Cadence\data`) to its platform-correct home. Best effort:
+/// when nothing needs moving or a rename fails, the app simply starts with
+/// whatever the target directory holds. The legacy tree is only deleted
+/// when every file made it across, so a half-finished move can never take
+/// un-relocated data with it.
+#[cfg(target_os = "windows")]
+fn relocate_legacy_windows_database(data_dir: &Path) {
+    let database = data_dir.join(DATABASE_FILE);
+    if database.exists() {
+        return;
+    }
+    let legacy = data_dir.join("Cadence").join("data");
+    let moved = std::fs::rename(legacy.join(DATABASE_FILE), &database);
+    if moved.is_err() {
+        return;
+    }
+    let mut complete = true;
+    for suffix in ["-wal", "-shm"] {
+        let source = legacy.join(format!("{DATABASE_FILE}{suffix}"));
+        if source.exists() {
+            complete &=
+                std::fs::rename(source, data_dir.join(format!("{DATABASE_FILE}{suffix}"))).is_ok();
+        }
+    }
+    if complete {
+        // The emptied tree is this port's own leftover; dropping it keeps a
+        // second "Cadence" directory from confusing later inspection.
+        let _ = std::fs::remove_dir_all(data_dir.join("Cadence"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppPreferences, Store, ThemePreference};
+    use super::{
+        AppPreferences, LibraryFingerprint, Store, ThemePreference,
+        relocate_legacy_windows_database,
+    };
     use crate::model::{Playlist, Provider, QueueItem, Track};
+    use rusqlite::Connection;
+    use std::path::PathBuf;
 
     fn track(id: &str) -> Track {
         Track {
@@ -586,6 +770,38 @@ mod tests {
             duration_ms: 180_000,
             artwork_url: None,
         }
+    }
+
+    fn playlist(id: &str) -> Playlist {
+        Playlist {
+            provider: Provider::Spotify,
+            source_id: id.to_owned(),
+            name: format!("Playlist {id}"),
+            owner: "Owner".to_owned(),
+            track_count: 10,
+            artwork_url: None,
+        }
+    }
+
+    fn fingerprint(liked_total: u32, playlist_total: u32) -> LibraryFingerprint {
+        LibraryFingerprint {
+            liked_head: vec!["one".to_owned()],
+            liked_total,
+            playlist_head: vec![("focus".to_owned(), "Focus".to_owned(), "snap".to_owned())],
+            playlist_total,
+        }
+    }
+
+    /// A unique scratch path; callers remove the database when done. The
+    /// sidecars go too: a stale WAL left beside a fresh file resurrects
+    /// deleted contents.
+    fn temporary_database(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("cadence-{name}-{}.sqlite3", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        path
     }
 
     #[test]
@@ -728,7 +944,7 @@ mod tests {
     fn liked_track_cache_replaces_the_previous_snapshot() {
         let mut store = Store::in_memory().unwrap();
         store
-            .replace_liked_tracks(&[track("one"), track("two")])
+            .replace_library_cache(&[track("one"), track("two")], &[], &fingerprint(2, 0))
             .unwrap();
         assert_eq!(
             store
@@ -740,7 +956,9 @@ mod tests {
             ["one", "two"]
         );
 
-        store.replace_liked_tracks(&[track("three")]).unwrap();
+        store
+            .replace_library_cache(&[track("three")], &[], &fingerprint(1, 0))
+            .unwrap();
         assert_eq!(store.liked_tracks().unwrap(), vec![track("three")]);
     }
 
@@ -753,7 +971,7 @@ mod tests {
         incomplete.duration_ms = 0;
 
         store
-            .replace_liked_tracks(&[track("one"), incomplete.clone()])
+            .replace_library_cache(&[track("one"), incomplete.clone()], &[], &fingerprint(1, 0))
             .unwrap();
         assert_eq!(store.liked_tracks().unwrap(), vec![track("one")]);
 
@@ -766,6 +984,161 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.liked_tracks().unwrap(), vec![track("one")]);
+    }
+
+    #[test]
+    fn library_cache_round_trips_with_its_fingerprint() {
+        let mut store = Store::in_memory().unwrap();
+
+        assert!(store.saved_library_fingerprint().unwrap().is_none());
+        assert!(store.cached_playlists().unwrap().is_empty());
+
+        let playlists = vec![playlist("focus"), playlist("gym")];
+        let saved = fingerprint(3, 2);
+        store
+            .replace_library_cache(&[track("one")], &playlists, &saved)
+            .unwrap();
+        assert_eq!(store.cached_playlists().unwrap(), playlists);
+        assert_eq!(store.saved_library_fingerprint().unwrap(), Some(saved));
+
+        store.clear_library_cache().unwrap();
+        assert_eq!(store.saved_library_fingerprint().unwrap(), None);
+        assert!(store.cached_playlists().unwrap().is_empty());
+        assert!(store.liked_tracks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn schema_version_four_databases_migrate_and_keep_their_contents() {
+        let path = temporary_database("migration");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     CREATE TABLE favorites (
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         track_json TEXT NOT NULL,
+                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                         PRIMARY KEY (provider, source_id)
+                     );
+                     CREATE TABLE pinned_playlists (
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         playlist_json TEXT NOT NULL,
+                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                         PRIMARY KEY (provider, source_id)
+                     );
+                     CREATE TABLE history (
+                         id INTEGER PRIMARY KEY,
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         track_json TEXT NOT NULL,
+                         played_at INTEGER NOT NULL DEFAULT (unixepoch())
+                     );
+                     CREATE TABLE queue (
+                         position INTEGER PRIMARY KEY,
+                         item_id INTEGER NOT NULL,
+                         track_json TEXT NOT NULL
+                     );
+                     CREATE TABLE liked_tracks_cache (
+                         position INTEGER PRIMARY KEY,
+                         track_json TEXT NOT NULL,
+                         refreshed_at INTEGER NOT NULL
+                     );
+                     CREATE TABLE playback_state (
+                         id INTEGER PRIMARY KEY CHECK (id = 1),
+                         tracks_json TEXT NOT NULL,
+                         current_index INTEGER NOT NULL,
+                         position_ms INTEGER NOT NULL,
+                         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+                     );
+                     CREATE TABLE preferences (
+                         key TEXT PRIMARY KEY,
+                         value TEXT NOT NULL
+                     );
+                     INSERT INTO preferences (key, value) VALUES ('theme', 'dark');
+                     PRAGMA user_version = 4;
+                     COMMIT;",
+                )
+                .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+        assert_eq!(store.preferences().unwrap().theme, ThemePreference::Dark);
+
+        // The migrated database accepts the v5 tables and remembers them
+        // across a reopen.
+        let saved = fingerprint(1, 1);
+        store
+            .replace_library_cache(&[track("one")], &[playlist("focus")], &saved)
+            .unwrap();
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.saved_library_fingerprint().unwrap(), Some(saved));
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn legacy_windows_database_relocates_to_the_data_directory() {
+        let root = std::env::temp_dir().join(format!("cadence-relocate-{}", std::process::id()));
+        let data_dir = root.join("Cadence");
+        let legacy = data_dir.join("Cadence").join("data");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(super::DATABASE_FILE), b"database").unwrap();
+        std::fs::write(legacy.join(format!("{}-wal", super::DATABASE_FILE)), b"wal").unwrap();
+
+        relocate_legacy_windows_database(&data_dir);
+
+        assert_eq!(
+            std::fs::read(data_dir.join(super::DATABASE_FILE)).unwrap(),
+            b"database"
+        );
+        assert_eq!(
+            std::fs::read(data_dir.join(format!("{}-wal", super::DATABASE_FILE))).unwrap(),
+            b"wal"
+        );
+        assert!(!data_dir.join("Cadence").exists());
+
+        // An existing database is never touched by the relocation.
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(super::DATABASE_FILE), b"stale").unwrap();
+        relocate_legacy_windows_database(&data_dir);
+        assert_eq!(
+            std::fs::read(data_dir.join(super::DATABASE_FILE)).unwrap(),
+            b"database"
+        );
+        assert!(legacy.join(super::DATABASE_FILE).exists());
+
+        // A sidecar that cannot move aborts the cleanup: the legacy tree
+        // stays until every file made it across.
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!(
+                "{}{suffix}",
+                data_dir.join(super::DATABASE_FILE).display()
+            ));
+        }
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(super::DATABASE_FILE), b"database").unwrap();
+        std::fs::write(legacy.join(format!("{}-wal", super::DATABASE_FILE)), b"wal").unwrap();
+        std::fs::create_dir(data_dir.join(format!("{}-wal", super::DATABASE_FILE))).unwrap();
+        relocate_legacy_windows_database(&data_dir);
+        assert!(data_dir.join(super::DATABASE_FILE).exists());
+        assert!(!legacy.join(super::DATABASE_FILE).exists());
+        assert!(
+            legacy
+                .join(format!("{}-wal", super::DATABASE_FILE))
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
