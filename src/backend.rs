@@ -1101,9 +1101,9 @@ impl Worker {
             BackendCommand::SetPlaylistPinned { playlist, pinned } => {
                 self.set_playlist_pinned(playlist, pinned).await
             }
-            BackendCommand::Resume => self.resume(),
-            BackendCommand::Pause => self.pause(),
-            BackendCommand::Next => self.next_track().await,
+            BackendCommand::Resume => self.resume().await,
+            BackendCommand::Pause => self.pause().await,
+            BackendCommand::Next => self.next_track(true).await,
             BackendCommand::Previous => self.previous_track().await,
             BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
             BackendCommand::SavePlaybackPosition {
@@ -1346,6 +1346,7 @@ impl Worker {
             &shuffle,
             &tracks,
             index,
+            true,
             &self.store,
             &self.events,
         )
@@ -1480,6 +1481,7 @@ impl Worker {
         // not survive it, or seeks would be swallowed against a live player.
         self.queue.ended = false;
         self.queue.play_requested = playing;
+        self.queue.current_unavailable = false;
         self.queue.position_ms = position_ms;
         if let Err(error) = self.store.update_playback_position(position_ms).await {
             send_error(&self.events, error);
@@ -1503,7 +1505,7 @@ impl Worker {
         Ok(())
     }
 
-    fn resume(&mut self) -> Result<()> {
+    async fn resume(&mut self) -> Result<()> {
         if self.queue.ended {
             // play() is a no-op in librespot's EndOfTrack state: reload the
             // current track at the seeker's position instead.
@@ -1520,6 +1522,7 @@ impl Worker {
                 Ok(()) => {
                     self.queue.ended = false;
                     self.queue.play_requested = true;
+                    self.queue.current_unavailable = false;
                     // Replaying the still-last track re-arms the prefetch a
                     // failed earlier fetch may have left unarmed.
                     self.maybe_prefetch_autoplay();
@@ -1530,24 +1533,39 @@ impl Worker {
             }
             return result;
         }
+        if self.queue.current_unavailable {
+            // The current track already failed to load; play() against the
+            // dead loader would silently do nothing. Advance instead, and
+            // the never-heard track stays out of the history.
+            self.queue.current_unavailable = false;
+            return self.next_track(false).await;
+        }
         let result = self.connected_player().map(|player| player.play());
         if result.is_err() {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
         } else {
+            // Playback continues from the original playing load.
+            self.queue.play_requested = true;
             self.maybe_prefetch_autoplay();
         }
         result
     }
 
-    fn pause(&self) -> Result<()> {
+    async fn pause(&mut self) -> Result<()> {
         let result = self.connected_player().map(|player| player.pause());
         if result.is_err() {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
+        } else {
+            // A paused queue must not auto-skip on a late failure report.
+            self.queue.play_requested = false;
         }
         result
     }
 
-    async fn next_track(&mut self) -> Result<()> {
+    /// Moves to the next queue entry; `record_history` gates whether the
+    /// entry being left counts as heard. Auto-advance paths pass `false`
+    /// so tracks that never played a second are not logged as listened.
+    async fn next_track(&mut self, record_history: bool) -> Result<()> {
         self.radio.cancel(&self.events);
         let Some(current) = self.queue.index else {
             let _ = self.events.send(BackendEvent::QueueEnded);
@@ -1566,6 +1584,7 @@ impl Worker {
             }
             self.queue.ended = true;
             self.queue.play_requested = false;
+            self.queue.current_unavailable = false;
             self.queue.position_ms = 0;
             if let Err(error) = self.store.update_playback_position(0).await {
                 send_error(&self.events, error);
@@ -1576,17 +1595,20 @@ impl Worker {
             self.maybe_prefetch_autoplay();
             return Ok(());
         };
-        self.load_queue_track(index).await
+        self.load_queue_track(index, record_history).await
     }
 
     /// Advances past the playing track when Spotify reports it unplayable,
-    /// so one dead entry cannot stall the rest of the queue.
+    /// so one dead entry cannot stall the rest of the queue. When auto-skip
+    /// does not apply — a paused restore — the dead current entry is noted
+    /// so Resume can escape it.
     async fn skip_unavailable_track(&mut self, spotify_uri: &str) {
-        if !should_auto_skip_unavailable(&self.queue, spotify_uri) {
+        if !self.queue.should_auto_skip_unavailable(spotify_uri) {
+            self.queue.note_unavailable_while_paused(spotify_uri);
             return;
         }
         log::info!("playback: skipping unavailable track {spotify_uri}");
-        if let Err(error) = self.next_track().await {
+        if let Err(error) = self.next_track(false).await {
             send_error(&self.events, error);
         }
     }
@@ -1594,7 +1616,7 @@ impl Worker {
     async fn previous_track(&mut self) -> Result<()> {
         self.radio.cancel(&self.events);
         if let Some(index) = self.queue.index.and_then(|index| index.checked_sub(1)) {
-            return self.load_queue_track(index).await;
+            return self.load_queue_track(index, true).await;
         }
         let result = self.connected_player().map(|player| player.seek(0));
         let _ = self.events.send(BackendEvent::PlaybackSettled);
@@ -1608,12 +1630,13 @@ impl Worker {
     }
 
     /// Loads the queue entry at `index` and persists it as the playing track.
-    async fn load_queue_track(&mut self, index: usize) -> Result<()> {
+    async fn load_queue_track(&mut self, index: usize, record_history: bool) -> Result<()> {
         let result = load_context_track(
             &self.connection.player,
             &self.queue.shuffle,
             &self.queue.tracks,
             index,
+            record_history,
             &self.store,
             &self.events,
         )
@@ -1634,6 +1657,7 @@ impl Worker {
         self.queue.index = Some(index);
         self.queue.position_ms = 0;
         self.queue.ended = false;
+        self.queue.current_unavailable = false;
         // Queue loads always start playing.
         self.queue.play_requested = true;
         if let Err(error) = self.commit_queue_change(index).await {
@@ -1664,12 +1688,7 @@ impl Worker {
         spotify_uri: String,
         position_ms: u32,
     ) -> Result<()> {
-        let current_uri = self
-            .queue
-            .index
-            .and_then(|index| self.queue.tracks.get(index))
-            .and_then(|track| track.spotify_uri.as_deref());
-        if current_uri != Some(spotify_uri.as_str()) {
+        if self.queue.current_uri() != Some(spotify_uri.as_str()) {
             return Ok(());
         }
         self.queue.position_ms = position_ms;
@@ -1757,6 +1776,7 @@ impl Worker {
                     &ShuffleState::default(),
                     &tracks,
                     0,
+                    true,
                     &self.store,
                     &self.events,
                 )
@@ -2001,7 +2021,7 @@ impl Worker {
         if ended {
             // The song outran the fetch: continue into the extension rather
             // than leaving playback parked on the ended state.
-            if let Err(error) = self.load_queue_track(index + 1).await {
+            if let Err(error) = self.load_queue_track(index + 1, true).await {
                 send_error(&self.events, error);
             }
         }
@@ -2221,7 +2241,7 @@ impl Worker {
 }
 
 /// The queue as last handed to the player and saved to disk.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PlayQueue {
     tracks: Vec<Track>,
     /// Shuffle bookkeeping aligned with `tracks`: mode, base order, origins.
@@ -2240,6 +2260,10 @@ struct PlayQueue {
     /// track auto-skips only then: a paused restore keeps its selection
     /// until the user acts, rather than bursting into the next track.
     play_requested: bool,
+    /// Set when the current entry is known unplayable but auto-skip did
+    /// not apply — a paused restore. Resume then advances past it instead
+    /// of replaying a load that already failed.
+    current_unavailable: bool,
 }
 
 impl PlayQueue {
@@ -2254,8 +2278,33 @@ impl PlayQueue {
                 position_ms: snapshot.position_ms,
                 ended: false,
                 play_requested: false,
+                current_unavailable: false,
             },
             None => Self::default(),
+        }
+    }
+
+    /// The playing track's Spotify URI, if a track is current.
+    fn current_uri(&self) -> Option<&str> {
+        self.index
+            .and_then(|index| self.tracks.get(index))
+            .and_then(|track| track.spotify_uri.as_deref())
+    }
+
+    /// Whether an unavailable-track report should advance the queue: only a
+    /// still-current entry whose load was asked to start playing qualifies.
+    /// Stale reports (the queue already moved on), preload failures for a
+    /// not-yet-playing track, and paused restores all stay put.
+    fn should_auto_skip_unavailable(&self, spotify_uri: &str) -> bool {
+        self.play_requested && !self.ended && self.current_uri() == Some(spotify_uri)
+    }
+
+    /// Records that the current entry cannot be played when auto-skip does
+    /// not apply — a paused restore — so Resume can advance instead of
+    /// replaying a load that already failed.
+    fn note_unavailable_while_paused(&mut self, spotify_uri: &str) {
+        if !self.ended && !self.play_requested && self.current_uri() == Some(spotify_uri) {
+            self.current_unavailable = true;
         }
     }
 }
@@ -2922,18 +2971,6 @@ async fn logout_account(store: BlockingStore, spotify: Spotify) -> Result<()> {
     }
 }
 
-/// Whether an unavailable-track report should advance the queue: only a
-/// still-current entry whose load was asked to start playing qualifies.
-/// Stale reports (the queue already moved on), preload failures for a
-/// not-yet-playing track, and paused restores all stay put.
-fn should_auto_skip_unavailable(queue: &PlayQueue, spotify_uri: &str) -> bool {
-    let current_uri = queue
-        .index
-        .and_then(|index| queue.tracks.get(index))
-        .and_then(|track| track.spotify_uri.as_deref());
-    queue.play_requested && !queue.ended && current_uri == Some(spotify_uri)
-}
-
 fn observe_playback(
     player: &Playback,
     events: &UnboundedSender<BackendEvent>,
@@ -3014,11 +3051,15 @@ fn observe_playback(
     })
 }
 
+/// Loads the queue entry at `index` and starts it playing. With
+/// `record_history`, the entry is logged as heard immediately — right for
+/// user-driven loads; auto-advance past unplayable entries passes `false`.
 async fn load_context_track(
     playback: &Option<Playback>,
     shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
+    record_history: bool,
     store: &BlockingStore,
     events: &UnboundedSender<BackendEvent>,
 ) -> Result<()> {
@@ -3035,9 +3076,9 @@ async fn load_context_track(
         .context("Spotify playback is not connected")?;
     send_playback_context(shuffle, tracks, index, events);
     player.load(spotify_uri, true, 0);
-    if let Err(error) = store.add_history(track.clone()).await {
+    if record_history && let Err(error) = store.add_history(track.clone()).await {
         send_error(events, error);
-    } else {
+    } else if record_history {
         send_local_state(store, events).await;
     }
     Ok(())
@@ -3201,8 +3242,7 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 mod tests {
     use super::{
         BackendCommand, BlockingStore, PlayQueue, ShuffleState, build_radio_context,
-        favorite_needs_catalog_refresh, injected_flags, next_injection_seed,
-        send_command, should_auto_skip_unavailable,
+        favorite_needs_catalog_refresh, injected_flags, next_injection_seed, send_command,
     };
     use crate::model::{AlbumRef, ArtistRef, Provider, Track};
     use crate::shuffle::Origin;
@@ -3372,22 +3412,63 @@ mod tests {
             }
         }
 
+        assert_eq!(queue_on_first_track().current_uri(), Some("spotify:track:track-id"));
+
         let mut queue = queue_on_first_track();
         queue.play_requested = true;
-        assert!(should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
+        assert!(queue.should_auto_skip_unavailable("spotify:track:track-id"));
 
         // A paused restore keeps its selection instead of bursting into
         // the next track on launch or reconnect.
         queue.play_requested = false;
-        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
+        assert!(!queue.should_auto_skip_unavailable("spotify:track:track-id"));
         queue.play_requested = true;
 
         // Stale report: the queue already moved past the failed track.
-        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:next"));
+        assert!(!queue.should_auto_skip_unavailable("spotify:track:next"));
 
         // Nothing may advance once the queue has ended.
         queue.ended = true;
-        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
+        assert!(!queue.should_auto_skip_unavailable("spotify:track:track-id"));
+    }
+
+    #[test]
+    fn paused_restore_notes_a_dead_current_track_for_resume() {
+        let mut queue = {
+            let mut next = favorite();
+            next.source_id = "next".to_owned();
+            next.spotify_uri = Some("spotify:track:next".to_owned());
+            PlayQueue {
+                tracks: vec![favorite(), next],
+                index: Some(0),
+                ..PlayQueue::default()
+            }
+        };
+
+        // A paused restore onto a dead track is remembered so Resume can
+        // advance instead of replaying the failed load.
+        queue.note_unavailable_while_paused("spotify:track:track-id");
+        assert!(queue.current_unavailable);
+
+        // A report for anything but the current entry is stale and ignored.
+        let mut stale = queue.clone();
+        stale.current_unavailable = false;
+        stale.note_unavailable_while_paused("spotify:track:next");
+        assert!(!stale.current_unavailable);
+
+        // A playing load auto-skips instead, so nothing is noted.
+        let mut playing = queue.clone();
+        playing.current_unavailable = false;
+        playing.play_requested = true;
+        playing.note_unavailable_while_paused("spotify:track:track-id");
+        assert!(!playing.current_unavailable);
+
+        // An ended queue never takes notes.
+        let mut ended = queue;
+        ended.current_unavailable = false;
+        ended.ended = true;
+        ended.note_unavailable_while_paused("spotify:track:track-id");
+        assert!(!ended.current_unavailable);
     }
 
     #[test]
