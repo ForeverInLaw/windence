@@ -143,7 +143,8 @@ impl Sidebar {
                         cx: &mut Context<Self>| {
             let selected = match target {
                 NavTarget::Route(target) => {
-                    route == target || (target == Route::Playlists && route == Route::Playlist)
+                    route == target
+                        || (target == Route::Playlists && route == Route::Playlist && !self.dj_open)
                 }
                 // DJ X shares the playlist page with every other playlist;
                 // only its own row lights up when it is the one open.

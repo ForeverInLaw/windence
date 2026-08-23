@@ -355,10 +355,16 @@ impl Playback {
         let mut failures = 0usize;
         for result in fetched {
             match result {
-                Ok((item, track)) => listed.push(model::ListedTrack {
-                    track,
-                    added_at: proto_convert::added_at(&item),
-                }),
+                Ok((item, track)) => {
+                    // The Web API playlist path drops tracks the pages and
+                    // player cannot show; this path keeps the same rule.
+                    if track.is_displayable() {
+                        listed.push(model::ListedTrack {
+                            track,
+                            added_at: proto_convert::added_at(&item),
+                        });
+                    }
+                }
                 Err(error) => {
                     failures += 1;
                     log::warn!("dropping a DJ lineup track: {error:#}");
