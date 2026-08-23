@@ -3,7 +3,10 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use anyhow::{Context as _, Result, anyhow};
 use keyring::Entry;
 use librespot::{
-    core::{SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session},
+    core::{
+        SpotifyId, SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session,
+    },
+    metadata::Metadata,
     oauth::OAuthClientBuilder,
     playback::{
         config::{AudioFormat, PlayerConfig, VolumeCtrl},
@@ -20,16 +23,22 @@ use tokio::net::TcpListener;
 
 use crate::{
     audio::low_latency_sdl_sink,
-    credential_worker,
+    credential_worker, dj, model,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    proto_convert,
 };
+use futures::StreamExt as _;
 
 const PLAYBACK_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const KEYCHAIN_SERVICE: &str = "com.cadence.spotify";
 const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
+/// How many internal-protocol track lookups overlap when resolving the DJ
+/// lineup: a full page resolves well inside the catalog timeout without
+/// bursting one access point.
+const DJ_TRACK_CONCURRENCY: usize = 4;
 
 type PlaybackOAuthClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
@@ -272,6 +281,102 @@ impl Playback {
             .await
             .context("Spotify track radio endpoint failed")?;
         extract_track_uris(&response).context("Spotify track radio returned invalid JSON")
+    }
+
+    /// Resolves the DJ lineup through the internal protocol: one playlist
+    /// protobuf for order, counts, artwork, and added-at dates, then bounded
+    /// concurrent per-track metadata lookups. The Web API refuses to serve
+    /// this playlist to development-mode apps, which is why this context
+    /// rides the playback session instead.
+    ///
+    /// [`dj::Lineup::NotOffered`] covers every "Spotify will not serve this
+    /// here" outcome: a refusal (not found / forbidden) or an empty lineup.
+    /// Transport failures stay errors and keep the ordinary retry treatment.
+    pub async fn dj_lineup(&self) -> Result<dj::Lineup> {
+        use protobuf::Message as _;
+
+        let playlist_id =
+            SpotifyId::from_base62(dj::SOURCE_ID).context("the DJ playlist id is invalid")?;
+        let playlist_uri = SpotifyUri::Playlist {
+            user: None,
+            id: playlist_id,
+        };
+        let response = <librespot::metadata::playlist::Playlist as Metadata>::request(
+            &self.session,
+            &playlist_uri,
+        )
+        .await;
+        let content = match response {
+            Ok(response) => {
+                librespot::protocol::playlist4_external::SelectedListContent::parse_from_bytes(
+                    &response,
+                )
+                .context("the DJ playlist endpoint returned invalid metadata")?
+            }
+            Err(error) => {
+                return Ok(if dj::refusal(error.kind) {
+                    dj::Lineup::NotOffered
+                } else {
+                    return Err(error.into());
+                });
+            }
+        };
+        let contents = content.contents.get_or_default();
+        if content.length() <= 0 || contents.items.is_empty() {
+            // The account sees no lineup at all — same page as a refusal.
+            return Ok(dj::Lineup::NotOffered);
+        }
+        if contents.truncated() {
+            log::warn!(
+                "DJ lineup returned truncated contents: {} of {} tracks",
+                contents.items.len(),
+                content.length()
+            );
+        }
+
+        // Lineups can carry non-track entries; only plain tracks convert.
+        let items = contents
+            .items
+            .iter()
+            .filter(|item| proto_convert::is_track_item(item.uri()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let fetched = futures::stream::iter(items.into_iter().map(|item| async move {
+            let uri = SpotifyUri::from_uri(item.uri())?;
+            let message = librespot::protocol::metadata::Track::parse_from_bytes(
+                &librespot::metadata::Track::request(&self.session, &uri).await?,
+            )
+            .map_err(anyhow::Error::from)?;
+            proto_convert::track(&message).map(|track| (item, track))
+        }))
+        .buffered(DJ_TRACK_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let attempted = fetched.len();
+        let mut listed = Vec::with_capacity(attempted);
+        let mut failures = 0usize;
+        for result in fetched {
+            match result {
+                Ok((item, track)) => listed.push(model::ListedTrack {
+                    track,
+                    added_at: proto_convert::added_at(&item),
+                }),
+                Err(_) => failures += 1,
+            }
+        }
+        if listed.is_empty() && failures > 0 {
+            // Every lookup failed: a transport problem, not an empty lineup.
+            return Err(anyhow!(
+                "could not fetch any of the {attempted} DJ lineup tracks"
+            ));
+        }
+        let artwork = proto_convert::playlist_artwork(content.attributes.get_or_default());
+        let track_count = u32::try_from(content.length()).unwrap_or(0);
+        Ok(dj::Lineup::Fresh(
+            dj::refreshed_playlist(track_count, artwork),
+            listed,
+        ))
     }
 }
 

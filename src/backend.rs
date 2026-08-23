@@ -14,6 +14,7 @@ use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::{
+    dj,
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
@@ -246,6 +247,23 @@ impl BlockingStore {
 /// cancels the request: the reply simply goes nowhere.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T>>;
 
+/// What loading a playlist delivered. Transport failures travel as the
+/// reply channel's own error; these variants are the successful and
+/// "Spotify refuses" outcomes.
+#[derive(Debug)]
+pub enum PlaylistContents {
+    Loaded {
+        /// A refreshed playlist object when the load learned something the
+        /// page could not know up front (DJ X's real count and artwork);
+        /// pages keep their own copy otherwise.
+        playlist: Option<Playlist>,
+        tracks: Vec<ListedTrack>,
+    },
+    /// Spotify does not offer this playlist to this account or region.
+    /// Only the DJ lineup can hit this today.
+    NotOffered,
+}
+
 /// Tracks and playlists, as returned by search.
 pub type TrackAndPlaylistResults = (Vec<Track>, Vec<Playlist>);
 
@@ -297,7 +315,7 @@ pub enum BackendCommand {
     },
     LoadPlaylist {
         playlist: Playlist,
-        respond: Reply<Vec<ListedTrack>>,
+        respond: Reply<PlaylistContents>,
     },
     LoadArtist {
         source_id: String,
@@ -1063,8 +1081,16 @@ impl Worker {
                 Ok(())
             }
             BackendCommand::LoadPlaylist { playlist, respond } => {
-                self.catalog
-                    .playlist(self.spotify.clone(), playlist, respond);
+                if dj::matches(&playlist.source_id) {
+                    // The Web API 404s Spotify-owned playlists for
+                    // development-mode apps; the lineup rides the playback
+                    // session's internal protocol instead (ADR 0004).
+                    self.catalog
+                        .dj_lineup(self.connection.player.clone(), respond);
+                } else {
+                    self.catalog
+                        .playlist(self.spotify.clone(), playlist, respond);
+                }
                 Ok(())
             }
             BackendCommand::LoadArtist { source_id, respond } => {
@@ -2531,12 +2557,40 @@ impl CatalogFetches {
         });
     }
 
-    fn playlist(&mut self, spotify: Spotify, playlist: Playlist, respond: Reply<Vec<ListedTrack>>) {
+    fn playlist(&mut self, spotify: Spotify, playlist: Playlist, respond: Reply<PlaylistContents>) {
         Self::start(
             &mut self.playlist,
             respond,
             "Spotify playlist request",
-            async move { spotify.playlist_tracks(&playlist.source_id).await },
+            async move {
+                spotify
+                    .playlist_tracks(&playlist.source_id)
+                    .await
+                    .map(|tracks| PlaylistContents::Loaded {
+                        playlist: None,
+                        tracks,
+                    })
+            },
+        );
+    }
+
+    /// Resolves the DJ lineup through the connected playback session.
+    fn dj_lineup(&mut self, player: Option<Playback>, respond: Reply<PlaylistContents>) {
+        Self::start(
+            &mut self.playlist,
+            respond,
+            "Spotify DJ lineup request",
+            async move {
+                let player =
+                    player.ok_or_else(|| anyhow!("Spotify playback is not connected yet"))?;
+                match player.dj_lineup().await? {
+                    dj::Lineup::NotOffered => Ok(PlaylistContents::NotOffered),
+                    dj::Lineup::Fresh(playlist, tracks) => Ok(PlaylistContents::Loaded {
+                        playlist: Some(playlist),
+                        tracks,
+                    }),
+                }
+            },
         );
     }
 

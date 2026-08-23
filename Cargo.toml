@@ -20,6 +20,10 @@ gpui = { version = "=0.2.2", git = "https://github.com/zed-industries/zed" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cdd00657eb68fa946bfd99cd83c26e002" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cdd00657eb68fa946bfd99cd83c26e002" }
 keyring = "4.1"
+# Same protobuf major the vendored librespot 0.8 speaks: we parse its raw
+# playlist/track messages (see proto_convert) instead of adapting to
+# librespot's high-level metadata structs.
+protobuf = "=3.7.2"
 librespot = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 raw-window-handle = "0.6"
 oauth2 = { version = "5.0", default-features = false, features = ["reqwest", "native-tls"] }
