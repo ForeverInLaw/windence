@@ -23,3 +23,31 @@ _Avoid_: media keys, MPRIS (Linux term), Now Playing (macOS term)
 **Milestone 2**:
 The second end-to-end state: tracks play audibly through the upstream librespot + SDL2 audio stack, with playback behavior matching upstream.
 _Avoid_: audio work, sound milestone
+
+**Queue**:
+The running play sequence: the track playing now plus every track after it. It starts as a copy of the context, then grows through Play next, Add to queue, Autoplay, and Smart Shuffle. It is not the playlist — the playlist is the saved Spotify object and playback never edits it.
+_Avoid_: playlist, context
+
+**Context**:
+The set of tracks playback was started from: a playlist, an album, the liked-songs view, or a radio seeded on one track. The queue begins as the context's tracks and drifts from it as tracks are inserted or appended.
+_Avoid_: queue, playlist
+
+**Injected Track**:
+A queued track that is not part of the played context. Only Smart Shuffle and Autoplay place these. They carry a distinct icon in the queue UI and are never written back into any playlist.
+_Avoid_: suggestion, bonus track
+
+**Shuffle**:
+Randomised play order for the queue. Switching it on keeps the playing track in place and shuffles what follows; switching it off restores the original context order.
+_Avoid_: random, mix, Smart Shuffle (adds injections)
+
+**Smart Shuffle**:
+Shuffle plus injection: about one injected track between every three context tracks, fetched from Spotify recommendations. Switching it off removes the injected tracks and restores the original order.
+_Avoid_: Autoplay (works only at the end of the queue), Radio (replaces the whole queue)
+
+**Radio**:
+A context built entirely from Spotify recommendations seeded on one track. Starting it replaces the queue instead of extending it.
+_Avoid_: Autoplay, Smart Shuffle
+
+**Autoplay**:
+A preference-gated behaviour that appends recommended tracks when the queue reaches its end.
+_Avoid_: Smart Shuffle (injects while the queue still runs), Radio
