@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -16,7 +16,10 @@ use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use crate::{
     model::{Album, Artist, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
-    shuffle::{ShuffleMode, ShuffleRng, ShuffleState},
+    shuffle::{
+        ContextKind, Origin, SMART_SHUFFLE_MIN_TRACKS, ShuffleMode, ShuffleRng, ShuffleState,
+        injection_slots, injection_target,
+    },
     spotify::{
         ClientIdSource, Spotify, SpotifyConfiguration, resolve_configuration, valid_client_id,
     },
@@ -198,9 +201,10 @@ impl BlockingStore {
         position_ms: u32,
         shuffle: ShuffleState,
         radio: bool,
+        kind: ContextKind,
     ) -> Result<()> {
         self.call(move |store| {
-            store.set_playback_state(&tracks, index, position_ms, &shuffle, radio)
+            store.set_playback_state(&tracks, index, position_ms, &shuffle, radio, kind)
         })
         .await
     }
@@ -296,6 +300,8 @@ pub enum BackendCommand {
         /// Start this context shuffled and move the global toggle to
         /// Shuffle, as the playlist and album shuffle-play controls do.
         shuffled: bool,
+        /// Where this context was started from, which gates Smart Shuffle.
+        kind: ContextKind,
     },
     PlayNext(Track),
     AppendToQueue(Track),
@@ -391,17 +397,24 @@ pub enum BackendEvent {
     PlaybackContext {
         current: Track,
         next: Vec<Track>,
+        /// Which upcoming tracks are Smart Shuffle injections, aligned with
+        /// `next`: the queue UI marks them with a distinct icon.
+        injected: Vec<bool>,
     },
-    /// The player-bar shuffle toggle's value and whether it can act at all
-    /// (a live, non-radio context). Sent whenever the queue's shuffle state
-    /// changes or a queue is first adopted.
+    /// The player-bar shuffle toggle's value, whether it can act at all
+    /// (a live, non-radio context), and whether its third state — Smart
+    /// Shuffle — may act on this context. Sent whenever the queue's shuffle
+    /// state changes or a queue is first adopted.
     ShuffleChanged {
         mode: ShuffleMode,
         supported: bool,
+        smart_supported: bool,
     },
     PlaybackSnapshotLoaded {
         current: Track,
         next: Vec<Track>,
+        /// Injected flags aligned with `next`, as [`BackendEvent::PlaybackContext`].
+        injected: Vec<bool>,
         position_ms: u32,
     },
     AuthorizationFailed(String),
@@ -640,6 +653,7 @@ async fn start(
                 .get(snapshot.index + 1..)
                 .unwrap_or_default()
                 .to_vec(),
+            injected: injected_flags(&snapshot.shuffle, snapshot.index, snapshot.tracks.len()),
             position_ms: snapshot.position_ms,
         });
         // The restored queue may be shuffled; the toggle reflects that from
@@ -647,6 +661,9 @@ async fn start(
         let _ = events.send(BackendEvent::ShuffleChanged {
             mode: snapshot.shuffle.mode,
             supported: !snapshot.radio,
+            smart_supported: !snapshot.radio
+                && snapshot.context_kind.supports_smart_shuffle()
+                && snapshot.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS,
         });
     }
     let environment_client_id = std::env::var("SPOTIFY_CLIENT_ID").ok();
@@ -850,6 +867,10 @@ async fn run(
                 worker.finish_autoplay(extended).await;
                 continue;
             }
+            fetched = finished(&mut worker.injections.task) => {
+                worker.finish_injection_fetch(fetched).await;
+                continue;
+            }
             radio = finished(&mut worker.radio.task) => {
                 worker.finish_radio(radio).await;
                 continue;
@@ -889,6 +910,7 @@ struct Worker {
     favorites: FavoriteRefresh,
     radio: Radio,
     autoplay: Autoplay,
+    injections: Injections,
     session: SessionTasks,
 }
 
@@ -908,6 +930,7 @@ impl Worker {
             favorites: FavoriteRefresh::default(),
             radio: Radio::default(),
             autoplay: Autoplay::default(),
+            injections: Injections::default(),
             session: SessionTasks::default(),
         }
     }
@@ -1024,7 +1047,8 @@ impl Worker {
                 tracks,
                 index,
                 shuffled,
-            } => self.play_context(tracks, index, shuffled).await,
+                kind,
+            } => self.play_context(tracks, index, shuffled, kind).await,
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
@@ -1248,6 +1272,7 @@ impl Worker {
         mut tracks: Vec<Track>,
         index: usize,
         shuffled: bool,
+        kind: ContextKind,
     ) -> Result<()> {
         self.radio.cancel(&self.events);
         let spotify_uri = tracks
@@ -1256,11 +1281,19 @@ impl Worker {
             .unwrap_or_default();
         // A fresh context inherits the global toggle: starting while Shuffle
         // is on begins shuffled, with the original order snapshotted first.
-        let mut shuffle = ShuffleState::for_context(&tracks, self.queue.shuffle.mode);
-        if shuffled && shuffle.mode == ShuffleMode::Off {
-            shuffle.mode = ShuffleMode::Shuffle;
+        let mut mode = self.queue.shuffle.mode;
+        if shuffled && mode == ShuffleMode::Off {
+            mode = ShuffleMode::Shuffle;
         }
-        if shuffle.mode.shuffles() {
+        // An album, or a list too short to weave through, inherits plain
+        // shuffle where the global toggle said Smart.
+        if mode == ShuffleMode::Smart
+            && (!kind.supports_smart_shuffle() || tracks.len() < SMART_SHUFFLE_MIN_TRACKS)
+        {
+            mode = ShuffleMode::Shuffle;
+        }
+        let mut shuffle = ShuffleState::for_context(&tracks, mode);
+        if mode.shuffles() {
             shuffle.set_mode(
                 ShuffleMode::Shuffle,
                 &mut tracks,
@@ -1270,6 +1303,7 @@ impl Worker {
         }
         match load_context_track(
             &self.connection.player,
+            &shuffle,
             &tracks,
             index,
             &self.store,
@@ -1281,6 +1315,10 @@ impl Worker {
                 self.queue.tracks = tracks;
                 self.queue.shuffle = shuffle;
                 self.queue.radio = false;
+                self.queue.kind = kind;
+                // Injections belong to one session; a fresh context starts
+                // its own, fetched only after this queue is playing.
+                self.injections.reset();
                 self.commit_loaded_queue(index).await;
             }
             Err(error) => {
@@ -1316,13 +1354,48 @@ impl Worker {
             // A radio is already a recommendation stream; ignore the toggle.
             return Ok(());
         }
+        if mode == ShuffleMode::Smart && !self.smart_supported() {
+            // Albums and short lists have nothing for Smart to weave
+            // through; the UI never offers it, so this is just defense.
+            return Ok(());
+        }
+        if mode != ShuffleMode::Smart {
+            // Leaving Smart drops upcoming injections first, so the
+            // unshuffle below restores exactly the context order around
+            // surviving anchors. An injected track already playing finishes.
+            self.queue
+                .shuffle
+                .remove_upcoming_injections(&mut self.queue.tracks, index);
+            self.injections.reset();
+        }
         self.queue.shuffle.set_mode(
             mode,
             &mut self.queue.tracks,
             index,
             &mut ShuffleRng::from_entropy(),
         );
-        self.commit_queue_change(index).await
+        self.commit_queue_change(index).await?;
+        if mode == ShuffleMode::Smart {
+            // Activation: the upcoming tail has no injections yet, so this
+            // starts the first fetch right away.
+            self.maybe_prefetch_injections().await;
+        }
+        Ok(())
+    }
+
+    /// Whether Smart Shuffle could act right now: a live, non-radio,
+    /// playlist-like context long enough to weave through.
+    fn smart_supported(&self) -> bool {
+        !self.queue.radio
+            && self.queue.index.is_some()
+            && self.queue.kind.supports_smart_shuffle()
+            && self.queue.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS
+    }
+
+    /// Whether Smart Shuffle is currently weaving injections into this
+    /// queue's tail.
+    fn smart_active(&self) -> bool {
+        self.queue.shuffle.mode == ShuffleMode::Smart && !self.queue.radio
     }
 
     /// Saves the queue as it stands and tells the UI about both halves of
@@ -1335,9 +1408,10 @@ impl Worker {
                 self.queue.position_ms,
                 self.queue.shuffle.clone(),
                 self.queue.radio,
+                self.queue.kind,
             )
             .await?;
-        send_playback_context(&self.queue.tracks, index, &self.events);
+        send_playback_context(&self.queue.shuffle, &self.queue.tracks, index, &self.events);
         send_shuffle_changed(&self.queue, &self.events);
         Ok(())
     }
@@ -1345,6 +1419,7 @@ impl Worker {
     async fn restore_playback(&mut self, position_ms: u32, playing: bool) -> Result<()> {
         let result = restore_context_track(
             &self.connection.player,
+            &self.queue.shuffle,
             &self.queue.tracks,
             self.queue.index,
             position_ms,
@@ -1368,6 +1443,7 @@ impl Worker {
         }
         if playing {
             self.maybe_prefetch_autoplay();
+            self.maybe_prefetch_injections().await;
         }
         result
     }
@@ -1390,6 +1466,7 @@ impl Worker {
             // current track at the seeker's position instead.
             let result = restore_context_track(
                 &self.connection.player,
+                &self.queue.shuffle,
                 &self.queue.tracks,
                 self.queue.index,
                 self.queue.position_ms,
@@ -1477,6 +1554,7 @@ impl Worker {
     async fn load_queue_track(&mut self, index: usize) -> Result<()> {
         let result = load_context_track(
             &self.connection.player,
+            &self.queue.shuffle,
             &self.queue.tracks,
             index,
             &self.store,
@@ -1493,7 +1571,8 @@ impl Worker {
 
     /// The invariant after any successful queue-track load: current index,
     /// rewound position, a live (not ended) queue, a persisted snapshot,
-    /// and an armed autoplay prefetch when the track is the queue's last.
+    /// armed prefetches — autoplay when the track is the queue's last, and
+    /// an injection refill whenever Smart has thinned the upcoming tail.
     async fn commit_loaded_queue(&mut self, index: usize) {
         self.queue.index = Some(index);
         self.queue.position_ms = 0;
@@ -1502,6 +1581,9 @@ impl Worker {
             send_error(&self.events, error);
         }
         self.maybe_prefetch_autoplay();
+        // The advance consumed an injection from the upcoming tail; this
+        // refills before it runs dry.
+        self.maybe_prefetch_injections().await;
     }
 
     async fn seek(&mut self, position_ms: u32) -> Result<()> {
@@ -1563,6 +1645,7 @@ impl Worker {
                     let _ = self.events.send(BackendEvent::PlaybackReconnected);
                 } else if let Err(error) = restore_saved_playback(
                     &self.connection.player,
+                    &self.queue.shuffle,
                     &self.queue.tracks,
                     self.queue.index,
                     self.queue.position_ms,
@@ -1608,8 +1691,11 @@ impl Worker {
         self.radio.request_id = None;
         match radio {
             Some(Ok((request_id, Ok(tracks)))) => {
+                // A radio queue carries no injections, so its context event
+                // goes out with empty bookkeeping.
                 match load_context_track(
                     &self.connection.player,
+                    &ShuffleState::default(),
                     &tracks,
                     0,
                     &self.store,
@@ -1712,6 +1798,7 @@ impl Worker {
         self.favorites.abort();
         self.radio.cancel(&self.events);
         abort_task(&mut self.autoplay.task);
+        self.injections.reset();
     }
 
     /// Drops the live playback session and forgets the queue.
@@ -1722,6 +1809,7 @@ impl Worker {
         self.queue.tracks.clear();
         self.queue.shuffle = ShuffleState::default();
         self.queue.radio = false;
+        self.queue.kind = ContextKind::default();
         self.queue.index = None;
         // A fresh session must not inherit the ended special-casing.
         self.queue.ended = false;
@@ -1766,8 +1854,9 @@ impl Worker {
                     .spotify_uri
                     .as_deref()
                     .context("autoplay seed has no Spotify track URI")?;
-                let uris = player.radio_track_uris(seed_uri).await?;
-                spotify.resolve_track_uris(&uris).await.map(Some)
+                recommendation_tracks(&player, &spotify, seed_uri)
+                    .await
+                    .map(Some)
             })
             .await
         }));
@@ -1856,6 +1945,187 @@ impl Worker {
         }
     }
 
+    /// How many injections Smart Shuffle still owes the upcoming tail to
+    /// meet its density.
+    fn injection_deficit(&self, index: usize) -> usize {
+        let (context, injected) = self.queue.shuffle.upcoming_counts(index);
+        injection_target(context).saturating_sub(injected)
+    }
+
+    /// Keeps the upcoming tail's injection density topped up: buffered
+    /// recommendations are woven in first, and only a still-thin tail with
+    /// no fetch in flight starts one, seeded on the playing track the way
+    /// autoplay is. No-op unless Smart is active on a live queue.
+    async fn maybe_prefetch_injections(&mut self) {
+        if !self.smart_active() {
+            return;
+        }
+        let Some(index) = self.queue.index else {
+            return;
+        };
+        let deficit = self.injection_deficit(index);
+        if deficit == 0 {
+            return;
+        }
+
+        // The buffer first: those tracks cost no network round-trip.
+        if !self.injections.buffer.is_empty() {
+            let buffered = self.injections.buffer.drain(..).collect();
+            let fresh = self.fresh_recommendations(buffered);
+            let inserted = self.weave_injections(&fresh, deficit, index);
+            // Whatever did not fit this pass goes back on top of the
+            // buffer instead of being refetched later.
+            self.buffer_recommendations(fresh.into_iter().skip(inserted));
+            if inserted > 0
+                && let Err(error) = self.commit_queue_change(index).await
+            {
+                send_error(&self.events, error);
+                return;
+            }
+        }
+
+        let remaining = self.injection_deficit(index);
+        if remaining == 0 || self.injections.task.is_some() {
+            return;
+        }
+        let Some(seed) = self.queue.tracks.get(index).cloned() else {
+            return;
+        };
+        if self.injections.fruitless_seed.as_deref() == Some(seed.source_id.as_str()) {
+            return;
+        }
+        self.injections.seed_id = Some(seed.source_id.clone());
+        let player = self.connection.player.clone();
+        let spotify = self.spotify.clone();
+        self.injections.task = Some(tokio::spawn(async move {
+            run_with_timeout(60, "Smart Shuffle recommendations", async {
+                let player = player.context("Spotify playback is not connected")?;
+                let seed_uri = seed
+                    .spotify_uri
+                    .as_deref()
+                    .context("Smart Shuffle seed has no Spotify track URI")?;
+                recommendation_tracks(&player, &spotify, seed_uri).await
+            })
+            .await
+        }));
+    }
+
+    /// Weaves `fresh` tracks into the upcoming region at the density-planned
+    /// slots, marking each as an injected origin; returns how many landed.
+    /// Callers pre-filter the batch with [`Self::fresh_recommendations`] and
+    /// keep whatever this did not take.
+    fn weave_injections(&mut self, fresh: &[Track], wanted: usize, playing: usize) -> usize {
+        if wanted == 0 || fresh.is_empty() {
+            return 0;
+        }
+        let origins = self
+            .queue
+            .shuffle
+            .origins
+            .get(playing.saturating_add(1)..)
+            .unwrap_or_default();
+        let slots = injection_slots(origins, wanted);
+        let count = slots.len().min(fresh.len());
+        // Apply in reverse so earlier inserts never shift later slots. Slot
+        // k means "after upcoming entry k", whose absolute index is
+        // `playing + 1 + k`, so each insert goes one past that.
+        for taken in (0..count).rev() {
+            let position = playing + 1 + slots[taken] + 1;
+            self.queue.tracks.insert(position, fresh[taken].clone());
+            self.queue
+                .shuffle
+                .origins
+                .insert(position, Origin::Injected);
+        }
+        count
+    }
+
+    /// Filters a recommendation batch down to displayable tracks the queue
+    /// does not already hold anywhere, deduplicated among themselves.
+    fn fresh_recommendations(&self, candidates: Vec<Track>) -> Vec<Track> {
+        let known: HashSet<String> = self
+            .queue
+            .tracks
+            .iter()
+            .map(|track| track.source_id.clone())
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        candidates
+            .into_iter()
+            .filter(|track| track.is_displayable() && seen.insert(track.source_id.clone()))
+            .filter(|track| !known.contains(&track.source_id))
+            .collect()
+    }
+
+    /// Queues recommendations for later refills, skipping anything already
+    /// queued or buffered.
+    fn buffer_recommendations(&mut self, candidates: impl IntoIterator<Item = Track>) {
+        let mut buffered: HashSet<String> = self
+            .injections
+            .buffer
+            .iter()
+            .map(|track| track.source_id.clone())
+            .collect();
+        let known: HashSet<String> = self
+            .queue
+            .tracks
+            .iter()
+            .map(|track| track.source_id.clone())
+            .collect();
+        for track in candidates {
+            if !track.is_displayable()
+                || known.contains(&track.source_id)
+                || !buffered.insert(track.source_id.clone())
+            {
+                continue;
+            }
+            self.injections.buffer.push_back(track);
+        }
+    }
+
+    /// Interleaves a finished recommendation batch into the tail and keeps
+    /// whatever did not fit buffered for later refills.
+    async fn finish_injection_fetch(&mut self, fetched: Finished<Result<Vec<Track>>>) {
+        self.injections.task = None;
+        let seed_id = self.injections.seed_id.take();
+        let tracks = match fetched {
+            Some(Ok(Ok(tracks))) => tracks,
+            Some(Ok(Err(error))) => {
+                log::warn!("smart shuffle: recommendation fetch failed: {error:#}");
+                self.injections.fruitless_seed = seed_id;
+                return;
+            }
+            Some(Err(error)) => {
+                send_error(&self.events, error);
+                return;
+            }
+            None => return,
+        };
+        // The listener may have toggled Smart off while this ran.
+        if !self.smart_active() {
+            return;
+        }
+        let Some(index) = self.queue.index else {
+            return;
+        };
+        let deficit = self.injection_deficit(index);
+        let fresh = self.fresh_recommendations(tracks);
+        let inserted = self.weave_injections(&fresh, deficit, index);
+        // A dry or fully-stale batch marks its seed fruitless, mirroring
+        // autoplay: retrying needs the queue to move first.
+        if inserted == 0 {
+            self.injections.fruitless_seed = seed_id;
+        } else {
+            // The surplus stays ready for the next thinning, no refetch.
+            self.buffer_recommendations(fresh.into_iter().skip(inserted));
+        }
+        if inserted > 0
+            && let Err(error) = self.commit_queue_change(index).await
+        {
+            send_error(&self.events, error);
+        }
+    }
+
     fn connected_player(&self) -> Result<&Playback> {
         self.connection
             .player
@@ -1885,6 +2155,8 @@ struct PlayQueue {
     shuffle: ShuffleState,
     /// A track-radio context ignores the toggle entirely.
     radio: bool,
+    /// Where this context was started from, which gates Smart Shuffle.
+    kind: ContextKind,
     index: Option<usize>,
     position_ms: u32,
     /// The last track finished with nothing after it. librespot sits in
@@ -1900,6 +2172,7 @@ impl PlayQueue {
                 tracks: snapshot.tracks,
                 shuffle: snapshot.shuffle,
                 radio: snapshot.radio,
+                kind: snapshot.context_kind,
                 index: Some(snapshot.index),
                 position_ms: snapshot.position_ms,
                 ended: false,
@@ -2009,6 +2282,32 @@ struct Autoplay {
     /// A seed whose fetch came back dry or failed; skipped until the queue
     /// moves to a different last track, so pause/play cannot spam radio.
     fruitless_seed: Option<String>,
+}
+
+/// Smart Shuffle's recommendation pipeline: one radio fetch in flight,
+/// seeded on the playing track and gated by the Smart toggle itself rather
+/// than by any preference, with fetched-but-unwoven tracks buffered so a
+/// refill only hits the network when the buffer runs dry too.
+#[derive(Default)]
+struct Injections {
+    task: Option<tokio::task::JoinHandle<Result<Vec<Track>>>>,
+    /// The source id the in-flight (or last) fetch was seeded with.
+    seed_id: Option<String>,
+    /// A seed whose fetch failed or added nothing new; skipped until the
+    /// playing track changes, so a failing endpoint cannot be hammered on
+    /// every track advance.
+    fruitless_seed: Option<String>,
+    /// Recommendations waiting for a gap in the upcoming tail.
+    buffer: VecDeque<Track>,
+}
+
+impl Injections {
+    fn reset(&mut self) {
+        abort_task(&mut self.task);
+        self.seed_id = None;
+        self.fruitless_seed = None;
+        self.buffer.clear();
+    }
 }
 
 impl Radio {
@@ -2610,6 +2909,7 @@ fn observe_playback(
 
 async fn load_context_track(
     playback: &Option<Playback>,
+    shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
     store: &BlockingStore,
@@ -2626,7 +2926,7 @@ async fn load_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(tracks, index, events);
+    send_playback_context(shuffle, tracks, index, events);
     player.load(spotify_uri, true, 0);
     if let Err(error) = store.add_history(track.clone()).await {
         send_error(events, error);
@@ -2638,6 +2938,7 @@ async fn load_context_track(
 
 fn restore_context_track(
     playback: &Option<Playback>,
+    shuffle: &ShuffleState,
     tracks: &[Track],
     index: Option<usize>,
     position_ms: u32,
@@ -2656,13 +2957,14 @@ fn restore_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(tracks, index, events);
+    send_playback_context(shuffle, tracks, index, events);
     player.load(spotify_uri, playing, position_ms);
     Ok(())
 }
 
 fn restore_saved_playback(
     playback: &Option<Playback>,
+    shuffle: &ShuffleState,
     tracks: &[Track],
     index: Option<usize>,
     position_ms: u32,
@@ -2671,23 +2973,41 @@ fn restore_saved_playback(
     if index.is_none() {
         return Ok(());
     }
-    restore_context_track(playback, tracks, index, position_ms, false, events)
+    restore_context_track(playback, shuffle, tracks, index, position_ms, false, events)
 }
 
-fn send_playback_context(tracks: &[Track], index: usize, events: &UnboundedSender<BackendEvent>) {
+/// Per-track injected flags for everything after `index`, aligned with the
+/// `next` half of a playback-context event.
+fn injected_flags(shuffle: &ShuffleState, index: usize, tracks_len: usize) -> Vec<bool> {
+    ((index + 1)..tracks_len)
+        .map(|slot| shuffle.origins.get(slot) == Some(&Origin::Injected))
+        .collect()
+}
+
+fn send_playback_context(
+    shuffle: &ShuffleState,
+    tracks: &[Track],
+    index: usize,
+    events: &UnboundedSender<BackendEvent>,
+) {
     if let Some(current) = tracks.get(index) {
         let _ = events.send(BackendEvent::PlaybackContext {
             current: current.clone(),
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
+            injected: injected_flags(shuffle, index, tracks.len()),
         });
     }
 }
 
 /// Tells the UI what the shuffle toggle should show for this queue.
 fn send_shuffle_changed(queue: &PlayQueue, events: &UnboundedSender<BackendEvent>) {
+    let supported = !queue.radio && queue.index.is_some();
     let _ = events.send(BackendEvent::ShuffleChanged {
         mode: queue.shuffle.mode,
-        supported: !queue.radio && queue.index.is_some(),
+        supported,
+        smart_supported: supported
+            && queue.kind.supports_smart_shuffle()
+            && queue.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS,
     });
 }
 
@@ -2710,6 +3030,17 @@ fn favorite_needs_catalog_refresh(track: &Track) -> bool {
                 .as_ref()
                 .and_then(|album| album.source_id.as_ref())
                 .is_none())
+}
+
+/// One radio-pipeline round-trip shared by autoplay and Smart Shuffle:
+/// apollo station URIs seeded on one track, resolved into full tracks.
+async fn recommendation_tracks(
+    player: &Playback,
+    spotify: &Spotify,
+    seed_uri: &str,
+) -> Result<Vec<Track>> {
+    let uris = player.radio_track_uris(seed_uri).await?;
+    spotify.resolve_track_uris(&uris).await
 }
 
 fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<Track>> {
@@ -2747,10 +3078,11 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendCommand, BlockingStore, build_radio_context, favorite_needs_catalog_refresh,
-        send_command,
+        BackendCommand, BlockingStore, ShuffleState, build_radio_context,
+        favorite_needs_catalog_refresh, injected_flags, send_command,
     };
     use crate::model::{AlbumRef, ArtistRef, Provider, Track};
+    use crate::shuffle::Origin;
     use crate::storage::Store;
 
     fn favorite() -> Track {
@@ -2902,5 +3234,22 @@ mod tests {
         let seed = favorite();
 
         assert!(build_radio_context(seed.clone(), vec![seed]).is_err());
+    }
+
+    #[test]
+    fn injected_flags_mark_only_smart_shuffle_entries_after_the_playing_track() {
+        let shuffle = ShuffleState {
+            origins: vec![
+                Origin::Context { ordinal: 0 },
+                Origin::Injected,
+                Origin::Context { ordinal: 1 },
+                Origin::Anchor,
+            ],
+            ..ShuffleState::default()
+        };
+
+        assert_eq!(injected_flags(&shuffle, 0, 4), vec![true, false, false]);
+        // Everything before the playing track is out of view.
+        assert!(injected_flags(&shuffle, 3, 4).is_empty());
     }
 }

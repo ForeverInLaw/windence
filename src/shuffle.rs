@@ -138,10 +138,7 @@ impl<'de> Deserialize<'de> for Origin {
             {
                 match value {
                     "injected" => Ok(Origin::Injected),
-                    _ => Err(serde::de::Error::unknown_variant(
-                        value,
-                        &["injected"],
-                    )),
+                    _ => Err(serde::de::Error::unknown_variant(value, &["injected"])),
                 }
             }
         }
@@ -216,14 +213,13 @@ impl ShuffleState {
             .origins
             .get(playing.saturating_add(1)..)
             .unwrap_or_default();
-        upcoming.iter().fold(
-            (0, 0),
-            |(context, injected), origin| match origin {
+        upcoming
+            .iter()
+            .fold((0, 0), |(context, injected), origin| match origin {
                 Origin::Context { .. } => (context + 1, injected),
                 Origin::Injected => (context, injected + 1),
                 Origin::Anchor => (context, injected),
-            },
-        )
+            })
     }
 
     /// Drops every injected track queued strictly after `playing`, keeping
@@ -318,6 +314,12 @@ fn restore_slots(tracks: &mut [Track], origins: &mut [Origin], slots: &[usize]) 
     }
 }
 
+/// How many injections the density asks for over an upcoming region of
+/// `context_count` context tracks.
+pub fn injection_target(context_count: usize) -> usize {
+    context_count / INJECTION_EVERY
+}
+
 /// Where `wanted` injected tracks belong in an upcoming region, as ascending
 /// slot indexes after which each should be inserted. Indexes are relative to
 /// the region's start — the entry right after the playing track is 0 — so
@@ -328,7 +330,7 @@ fn restore_slots(tracks: &mut [Track], origins: &mut [Origin], slots: &[usize]) 
 /// after every [`INJECTION_EVERY`]th one, sliding past runs of anchors so a
 /// Play-next pick stays glued to the track the listener heard last, and
 /// never stacking onto an injection already sitting in a gap.
-fn injection_slots(origins: &[Origin], wanted: usize) -> Vec<usize> {
+pub fn injection_slots(origins: &[Origin], wanted: usize) -> Vec<usize> {
     let mut slots = Vec::new();
     let mut run = 0;
     let mut index = 0;
@@ -406,7 +408,9 @@ impl ShuffleRng {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, Track, injection_slots};
+    use super::{
+        ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, Track, injection_slots,
+    };
 
     fn track(id: &str) -> Track {
         Track {
@@ -720,10 +724,7 @@ mod tests {
 
         // The playing injection finishes; everything after it is the
         // untouched context in its original order.
-        assert_eq!(
-            order(&queue),
-            vec!["a", "x1", "b", "c", "d", "e", "f", "g"]
-        );
+        assert_eq!(order(&queue), vec!["a", "x1", "b", "c", "d", "e", "f", "g"]);
     }
 
     #[test]
@@ -756,12 +757,7 @@ mod tests {
     #[test]
     fn malformed_persisted_state_falls_back_to_an_unshuffled_context() {
         let fallback = |len, origins| {
-            ShuffleState::restored(
-                len,
-                ShuffleMode::Shuffle,
-                tracks(&["a", "b"]),
-                origins,
-            )
+            ShuffleState::restored(len, ShuffleMode::Shuffle, tracks(&["a", "b"]), origins)
         };
 
         assert_eq!(
@@ -771,7 +767,10 @@ mod tests {
         assert_eq!(
             fallback(
                 2,
-                vec![Origin::Context { ordinal: 0 }, Origin::Context { ordinal: 9 }]
+                vec![
+                    Origin::Context { ordinal: 0 },
+                    Origin::Context { ordinal: 9 }
+                ]
             )
             .mode,
             ShuffleMode::Off
@@ -809,10 +808,7 @@ mod tests {
         ];
         let json = serde_json::to_string(&origins).unwrap();
         assert_eq!(json, r#"[0,null,"injected"]"#);
-        assert_eq!(
-            serde_json::from_str::<Vec<Origin>>(&json).unwrap(),
-            origins
-        );
+        assert_eq!(serde_json::from_str::<Vec<Origin>>(&json).unwrap(), origins);
         // Snapshots written before Smart Shuffle existed hold plain
         // Option-style arrays; they must keep restoring.
         assert_eq!(
