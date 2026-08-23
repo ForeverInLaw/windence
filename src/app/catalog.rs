@@ -715,7 +715,7 @@ impl Render for PlaylistPage {
                 playlist.source_id.clone(),
             );
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), ContextKind::Album, cx)
+                list.show(list_id, tracks.clone(), ContextKind::Collection, cx)
             });
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {

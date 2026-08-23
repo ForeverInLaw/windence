@@ -31,7 +31,7 @@ impl ShuffleMode {
 }
 
 /// Whether Smart Shuffle may inject into a context started from here.
-/// Albums expose plain shuffle only; every other list is playlist-like.
+/// Albums expose plain shuffle only; every other list is collection-like.
 /// Radio contexts are tracked separately (`PlayQueue::radio`) and ignore
 /// the toggle entirely.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -238,6 +238,37 @@ impl ShuffleState {
         }
     }
 
+    /// Weaves `fresh` tracks into the region after `playing` at the
+    /// density-planned slots, marking each as an injected origin; returns
+    /// how many landed. Callers pre-filter the batch down to tracks the
+    /// queue does not already hold and keep whatever this did not take.
+    /// Slot k means "after upcoming entry k", whose absolute index is
+    /// `playing + 1 + k`, so each insert goes one past that and the walk
+    /// runs in reverse so earlier inserts never shift later slots.
+    pub fn weave_injections(
+        &mut self,
+        tracks: &mut Vec<Track>,
+        fresh: &[Track],
+        wanted: usize,
+        playing: usize,
+    ) -> usize {
+        if wanted == 0 || fresh.is_empty() {
+            return 0;
+        }
+        let upcoming = self
+            .origins
+            .get(playing.saturating_add(1)..)
+            .unwrap_or_default();
+        let slots = injection_slots(upcoming, wanted);
+        let count = slots.len().min(fresh.len());
+        for taken in (0..count).rev() {
+            let position = playing + 1 + slots[taken] + 1;
+            self.origins.insert(position, Origin::Injected);
+            tracks.insert(position, fresh[taken].clone());
+        }
+        count
+    }
+
     /// Rebuilds the state persisted next to a queue of `tracks_len` tracks.
     /// Anything inconsistent — a length mismatch or an ordinal past the end
     /// of the base order — falls back to treating the queue as an unshuffled
@@ -318,6 +349,13 @@ fn restore_slots(tracks: &mut [Track], origins: &mut [Origin], slots: &[usize]) 
 /// `context_count` context tracks.
 pub fn injection_target(context_count: usize) -> usize {
     context_count / INJECTION_EVERY
+}
+
+/// Whether Smart Shuffle may act on a queue of this shape at all: a
+/// playlist-like kind, long enough to weave through, and not a radio.
+/// Callers add their own liveness checks (an index to play from).
+pub fn smart_admissible(kind: ContextKind, radio: bool, context_len: usize) -> bool {
+    !radio && kind.supports_smart_shuffle() && context_len >= SMART_SHUFFLE_MIN_TRACKS
 }
 
 /// Where `wanted` injected tracks belong in an upcoming region, as ascending
@@ -410,6 +448,7 @@ impl ShuffleRng {
 mod tests {
     use super::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, Track, injection_slots,
+        injection_target,
     };
 
     fn track(id: &str) -> Track {
@@ -677,6 +716,27 @@ mod tests {
         assert_eq!(state.upcoming_counts(0), (3, 1));
         assert_eq!(state.upcoming_counts(4), (0, 1));
         assert_eq!(state.upcoming_counts(5), (0, 0));
+    }
+
+    #[test]
+    fn weaving_injections_lands_one_per_three_and_keeps_the_vectors_aligned() {
+        let mut queue = tracks(&["a", "b", "c", "d", "e", "f", "g"]);
+        let mut state = ShuffleState::for_context(&queue, ShuffleMode::Off);
+
+        let fresh = tracks(&["x1", "x2"]);
+        let inserted = state.weave_injections(&mut queue, &fresh, injection_target(7), 0);
+
+        assert_eq!(inserted, 2);
+        assert_eq!(queue.len(), state.origins.len());
+        // One injection after every third upcoming context track: after
+        // "d" (the region's third context track) and after "g" (its
+        // sixth). The second insert shifts the first's absolute slot.
+        assert_eq!(state.origins[4], Origin::Injected);
+        assert_eq!(state.origins[8], Origin::Injected);
+        assert_eq!(
+            order(&queue),
+            ["a", "b", "c", "d", "x1", "e", "f", "g", "x2"]
+        );
     }
 
     #[test]

@@ -17,8 +17,8 @@ use crate::{
     model::{Album, Artist, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
-        ContextKind, Origin, SMART_SHUFFLE_MIN_TRACKS, ShuffleMode, ShuffleRng, ShuffleState,
-        injection_slots, injection_target,
+        ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
+        smart_admissible,
     },
     spotify::{
         ClientIdSource, Spotify, SpotifyConfiguration, resolve_configuration, valid_client_id,
@@ -661,9 +661,11 @@ async fn start(
         let _ = events.send(BackendEvent::ShuffleChanged {
             mode: snapshot.shuffle.mode,
             supported: !snapshot.radio,
-            smart_supported: !snapshot.radio
-                && snapshot.context_kind.supports_smart_shuffle()
-                && snapshot.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS,
+            smart_supported: smart_admissible(
+                snapshot.context_kind,
+                snapshot.radio,
+                snapshot.shuffle.context.len(),
+            ),
         });
     }
     let environment_client_id = std::env::var("SPOTIFY_CLIENT_ID").ok();
@@ -1287,9 +1289,7 @@ impl Worker {
         }
         // An album, or a list too short to weave through, inherits plain
         // shuffle where the global toggle said Smart.
-        if mode == ShuffleMode::Smart
-            && (!kind.supports_smart_shuffle() || tracks.len() < SMART_SHUFFLE_MIN_TRACKS)
-        {
+        if mode == ShuffleMode::Smart && !smart_admissible(kind, false, tracks.len()) {
             mode = ShuffleMode::Shuffle;
         }
         let mut shuffle = ShuffleState::for_context(&tracks, mode);
@@ -1386,10 +1386,12 @@ impl Worker {
     /// Whether Smart Shuffle could act right now: a live, non-radio,
     /// playlist-like context long enough to weave through.
     fn smart_supported(&self) -> bool {
-        !self.queue.radio
-            && self.queue.index.is_some()
-            && self.queue.kind.supports_smart_shuffle()
-            && self.queue.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS
+        self.queue.index.is_some()
+            && smart_admissible(
+                self.queue.kind,
+                self.queue.radio,
+                self.queue.shuffle.context.len(),
+            )
     }
 
     /// Whether Smart Shuffle is currently weaving injections into this
@@ -2010,45 +2012,30 @@ impl Worker {
         }));
     }
 
-    /// Weaves `fresh` tracks into the upcoming region at the density-planned
-    /// slots, marking each as an injected origin; returns how many landed.
-    /// Callers pre-filter the batch with [`Self::fresh_recommendations`] and
+    /// Weaves fresh tracks into the upcoming region at the density-planned
+    /// slots via [`ShuffleState::weave_injections`]; returns how many
+    /// landed. Callers pre-filter with [`Self::fresh_recommendations`] and
     /// keep whatever this did not take.
     fn weave_injections(&mut self, fresh: &[Track], wanted: usize, playing: usize) -> usize {
-        if wanted == 0 || fresh.is_empty() {
-            return 0;
-        }
-        let origins = self
-            .queue
+        self.queue
             .shuffle
-            .origins
-            .get(playing.saturating_add(1)..)
-            .unwrap_or_default();
-        let slots = injection_slots(origins, wanted);
-        let count = slots.len().min(fresh.len());
-        // Apply in reverse so earlier inserts never shift later slots. Slot
-        // k means "after upcoming entry k", whose absolute index is
-        // `playing + 1 + k`, so each insert goes one past that.
-        for taken in (0..count).rev() {
-            let position = playing + 1 + slots[taken] + 1;
-            self.queue.tracks.insert(position, fresh[taken].clone());
-            self.queue
-                .shuffle
-                .origins
-                .insert(position, Origin::Injected);
-        }
-        count
+            .weave_injections(&mut self.queue.tracks, fresh, wanted, playing)
+    }
+
+    /// The source ids this queue already holds, for filtering incoming
+    /// recommendations.
+    fn queued_ids(&self) -> HashSet<String> {
+        self.queue
+            .tracks
+            .iter()
+            .map(|track| track.source_id.clone())
+            .collect()
     }
 
     /// Filters a recommendation batch down to displayable tracks the queue
     /// does not already hold anywhere, deduplicated among themselves.
     fn fresh_recommendations(&self, candidates: Vec<Track>) -> Vec<Track> {
-        let known: HashSet<String> = self
-            .queue
-            .tracks
-            .iter()
-            .map(|track| track.source_id.clone())
-            .collect();
+        let known = self.queued_ids();
         let mut seen: HashSet<String> = HashSet::new();
         candidates
             .into_iter()
@@ -2060,15 +2047,10 @@ impl Worker {
     /// Queues recommendations for later refills, skipping anything already
     /// queued or buffered.
     fn buffer_recommendations(&mut self, candidates: impl IntoIterator<Item = Track>) {
+        let known = self.queued_ids();
         let mut buffered: HashSet<String> = self
             .injections
             .buffer
-            .iter()
-            .map(|track| track.source_id.clone())
-            .collect();
-        let known: HashSet<String> = self
-            .queue
-            .tracks
             .iter()
             .map(|track| track.source_id.clone())
             .collect();
@@ -3006,9 +2988,7 @@ fn send_shuffle_changed(queue: &PlayQueue, events: &UnboundedSender<BackendEvent
     let _ = events.send(BackendEvent::ShuffleChanged {
         mode: queue.shuffle.mode,
         supported,
-        smart_supported: supported
-            && queue.kind.supports_smart_shuffle()
-            && queue.shuffle.context.len() >= SMART_SHUFFLE_MIN_TRACKS,
+        smart_supported: smart_admissible(queue.kind, queue.radio, queue.shuffle.context.len()),
     });
 }
 
