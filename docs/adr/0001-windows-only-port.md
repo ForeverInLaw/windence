@@ -15,4 +15,4 @@ Why: the port rides on an actively developed upstream, and most valuable changes
 - Dead macOS paths exist in `src/app/windows.rs` and friends; do not "fix" or remove them while porting — that is deliberate.
 - SF Symbols do not exist on Windows, and `gpui-symbols` (the crate rendering them) does not compile off macOS. Its usage is replaced by gpui-component's icon set; the dependency is dropped.
 - The pinned Zed/gpui revs stay where they are (see Cargo.toml pin comments). The port now builds and runs at this pin; bumping remains a separate, deliberate change, because pin moves are delicate by design.
-- Audio stays on SDL2 (bundled, static-linked) rather than switching to WASAPI/cpal — revisit only if SDL2 proves problematic on Windows.
+- Audio stays on SDL2 (bundled, static-linked) rather than switching to WASAPI/cpal — revisit only if SDL2 proves problematic on Windows. If that happens, only the output layer in `src/audio.rs` may be replaced; librespot and the rest of the playback path stay.
