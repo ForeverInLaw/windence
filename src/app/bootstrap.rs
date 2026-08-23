@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 pub(super) fn run() {
@@ -26,20 +28,20 @@ pub(super) fn run() {
     });
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        cx.text_system()
+            .add_fonts(
+                assets::FONT_FILES
+                    .iter()
+                    .map(|bytes| Cow::Borrowed(*bytes))
+                    .collect(),
+            )
+            .expect("could not register the bundled fonts");
         cx.set_http_client(Arc::new(
             http::ImageHttpClient::new().expect("could not configure image HTTP client"),
         ));
         cx.on_action(|_: &Quit, cx| cx.quit());
         services::AppServices::init(cx, lifecycle, preferences_store, preferences);
-        cx.bind_keys([
-            KeyBinding::new("tab", Tab, None),
-            KeyBinding::new("shift-tab", TabPrev, None),
-            KeyBinding::new("cmd-k", OpenSearch, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-w", CloseWindow, None),
-            KeyBinding::new("escape", DismissOverlay, Some("Cadence")),
-            playback_key_binding(),
-        ]);
+        cx.bind_keys(app_key_bindings());
         // Without a menu bar, Cmd+Q is only deliverable through a window, so
         // closing the last one would leave no way to quit.
         cx.set_menus(vec![
@@ -97,6 +99,21 @@ fn watch_for_activations(cx: &mut App) {
     .detach();
 }
 
+/// The app's global key bindings. Modifier shortcuts use the "secondary"
+/// prefix: cmd on macOS, ctrl elsewhere. Writing "cmd" outright would demand
+/// the Windows key on Windows, where gpui maps the platform modifier to Win.
+fn app_key_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("tab", Tab, None),
+        KeyBinding::new("shift-tab", TabPrev, None),
+        KeyBinding::new("secondary-k", OpenSearch, None),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-w", CloseWindow, None),
+        KeyBinding::new("escape", DismissOverlay, Some("Cadence")),
+        playback_key_binding(),
+    ]
+}
+
 fn playback_key_binding() -> KeyBinding {
     KeyBinding::new("space", TogglePlayback, Some("Cadence && !Input"))
 }
@@ -119,5 +136,35 @@ mod tests {
         let (bindings, _) =
             keymap.bindings_for_input(std::slice::from_ref(&space), &[cadence, input]);
         assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn modifier_shortcuts_match_the_platform_secondary_key() {
+        let keymap = gpui::Keymap::new(app_key_bindings());
+        let cadence = gpui::KeyContext::try_from("Cadence").unwrap();
+
+        #[cfg(target_os = "macos")]
+        let (matching, not_matching) = (
+            ["secondary-k", "cmd-k"],
+            ["ctrl-k", "alt-k"],
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (matching, not_matching) = (
+            ["secondary-k", "ctrl-k"],
+            ["cmd-k", "alt-k"],
+        );
+
+        for source in matching {
+            let keystroke = gpui::Keystroke::parse(source).unwrap();
+            let (bindings, _) =
+                keymap.bindings_for_input(std::slice::from_ref(&keystroke), std::slice::from_ref(&cadence));
+            assert_eq!(bindings.len(), 1, "{source} must open search");
+        }
+        for source in not_matching {
+            let keystroke = gpui::Keystroke::parse(source).unwrap();
+            let (bindings, _) =
+                keymap.bindings_for_input(std::slice::from_ref(&keystroke), std::slice::from_ref(&cadence));
+            assert!(bindings.is_empty(), "{source} must not open search");
+        }
     }
 }

@@ -67,6 +67,16 @@ const CADENCE_ICONS: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// The Inter faces the UI names by weight. Bundled so rendering is the same
+/// on every machine; a missing face renders as blank text on Windows, so
+/// relying on system-installed copies is not an option.
+pub(super) const FONT_FILES: &[&[u8]] = &[
+    include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
+];
+
 /// The app's asset source: gpui-component's embedded set with Cadence's own
 /// icons layered on top.
 pub(super) struct AppAssets;

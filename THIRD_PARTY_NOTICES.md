@@ -1,5 +1,16 @@
 # Third-Party Notices
 
+## Inter font
+
+The UI renders with the Inter typeface by Rasmus Andersson, bundled in
+`assets/fonts/` and registered at startup.
+
+Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1,
+shipped verbatim as `assets/fonts/OFL-1.1.txt` and available with a FAQ at:
+https://scripts.sil.org/OFL
+
 ## Vadivam audio-waveform icon
 
 The Cadence mark incorporates the `audio-waveform` icon from
