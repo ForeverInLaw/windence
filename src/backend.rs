@@ -236,6 +236,10 @@ impl BlockingStore {
         self.call(move |store| store.add_smart_shuffle_seen(&ids))
             .await
     }
+
+    async fn clear_smart_shuffle_seen(&self) -> Result<()> {
+        self.call(|store| store.clear_smart_shuffle_seen()).await
+    }
 }
 
 /// Where a catalog request sends its answer. Dropping the receiving half
@@ -923,8 +927,8 @@ struct Worker {
     autoplay: Autoplay,
     injections: Injections,
     /// Track ids Smart Shuffle has ever offered, persisted across restarts
-    /// and toggle cycles; a suggestion is never repeated within this set.
-    injection_seen: HashSet<String>,
+    /// and toggle cycles; an offered track is never repeated within this set.
+    smart_shuffle_seen: HashSet<String>,
     session: SessionTasks,
 }
 
@@ -945,7 +949,7 @@ impl Worker {
             radio: Radio::default(),
             autoplay: Autoplay::default(),
             injections: Injections::default(),
-            injection_seen: HashSet::new(),
+            smart_shuffle_seen: HashSet::new(),
             session: SessionTasks::default(),
         }
     }
@@ -985,7 +989,7 @@ impl Worker {
         }
         self.start_account_loads().await;
         match self.store.smart_shuffle_seen().await {
-            Ok(seen) => self.injection_seen = seen.into_iter().collect(),
+            Ok(seen) => self.smart_shuffle_seen = seen.into_iter().collect(),
             Err(error) => send_error(&self.events, error),
         }
         self.connection.begin_connect(PlaybackConnectionRequest {
@@ -1140,11 +1144,7 @@ impl Worker {
         if let Err(error) = self.store.clear_playback_state().await {
             send_error(&self.events, error);
         }
-        if let Err(error) = self
-            .store
-            .call(|store| store.clear_smart_shuffle_seen())
-            .await
-        {
+        if let Err(error) = self.store.clear_smart_shuffle_seen().await {
             send_error(&self.events, error);
         }
         let _ = self.events.send(BackendEvent::LoggedOut);
@@ -1841,7 +1841,7 @@ impl Worker {
         self.queue.ended = false;
         // Offered history belongs to the signed-in account; the store copy
         // is cleared by the logout/config-reset flows.
-        self.injection_seen.clear();
+        self.smart_shuffle_seen.clear();
     }
 
     /// Starts a radio prefetch when the playing track is the queue's last,
@@ -2003,20 +2003,16 @@ impl Worker {
             let buffered = self.injections.buffer.drain(..).collect();
             let fresh = self.fresh_recommendations(buffered);
             let inserted = self.weave_injections(&fresh, deficit, index);
-            let offered: Vec<String> = fresh
-                .iter()
-                .take(inserted)
-                .map(|track| track.source_id.clone())
-                .collect();
             // Whatever did not fit this pass goes back on top of the
             // buffer instead of being refetched later.
-            self.buffer_recommendations(fresh.into_iter().skip(inserted));
-            self.remember_injections(offered).await;
-            if inserted > 0
-                && let Err(error) = self.commit_queue_change(index).await
-            {
-                send_error(&self.events, error);
-                return;
+            self.buffer_recommendations(fresh.iter().skip(inserted).cloned());
+            if inserted > 0 {
+                if let Err(error) = self.commit_queue_change(index).await {
+                    send_error(&self.events, error);
+                    return;
+                }
+                // Mark as offered only once they actually reached the queue.
+                self.remember_injections(&fresh, inserted).await;
             }
         }
 
@@ -2027,19 +2023,15 @@ impl Worker {
         // Seed on a track already heard this session, never the same one
         // as the previous fetch, so consecutive batches come from
         // different stations instead of re-offering the same list.
+        let heard_end = index.min(self.queue.tracks.len());
         let Some(seed) = next_injection_seed(
-            self.queue.tracks[..index.min(self.queue.tracks.len())]
-                .iter()
-                .rev(),
+            self.queue.tracks[..heard_end].iter().rev(),
             self.queue.tracks.get(index),
             self.injections.previous_seed.as_deref(),
         )
         .cloned() else {
             return;
         };
-        if self.injections.fruitless_seed.as_deref() == Some(seed.source_id.as_str()) {
-            return;
-        }
         self.injections.seed_id = Some(seed.source_id.clone());
         self.injections.previous_seed = Some(seed.source_id.clone());
         let player = self.connection.player.clone();
@@ -2087,16 +2079,19 @@ impl Worker {
             .into_iter()
             .filter(|track| track.is_displayable() && seen.insert(track.source_id.clone()))
             .filter(|track| !known.contains(&track.source_id))
-            .filter(|track| !self.injection_seen.contains(&track.source_id))
+            .filter(|track| !self.smart_shuffle_seen.contains(&track.source_id))
             .collect()
     }
 
-    /// Remembers offered tracks in memory and in the store, so they are
-    /// never suggested again within the retained history.
-    async fn remember_injections(&mut self, ids: impl IntoIterator<Item = String>) {
-        let ids: Vec<String> = ids
-            .into_iter()
-            .filter(|id| self.injection_seen.insert(id.clone()))
+    /// Remembers offered tracks in memory and in the store, so an offered
+    /// track is never repeated within the retained history. Called only
+    /// after the tracks actually reached the queue.
+    async fn remember_injections(&mut self, fresh: &[Track], inserted: usize) {
+        let ids: Vec<String> = fresh
+            .iter()
+            .take(inserted)
+            .map(|track| track.source_id.clone())
+            .filter(|id| self.smart_shuffle_seen.insert(id.clone()))
             .collect();
         if ids.is_empty() {
             return;
@@ -2131,12 +2126,12 @@ impl Worker {
     /// whatever did not fit buffered for later refills.
     async fn finish_injection_fetch(&mut self, fetched: Finished<Result<Vec<Track>>>) {
         self.injections.task = None;
-        let seed_id = self.injections.seed_id.take();
         let tracks = match fetched {
             Some(Ok(Ok(tracks))) => tracks,
             Some(Ok(Err(error))) => {
+                // The rotating seed already points the next attempt
+                // somewhere else; just note the failure.
                 log::warn!("smart shuffle: recommendation fetch failed: {error:#}");
-                self.injections.fruitless_seed = seed_id;
                 return;
             }
             Some(Err(error)) => {
@@ -2155,25 +2150,20 @@ impl Worker {
         let deficit = self.injection_deficit(index);
         let fresh = self.fresh_recommendations(tracks);
         let inserted = self.weave_injections(&fresh, deficit, index);
-        let offered: Vec<String> = fresh
-            .iter()
-            .take(inserted)
-            .map(|track| track.source_id.clone())
-            .collect();
-        // A dry or fully-stale batch marks its seed fruitless, mirroring
-        // autoplay: retrying needs the queue to move first.
         if inserted == 0 {
-            self.injections.fruitless_seed = seed_id;
-        } else {
-            // The surplus stays ready for the next thinning, no refetch.
-            self.buffer_recommendations(fresh.into_iter().skip(inserted));
-            self.remember_injections(offered).await;
+            // Nothing usable this batch; the next attempt rotates to a
+            // different seed on its own.
+            return;
         }
-        if inserted > 0
-            && let Err(error) = self.commit_queue_change(index).await
-        {
+        // The surplus stays ready for the next thinning, no refetch.
+        self.buffer_recommendations(fresh.iter().skip(inserted).cloned());
+        if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
+            return;
         }
+        // Mark them as offered only once they actually reached the queue:
+        // tracks that never made it may fairly be offered again.
+        self.remember_injections(&fresh, inserted).await;
     }
 
     fn connected_player(&self) -> Result<&Playback> {
@@ -2343,15 +2333,13 @@ struct Injections {
     task: Option<tokio::task::JoinHandle<Result<Vec<Track>>>>,
     /// The source id the in-flight (or last) fetch was seeded with.
     seed_id: Option<String>,
-    /// The seed the previous successful fetch used; the next fetch picks a
-    /// different one so consecutive batches come from different stations.
-    /// Survives `reset`: toggling Smart off and on must not re-offer the
-    /// same station.
+    /// The seed the previous fetch used; the next fetch picks a different
+    /// one so consecutive batches come from different stations. Survives
+    /// `reset`: toggling Smart off and on must not re-offer the same
+    /// station. A failed or dry batch needs no extra guard — the rotating
+    /// seed and the low trigger rate already keep a failing endpoint from
+    /// being hammered.
     previous_seed: Option<String>,
-    /// A seed whose fetch failed or added nothing new; skipped until the
-    /// playing track changes, so a failing endpoint cannot be hammered on
-    /// every track advance.
-    fruitless_seed: Option<String>,
     /// Recommendations waiting for a gap in the upcoming tail.
     buffer: VecDeque<Track>,
 }
@@ -2360,7 +2348,6 @@ impl Injections {
     fn reset(&mut self) {
         abort_task(&mut self.task);
         self.seed_id = None;
-        self.fruitless_seed = None;
         self.buffer.clear();
     }
 }
@@ -2878,7 +2865,7 @@ async fn logout_account(store: BlockingStore, spotify: Spotify) -> Result<()> {
         delete_playback_refresh_token().await,
         store.clear_library_cache().await,
         store.clear_playback_state().await,
-        store.call(|store| store.clear_smart_shuffle_seen()).await,
+        store.clear_smart_shuffle_seen().await,
     ] {
         if let Err(error) = result {
             errors.push(error.to_string());
