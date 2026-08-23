@@ -1,5 +1,9 @@
 use super::*;
 
+/// Empty space above the brand row; also the height of the drag strips that
+/// surround the Windows traffic lights floating inside it.
+const SIDEBAR_TOP_PADDING: f32 = 52.;
+
 /// Navigation the sidebar asks the workspace to perform.
 pub(super) enum SidebarEvent {
     Navigate(Route),
@@ -30,6 +34,18 @@ impl EventEmitter<SidebarEvent> for Sidebar {}
 
 fn expanded_sidebar_width(compact_layout: bool) -> f32 {
     if compact_layout { 200. } else { 232. }
+}
+
+/// One rect of the top drag strip, anchored on the panel's edges so it
+/// follows the animated width.
+fn drag_strip(top: f32, left: f32, height: f32) -> Div {
+    div()
+        .absolute()
+        .top(px(top))
+        .left(px(left))
+        .right_0()
+        .h(px(height))
+        .window_control_area(WindowControlArea::Drag)
 }
 
 impl Sidebar {
@@ -286,6 +302,28 @@ impl Sidebar {
             .bg(rgb(palette.canvas))
             .border_r_1()
             .border_color(rgb(palette.border))
+            .relative()
+            .when(cfg!(target_os = "windows"), |sidebar| {
+                // Empty padding above the brand row doubles as the drag strip
+                // for the custom traffic lights, which float over it from the
+                // window root. The strip stops short of the cluster: GPUI
+                // resolves overlapping control areas by paint order, and this
+                // panel paints before that overlay, so a strip touching the
+                // dots would turn their clicks into window drags. Both rects
+                // anchor on the panel edges and follow the animated width;
+                // below the dot row the full width drags again.
+                sidebar
+                    .child(drag_strip(
+                        0.,
+                        TRAFFIC_LIGHT_BAND_RIGHT,
+                        SIDEBAR_TOP_PADDING,
+                    ))
+                    .child(drag_strip(
+                        TRAFFIC_LIGHT_BAND_BOTTOM,
+                        0.,
+                        SIDEBAR_TOP_PADDING - TRAFFIC_LIGHT_BAND_BOTTOM,
+                    ))
+            })
             .child(
                 div()
                     .w(px(expanded_width))
@@ -295,7 +333,7 @@ impl Sidebar {
                     .flex_col()
                     .gap(px(28.))
                     .p(px(SIDEBAR_CONTENT_PAD))
-                    .pt(px(52.))
+                    .pt(px(SIDEBAR_TOP_PADDING))
                     .child(brand)
                     .child(
                         div()

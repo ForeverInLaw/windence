@@ -116,19 +116,30 @@ impl Onboarding {
                 }),
             )
             .size_full()
-            .overflow_y_scroll()
+            .relative()
             .bg(rgb(palette.surface))
             .font_family("Inter")
             .text_color(rgb(palette.text))
             .child(
                 div()
-                    .h_full()
-                    .min_h(px(640.))
-                    .w_full()
-                    .flex()
-                    .child(context_rail)
-                    .child(content),
+                    .id("onboarding-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .h_full()
+                            .min_h(px(640.))
+                            .w_full()
+                            .flex()
+                            .child(context_rail)
+                            .child(content),
+                    ),
             )
+            // The lights float over the window, so they live outside the
+            // scroll container above.
+            .when(cfg!(target_os = "windows"), |page| {
+                page.child(super::chrome::windows_traffic_lights())
+            })
     }
 
     fn backend_failure(&self, cx: &mut Context<Self>) -> Div {

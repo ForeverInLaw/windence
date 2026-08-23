@@ -11,8 +11,8 @@ use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, Bounds, ClipboardItem, Context, Div,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels,
     RenderOnce, SharedString, Stateful, Subscription, Window, WindowAppearance, WindowBounds,
-    WindowOptions, actions, anchored, deferred, div, ease_out_quint, img, point, prelude::*, px,
-    relative, rgb, size, uniform_list,
+    WindowControlArea, WindowOptions, actions, anchored, deferred, div, ease_out_quint, img, point,
+    prelude::*, px, relative, rgb, size, uniform_list,
 };
 use gpui_component::{
     Root, Sizable, Theme, WindowExt,
@@ -179,12 +179,23 @@ const BRAND_LOGO_SIZE: f32 = 32.;
 /// glyph itself, not the 20pt box that holds it, which is the trap here.
 const NAV_ROW_PAD: f32 = 12.;
 const NAV_GLYPH_WIDTH: f32 = 17.;
+/// One traffic light's edge length.
+const TRAFFIC_LIGHT_SIZE: f32 = 12.;
+/// Spacing between the traffic lights.
+const TRAFFIC_LIGHT_GAP: f32 = 8.;
 /// Span of the traffic-light cluster, close button through zoom (60pt on
-/// macOS 26). The buttons' sizes and spacing are AppKit metrics; their origin
-/// is ours via `traffic_light_position`.
-const TRAFFIC_LIGHT_CLUSTER_WIDTH: f32 = 60.;
+/// macOS 26). Three dots plus their trailing gaps; the buttons' sizes and
+/// spacing are AppKit metrics, their origin ours via `traffic_light_position`.
+const TRAFFIC_LIGHT_CLUSTER_WIDTH: f32 = TRAFFIC_LIGHT_SIZE * 3. + TRAFFIC_LIGHT_GAP * 3.;
+/// The Windows port's floating-cluster left inset, centred on the collapsed
+/// rail axis like `traffic_light_position` does for the OS-drawn lights.
+const TRAFFIC_LIGHT_INSET_X: f32 = (COLLAPSED_SIDEBAR_WIDTH - TRAFFIC_LIGHT_CLUSTER_WIDTH) / 2.;
 /// The cluster's top inset, matching the OS default for this window style.
 const TRAFFIC_LIGHT_INSET_Y: f32 = 9.;
+/// Right edge of the cluster band, including the trailing button gap.
+const TRAFFIC_LIGHT_BAND_RIGHT: f32 = TRAFFIC_LIGHT_INSET_X + TRAFFIC_LIGHT_CLUSTER_WIDTH;
+/// Bottom edge of the cluster's dot row.
+const TRAFFIC_LIGHT_BAND_BOTTOM: f32 = TRAFFIC_LIGHT_INSET_Y + TRAFFIC_LIGHT_SIZE;
 /// The hover-and-selection pill behind a collapsed sidebar row.
 const SIDEBAR_FILL_COLLAPSED: f32 = 42.;
 /// How far the collapsed pill sits in from the row's left edge.
@@ -233,10 +244,7 @@ fn sidebar_fill_geometry(
 /// collapsed rail axis, rather than trusting the OS default inset to land
 /// there.
 fn traffic_light_position() -> gpui::Point<Pixels> {
-    point(
-        px((COLLAPSED_SIDEBAR_WIDTH - TRAFFIC_LIGHT_CLUSTER_WIDTH) / 2.),
-        px(TRAFFIC_LIGHT_INSET_Y),
-    )
+    point(px(TRAFFIC_LIGHT_INSET_X), px(TRAFFIC_LIGHT_INSET_Y))
 }
 
 fn uses_compact_content_layout(window_width: f32) -> bool {

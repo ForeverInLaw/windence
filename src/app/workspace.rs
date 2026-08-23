@@ -411,6 +411,9 @@ impl Render for Workspace {
             .when(app_change_open, |root| {
                 root.child(deferred(self.app_change_confirmation(palette, cx)))
             })
+            .when(cfg!(target_os = "windows"), |root| {
+                root.child(chrome::windows_traffic_lights())
+            })
             .into_any_element()
     }
 }

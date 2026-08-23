@@ -287,6 +287,16 @@ impl Render for Toolbar {
                         group.child(self.search_field(palette, compact))
                     }),
             )
+            .when(cfg!(target_os = "windows"), |bar| {
+                // Empty middle of the toolbar: a native drag strip, like the
+                // transparent title bar macOS lays over this row.
+                bar.child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .window_control_area(WindowControlArea::Drag),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -394,4 +404,82 @@ pub(super) fn spotify_app_change_confirmation(
                         ),
                 ),
         )
+}
+
+/// macOS traffic lights: 12px dots with 8px gaps, placed where macOS draws
+/// them (mod.rs's `traffic_light_position()` centers the same cluster over
+/// the collapsed sidebar).
+const TRAFFIC_LIGHT_CLOSE_COLOR: u32 = 0xFF5F57;
+const TRAFFIC_LIGHT_MINIMIZE_COLOR: u32 = 0xFEBC2E;
+const TRAFFIC_LIGHT_MAXIMIZE_COLOR: u32 = 0x28C840;
+
+/// One macOS-style traffic light. The glyph only appears on hover, like on
+/// macOS. Clicks go through `area` to the OS non-client path alone: with a
+/// control area under the cursor the window never receives client mouse
+/// events there, so an `on_click` handler would be dead code.
+fn traffic_light(
+    id: &'static str,
+    color: u32,
+    glyph: &'static str,
+    area: WindowControlArea,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .group(id)
+        .window_control_area(area)
+        .size(px(TRAFFIC_LIGHT_SIZE))
+        .mr(px(TRAFFIC_LIGHT_GAP))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgb(color))
+        .hover(|style| style.opacity(0.9))
+        .active(|style| style.opacity(0.78))
+        .child(
+            div()
+                .text_size(px(9.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(gpui::transparent_black())
+                .group_hover(id, |style| style.text_color(gpui::black().opacity(0.55)))
+                .child(glyph),
+        )
+}
+
+/// The Windows port's traffic lights, floating over the top-left corner the
+/// way macOS overlays the real ones. Each dot is a native control area
+/// (Close, Min, Max): the OS hit test answers HTCLOSE/HTMINBUTTON/HTMAXBUTTON
+/// there, so clicks work and never start drags. There is deliberately no drag
+/// pad on the cluster — GPUI resolves overlapping control areas by
+/// registration order (paint order), so anything Drag-shaped touching these
+/// dots would swallow their clicks. The drag surfaces around the dots are the
+/// sidebar's top strip, carved to stop short of this cluster (see sidebar.rs),
+/// and the toolbar's middle gap. macOS draws its own controls and never
+/// renders this.
+pub(super) fn windows_traffic_lights() -> Div {
+    div()
+        .absolute()
+        .top(px(TRAFFIC_LIGHT_INSET_Y))
+        .left(px(TRAFFIC_LIGHT_INSET_X))
+        .flex()
+        .flex_row()
+        .items_center()
+        .child(traffic_light(
+            "title-close",
+            TRAFFIC_LIGHT_CLOSE_COLOR,
+            "×",
+            WindowControlArea::Close,
+        ))
+        .child(traffic_light(
+            "title-minimize",
+            TRAFFIC_LIGHT_MINIMIZE_COLOR,
+            "−",
+            WindowControlArea::Min,
+        ))
+        .child(traffic_light(
+            "title-maximize",
+            TRAFFIC_LIGHT_MAXIMIZE_COLOR,
+            "+",
+            WindowControlArea::Max,
+        ))
 }
