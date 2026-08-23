@@ -55,3 +55,11 @@ _Avoid_: Autoplay, Smart Shuffle
 **Autoplay**:
 A preference-gated behaviour that appends recommended tracks when the queue reaches its end.
 _Avoid_: Smart Shuffle (injects while the queue still runs), Radio
+
+**Date Added**:
+When a track entered the context it is listed in: a playlist's own add history, or the moment it was liked. It belongs to the listing, not to the track — the same track carries different dates in different contexts. Shown as a relative age during the first month, as an absolute date after that.
+_Avoid_: release date (the album's), liked at
+
+**Default Order**:
+The track order Spotify reports for a context: playlists keep their curated sequence, liked songs their like sequence. Every sort view cycles back to it, and playback never edits it.
+_Avoid_: original position, custom order

@@ -167,6 +167,25 @@ const PROGRESS_TIME_WIDTH: f32 = 36.;
 const PROGRESS_GAP: f32 = 8.;
 const COMPACT_BREAKPOINT: f32 = 960.;
 const COMPACT_PLAYER_BREAKPOINT: f32 = 1136.;
+/// Track-table breakpoints. Below the first the date-added column folds
+/// away; below the second the album column follows, leaving `#`, title,
+/// and time. The star and row actions survive every width.
+const TRACK_DATE_ADDED_BREAKPOINT: f32 = 1100.;
+const TRACK_ALBUM_BREAKPOINT: f32 = 880.;
+
+/// Which optional columns of a track table fit the window's width.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrackTableColumns {
+    album: bool,
+    date_added: bool,
+}
+
+fn track_table_columns(window_width: f32) -> TrackTableColumns {
+    TrackTableColumns {
+        album: window_width >= TRACK_ALBUM_BREAKPOINT,
+        date_added: window_width >= TRACK_DATE_ADDED_BREAKPOINT,
+    }
+}
 /// The collapsed rail; the traffic-light cluster is positioned so its centre
 /// sits on this rail's axis.
 const COLLAPSED_SIDEBAR_WIDTH: f32 = 78.;
@@ -540,6 +559,21 @@ mod tests {
         assert!(!uses_compact_content_layout(960.));
         assert!(uses_compact_player_layout(1135.));
         assert!(!uses_compact_player_layout(1136.));
+    }
+
+    #[test]
+    fn track_table_columns_fold_from_the_widest_to_the_thinnest() {
+        let full = track_table_columns(1100.);
+        assert!(full.album && full.date_added);
+        // The date column folds first.
+        let no_date = track_table_columns(1099.);
+        assert!(no_date.album && !no_date.date_added);
+        // Then the album column.
+        let no_album = track_table_columns(879.);
+        assert!(!no_album.album && !no_album.date_added);
+        // The minimal table keeps `#`, title, and time; star and actions
+        // survive every width, so nothing further folds.
+        assert_eq!(track_table_columns(500.), no_album);
     }
 
     #[test]

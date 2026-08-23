@@ -13,6 +13,9 @@ pub(super) enum LibrarySection {
     Recent,
 }
 
+/// The persistence key under which Liked Songs remembers its sort.
+const LIKED_SORT_KEY: &str = "liked";
+
 impl LibrarySection {
     fn page_id(self) -> &'static str {
         match self {
@@ -54,11 +57,20 @@ impl LibrarySection {
         }
     }
 
-    fn tracks(self, library: &library::Library) -> Arc<[model::Track]> {
+    fn tracks(self, library: &library::Library) -> Arc<[model::ListedTrack]> {
         match self {
             Self::LikedSongs => library.liked_tracks().clone(),
             Self::Favorites => library.favorites().clone(),
             Self::Recent => library.recently_played().clone(),
+        }
+    }
+
+    /// Which lists remember their sort: Spotify's own collections. Local
+    /// slices (favorites, history) keep plain headers.
+    fn sort_key(self) -> Option<&'static str> {
+        match self {
+            Self::LikedSongs => Some(LIKED_SORT_KEY),
+            Self::Favorites | Self::Recent => None,
         }
     }
 
@@ -136,7 +148,13 @@ impl Render for LibraryTracksPage {
             components::empty_state(palette, message).into_any_element()
         } else {
             self.tracks.update(cx, |list, cx| {
-                list.show(section.list_id(), tracks, ContextKind::Collection, cx)
+                list.show(
+                    section.list_id(),
+                    tracks,
+                    section.sort_key(),
+                    ContextKind::Collection,
+                    cx,
+                )
             });
             self.tracks.clone().into_any_element()
         };

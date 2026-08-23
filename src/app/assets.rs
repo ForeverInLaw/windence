@@ -14,6 +14,14 @@ pub(super) fn icon_path(name: &str) -> String {
 /// through `gpui_component_assets`.
 const CADENCE_ICONS: &[(&str, &[u8])] = &[
     (
+        "icons/arrow-down.svg",
+        include_bytes!("../../assets/icons/arrow-down.svg"),
+    ),
+    (
+        "icons/arrow-up.svg",
+        include_bytes!("../../assets/icons/arrow-up.svg"),
+    ),
+    (
         "icons/clock.svg",
         include_bytes!("../../assets/icons/clock.svg"),
     ),

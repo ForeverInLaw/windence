@@ -8,12 +8,23 @@ use page::PageEvent;
 /// dismisses it. Dismissal that no click drives -- a keyboard route change, a
 /// scroll outside the table -- is the workspace's to trigger, via
 /// `close_menu`, because the menu outlives the page going off screen.
+///
+/// Lists whose context dates and sorts its tracks (playlists, liked songs)
+/// carry a `sort_key`; clicking their headers cycles Title/Album/Date added
+/// through A-Z, Z-A, and back to the default order, and the choice survives
+/// restarts. The rows always play in the displayed order.
 pub(super) struct TrackList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
-    tracks: Arc<[model::Track]>,
+    /// The context's tracks in default order: the sequence Spotify reports.
+    listed: Arc<[model::ListedTrack]>,
+    /// Display position to index into `listed`; identity while unsorted.
+    order: Arc<[usize]>,
     /// Where this list's playback starts from, which gates Smart Shuffle.
     context_kind: ContextKind,
+    /// This list's sort persistence key, when its context sorts at all.
+    sort_key: Option<String>,
+    sort: Option<model::ListSort>,
     /// The row whose action menu is open, keyed by source ID and row index so
     /// the same track appearing twice opens only the row that was clicked.
     menu_open: Option<String>,
@@ -30,8 +41,11 @@ impl TrackList {
     pub(super) fn new(cx: &mut App) -> Self {
         Self {
             id: None,
-            tracks: Arc::default(),
+            listed: Arc::default(),
+            order: Arc::default(),
             context_kind: ContextKind::default(),
+            sort_key: None,
+            sort: None,
             menu_open: None,
             current_album_id: None,
             library: services::AppServices::library(cx),
@@ -40,10 +54,11 @@ impl TrackList {
         }
     }
 
-    /// Shows `tracks` under `id`, which pages vary per playlist or album so
+    /// Shows `listed` under `id`, which pages vary per playlist or album so
     /// that opening a different one starts back at the top of the list.
     /// `context_kind` rides along so starting playback from any row carries
-    /// the right Smart Shuffle gate.
+    /// the right Smart Shuffle gate. `sort_key` enables the sortable headers
+    /// and names the row the sort persists under; `None` keeps plain labels.
     ///
     /// Pages call this from `render`, so the early return below is what keeps
     /// the notify cycle finite: callers must pass a stored `Arc` clone, not a
@@ -51,18 +66,59 @@ impl TrackList {
     pub(super) fn show(
         &mut self,
         id: impl Into<ElementId>,
-        tracks: Arc<[model::Track]>,
+        listed: Arc<[model::ListedTrack]>,
+        sort_key: Option<&str>,
         context_kind: ContextKind,
         cx: &mut Context<Self>,
     ) {
         let id = Some(id.into());
-        if self.id == id && Arc::ptr_eq(&self.tracks, &tracks) {
+        let sort_key = sort_key.map(str::to_owned);
+        if self.id == id && self.sort_key == sort_key && Arc::ptr_eq(&self.listed, &listed) {
             return;
         }
+        if self.sort_key != sort_key {
+            // A different context took over the list; restore whatever the
+            // listener last chose for it. Storage trouble degrades silently
+            // to the default order rather than blocking the page.
+            self.sort_key = sort_key;
+            self.sort = self
+                .sort_key
+                .as_deref()
+                .and_then(|key| services::AppServices::list_sort(key, cx));
+        }
         self.id = id;
-        self.tracks = tracks;
+        self.listed = listed;
         self.context_kind = context_kind;
         self.menu_open = None;
+        self.refresh_order();
+        cx.notify();
+    }
+
+    /// Recomputes the display permutation from the stored sort. Called on
+    /// every content or sort change, so the two can never disagree.
+    fn refresh_order(&mut self) {
+        self.order = model::list_order(&self.listed, self.sort).into();
+    }
+
+    /// The context's tracks in displayed order — what the rows show right
+    /// now, and what starting playback from the top should play.
+    pub(super) fn displayed_tracks(&self) -> Vec<model::Track> {
+        self.order
+            .iter()
+            .filter_map(|&default_index| self.listed.get(default_index))
+            .map(|entry| entry.track.clone())
+            .collect()
+    }
+
+    /// Moves `column`'s header to its next state and remembers the choice.
+    fn toggle_sort(&mut self, column: model::ListSortColumn, cx: &mut Context<Self>) {
+        let Some(key) = self.sort_key.clone() else {
+            return;
+        };
+        self.sort = model::ListSort::cycle(self.sort, column);
+        services::AppServices::set_list_sort(&key, self.sort, cx);
+        self.menu_open = None;
+        self.refresh_order();
         cx.notify();
     }
 
@@ -84,39 +140,58 @@ impl TrackList {
         }
     }
 
-    fn row(&mut self, index: usize, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        let Some(track) = self.tracks.get(index).cloned() else {
+    fn row(
+        &mut self,
+        index: usize,
+        columns: TrackTableColumns,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(&default_index) = self.order.get(index) else {
+            return div().into_any_element();
+        };
+        let Some(entry) = self.listed.get(default_index).cloned() else {
             return div().into_any_element();
         };
         let palette = appearance::Appearance::palette(cx);
-        let is_current_track = self.player.read(cx).is_current_track(&track);
-        let favorite = self.library.read(cx).is_favorite(&track);
-        let menu_key = format!("{}:{index}", track.source_id);
+        let is_current_track = self.player.read(cx).is_current_track(&entry.track);
+        let favorite = self.library.read(cx).is_favorite(&entry.track);
+        let menu_key = format!("{}:{index}", entry.track.source_id);
         let menu_open = self.menu_open.as_deref() == Some(menu_key.as_str());
         let menu = menu_open
-            .then(|| self.action_menu(&track, index, favorite, is_current_track, cx))
+            .then(|| self.action_menu(&entry.track, index, favorite, is_current_track, cx))
             .map(IntoElement::into_any_element);
-        let favorite_track = track.clone();
-        track_row::TrackRow::new(index, track, palette, self.image_cache.clone())
-            .compact(compact)
-            .current(is_current_track)
-            .favorite(favorite)
-            .menu(menu_open, menu)
-            .on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)))
-            .on_favorite(cx.listener(move |this, _, _, cx| {
-                this.library.update(cx, |library, cx| {
-                    library.set_favorite(favorite_track.clone(), !favorite, cx)
-                });
-            }))
-            .on_toggle_menu(cx.listener(move |this, _, _, cx| {
-                this.menu_open = (!menu_open).then(|| menu_key.clone());
-                cx.notify();
-            }))
-            .into_any_element()
+        let favorite_track = entry.track.clone();
+        let mut row = track_row::TrackRow::new(
+            index,
+            default_index + 1,
+            entry.track,
+            palette,
+            self.image_cache.clone(),
+            columns,
+        )
+        .current(is_current_track)
+        .favorite(favorite)
+        .menu(menu_open, menu)
+        .on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)))
+        .on_favorite(cx.listener(move |this, _, _, cx| {
+            this.library.update(cx, |library, cx| {
+                library.set_favorite(favorite_track.clone(), !favorite, cx)
+            });
+        }))
+        .on_toggle_menu(cx.listener(move |this, _, _, cx| {
+            this.menu_open = (!menu_open).then(|| menu_key.clone());
+            cx.notify();
+        }));
+        if let Some(added_at) = entry.added_at {
+            row = row.added_label(track_row::format_added_at(chrono::Utc::now(), added_at));
+        }
+        row.into_any_element()
     }
 
+    /// Plays from `index` as displayed: the queue starts as the visible
+    /// ordering of the context, sorted or default alike.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
-        let tracks = self.tracks.to_vec();
+        let tracks = self.displayed_tracks();
         let kind = self.context_kind;
         self.player.update(cx, |player, cx| {
             player.play_context(tracks, index, kind, cx)
@@ -286,7 +361,31 @@ impl TrackList {
 impl Render for TrackList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact = uses_compact_content_layout(f32::from(window.viewport_size().width));
+        let mut columns = track_table_columns(f32::from(window.viewport_size().width));
+        // A context without dates never shows the column, however wide the
+        // window: albums and search results have nothing to put in it.
+        columns.date_added &= self.sort_key.is_some();
+        let sortable = self.sort_key.is_some();
+        // A list whose context does not sort renders inert labels even if a
+        // stale sort survived in memory; the two never combine.
+        let active_sort = sortable.then_some(self.sort).flatten();
+        let header_action = |column| -> Option<track_row::RowCallback> {
+            sortable.then(|| {
+                Box::new(cx.listener(move |this, _, _, cx| this.toggle_sort(column, cx)))
+                    as track_row::RowCallback
+            })
+        };
+        let actions = track_row::TrackHeaderActions {
+            title: header_action(model::ListSortColumn::Title),
+            album: columns
+                .album
+                .then(|| header_action(model::ListSortColumn::Album))
+                .flatten(),
+            date_added: columns
+                .date_added
+                .then(|| header_action(model::ListSortColumn::DateAdded))
+                .flatten(),
+        };
         div()
             .id("track-list")
             .flex_1()
@@ -297,15 +396,20 @@ impl Render for TrackList {
             .overflow_hidden()
             .border_1()
             .border_color(rgb(palette.border))
-            .child(track_row::track_list_header(palette, compact))
+            .child(track_row::track_list_header(
+                palette,
+                columns,
+                active_sort,
+                actions,
+            ))
             .child(
                 uniform_list(
                     self.id
                         .clone()
                         .expect("show sets the id before first paint"),
-                    self.tracks.len(),
+                    self.listed.len(),
                     cx.processor(move |this, range: Range<usize>, _, cx| {
-                        range.map(|index| this.row(index, compact, cx)).collect()
+                        range.map(|index| this.row(index, columns, cx)).collect()
                     }),
                 )
                 .flex_1()

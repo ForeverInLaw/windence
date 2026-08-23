@@ -154,6 +154,30 @@ impl AppServices {
         cx.global::<Self>().preferences
     }
 
+    /// A list's persisted sort, when the store is available and the row
+    /// reads back. Storage trouble degrades to the default order.
+    pub(super) fn list_sort(list_key: &str, cx: &App) -> Option<model::ListSort> {
+        let services = cx.global::<Self>();
+        services
+            .store
+            .as_ref()
+            .and_then(|store| store.list_sort(list_key).ok())
+            .flatten()
+    }
+
+    /// Persists a list's sort, `None` for the default order. Failures log
+    /// and keep the on-screen sort: the view works without the memory.
+    pub(super) fn set_list_sort(list_key: &str, sort: Option<model::ListSort>, cx: &mut App) {
+        let services = cx.global_mut::<Self>();
+        if let Some(Err(error)) = services
+            .store
+            .as_mut()
+            .map(|store| store.set_list_sort(list_key, sort))
+        {
+            log::error!("could not save the list sort: {error}");
+        }
+    }
+
     pub(super) fn set_theme_preference(
         preference: ThemePreference,
         cx: &mut App,

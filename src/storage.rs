@@ -9,13 +9,15 @@ use directories::ProjectDirs;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Playlist, QueueItem, Track};
+use crate::model::{
+    ListSort, ListSortColumn, ListSortDirection, ListedTrack, Playlist, QueueItem, Track,
+};
 use crate::shuffle::{ContextKind, Origin, ShuffleMode, ShuffleState};
 
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -304,6 +306,19 @@ impl Store {
                 "BEGIN IMMEDIATE;
                  ALTER TABLE playback_state ADD COLUMN context_kind TEXT NOT NULL DEFAULT 'collection';
                  PRAGMA user_version = 7;
+                 COMMIT;",
+            )?;
+        }
+        if version < 8 {
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE liked_tracks_cache ADD COLUMN added_at INTEGER;
+                 CREATE TABLE IF NOT EXISTS list_sorts (
+                     list_key TEXT PRIMARY KEY,
+                     sort_column TEXT NOT NULL,
+                     sort_direction TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 8;
                  COMMIT;",
             )?;
         }
@@ -717,23 +732,27 @@ impl Store {
     /// probe would answer Unchanged and serve a hole as the whole library.
     pub fn replace_library_cache(
         &mut self,
-        liked_tracks: &[Track],
+        liked_tracks: &[ListedTrack],
         playlists: &[Playlist],
         fingerprint: &LibraryFingerprint,
     ) -> Result<()> {
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM liked_tracks_cache", [])?;
-        for (position, track) in liked_tracks
+        for (position, listed) in liked_tracks
             .iter()
-            .filter(|track| track.is_displayable())
+            .filter(|listed| listed.track.is_displayable())
             .enumerate()
         {
             let position =
                 i64::try_from(position).context("liked-track position exceeds SQLite range")?;
             transaction.execute(
-                "INSERT INTO liked_tracks_cache (position, track_json, refreshed_at)
-                 VALUES (?1, ?2, unixepoch())",
-                params![position, serde_json::to_string(track)?],
+                "INSERT INTO liked_tracks_cache (position, track_json, added_at, refreshed_at)
+                 VALUES (?1, ?2, ?3, unixepoch())",
+                params![
+                    position,
+                    serde_json::to_string(&listed.track)?,
+                    listed.added_at.map(|date| date.timestamp())
+                ],
             )?;
         }
         transaction.execute("DELETE FROM library_playlists_cache", [])?;
@@ -766,14 +785,69 @@ impl Store {
         Ok(())
     }
 
-    pub fn liked_tracks(&self) -> Result<Vec<Track>> {
+    pub fn liked_tracks(&self) -> Result<Vec<ListedTrack>> {
         let mut statement = self
             .connection
-            .prepare("SELECT track_json FROM liked_tracks_cache ORDER BY position")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?))
-            .filter(|track: &Result<Track>| track.as_ref().is_ok_and(Track::is_displayable))
-            .collect()
+            .prepare("SELECT track_json, added_at FROM liked_tracks_cache ORDER BY position")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (json, added_at) = row?;
+            Ok(ListedTrack {
+                track: serde_json::from_str(&json)?,
+                added_at: added_at.and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0)),
+            })
+        })
+        .filter(|listed: &Result<ListedTrack>| {
+            listed
+                .as_ref()
+                .is_ok_and(|listed| listed.track.is_displayable())
+        })
+        .collect()
+    }
+
+    /// A list's persisted sort, if it has one. No row means the default
+    /// order — the state a reset also persists as. Unreadable stored values
+    /// degrade to the default rather than failing the read.
+    pub fn list_sort(&self, list_key: &str) -> Result<Option<ListSort>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT sort_column, sort_direction FROM list_sorts WHERE list_key = ?1")?;
+        let mut rows = statement.query(params![list_key])?;
+        match rows.next()? {
+            None => Ok(None),
+            Some(row) => {
+                let column = ListSortColumn::parse(&row.get::<_, String>(0)?);
+                let direction = ListSortDirection::parse(&row.get::<_, String>(1)?);
+                Ok(column
+                    .zip(direction)
+                    .map(|(column, direction)| ListSort { column, direction }))
+            }
+        }
+    }
+
+    /// Persists a list's sort, or removes the row to persist the default.
+    pub fn set_list_sort(&mut self, list_key: &str, sort: Option<ListSort>) -> Result<()> {
+        match sort {
+            Some(sort) => {
+                self.connection.execute(
+                    "INSERT INTO list_sorts (list_key, sort_column, sort_direction)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT (list_key) DO UPDATE SET
+                         sort_column = excluded.sort_column,
+                         sort_direction = excluded.sort_direction",
+                    params![list_key, sort.column.as_str(), sort.direction.as_str()],
+                )?;
+            }
+            None => {
+                self.connection.execute(
+                    "DELETE FROM list_sorts WHERE list_key = ?1",
+                    params![list_key],
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -922,6 +996,16 @@ mod tests {
         }
     }
 
+    fn listed(track: Track, added_at: impl Into<Option<i64>>) -> super::ListedTrack {
+        use chrono::TimeZone;
+        super::ListedTrack {
+            added_at: added_at
+                .into()
+                .map(|seconds| chrono::Utc.timestamp_opt(seconds, 0).unwrap()),
+            track,
+        }
+    }
+
     fn fingerprint(liked_total: u32, playlist_total: u32) -> LibraryFingerprint {
         LibraryFingerprint {
             liked_head: vec!["one".to_owned()],
@@ -941,6 +1025,53 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
         path
+    }
+
+    #[test]
+    fn list_sorts_round_trip_and_reset_to_the_default() {
+        use crate::model::{ListSort, ListSortColumn, ListSortDirection};
+
+        let mut store = Store::in_memory().unwrap();
+        assert_eq!(store.list_sort("liked").unwrap(), None);
+
+        store
+            .set_list_sort(
+                "liked",
+                Some(ListSort {
+                    column: ListSortColumn::Title,
+                    direction: ListSortDirection::Descending,
+                }),
+            )
+            .unwrap();
+        store
+            .set_list_sort(
+                "focus",
+                Some(ListSort {
+                    column: ListSortColumn::DateAdded,
+                    direction: ListSortDirection::Ascending,
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            store.list_sort("liked").unwrap(),
+            Some(ListSort {
+                column: ListSortColumn::Title,
+                direction: ListSortDirection::Descending,
+            })
+        );
+        // Lists keep independent sorts.
+        assert_ne!(
+            store.list_sort("liked").unwrap(),
+            store.list_sort("focus").unwrap()
+        );
+
+        // Resetting one list leaves the other alone.
+        store.set_list_sort("liked", None).unwrap();
+        assert_eq!(store.list_sort("liked").unwrap(), None);
+        assert!(
+            store.list_sort("focus").unwrap().is_some(),
+            "resetting liked must not clear focus"
+        );
     }
 
     #[test]
@@ -1196,22 +1327,29 @@ mod tests {
     fn liked_track_cache_replaces_the_previous_snapshot() {
         let mut store = Store::in_memory().unwrap();
         store
-            .replace_library_cache(&[track("one"), track("two")], &[], &fingerprint(2, 0))
+            .replace_library_cache(
+                &[listed(track("one"), 100), listed(track("two"), 200)],
+                &[],
+                &fingerprint(2, 0),
+            )
             .unwrap();
         assert_eq!(
             store
                 .liked_tracks()
                 .unwrap()
                 .into_iter()
-                .map(|track| track.source_id)
+                .map(|listed| listed.track.source_id)
                 .collect::<Vec<_>>(),
             ["one", "two"]
         );
 
         store
-            .replace_library_cache(&[track("three")], &[], &fingerprint(1, 0))
+            .replace_library_cache(&[listed(track("three"), 300)], &[], &fingerprint(1, 0))
             .unwrap();
-        assert_eq!(store.liked_tracks().unwrap(), vec![track("three")]);
+        assert_eq!(
+            store.liked_tracks().unwrap(),
+            vec![listed(track("three"), 300)]
+        );
     }
 
     #[test]
@@ -1223,9 +1361,16 @@ mod tests {
         incomplete.duration_ms = 0;
 
         store
-            .replace_library_cache(&[track("one"), incomplete.clone()], &[], &fingerprint(1, 0))
+            .replace_library_cache(
+                &[listed(track("one"), None), listed(incomplete.clone(), None)],
+                &[],
+                &fingerprint(1, 0),
+            )
             .unwrap();
-        assert_eq!(store.liked_tracks().unwrap(), vec![track("one")]);
+        assert_eq!(
+            store.liked_tracks().unwrap(),
+            vec![listed(track("one"), None)]
+        );
 
         store
             .connection
@@ -1235,7 +1380,10 @@ mod tests {
                 [serde_json::to_string(&incomplete).unwrap()],
             )
             .unwrap();
-        assert_eq!(store.liked_tracks().unwrap(), vec![track("one")]);
+        assert_eq!(
+            store.liked_tracks().unwrap(),
+            vec![listed(track("one"), None)]
+        );
     }
 
     #[test]
@@ -1248,7 +1396,7 @@ mod tests {
         let playlists = vec![playlist("focus"), playlist("gym")];
         let saved = fingerprint(3, 2);
         store
-            .replace_library_cache(&[track("one")], &playlists, &saved)
+            .replace_library_cache(&[listed(track("one"), None)], &playlists, &saved)
             .unwrap();
         assert_eq!(store.cached_playlists().unwrap(), playlists);
         assert_eq!(store.saved_library_fingerprint().unwrap(), Some(saved));
@@ -1329,7 +1477,7 @@ mod tests {
         // across a reopen.
         let saved = fingerprint(1, 1);
         store
-            .replace_library_cache(&[track("one")], &[playlist("focus")], &saved)
+            .replace_library_cache(&[listed(track("one"), None)], &[playlist("focus")], &saved)
             .unwrap();
         drop(store);
         let reopened = Store::open(&path).unwrap();

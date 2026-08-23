@@ -14,7 +14,7 @@ use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::{
-    model::{Album, Artist, Playlist, Track, UserProfile},
+    model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
@@ -123,13 +123,13 @@ impl BlockingStore {
         .await
     }
 
-    async fn liked_tracks(&self) -> Result<Vec<Track>> {
+    async fn liked_tracks(&self) -> Result<Vec<ListedTrack>> {
         self.call(|store| store.liked_tracks()).await
     }
 
     /// The persisted library cache: what the last completed load stored,
     /// served when a boot probe proves it still matches Spotify.
-    async fn library_cache(&self) -> Result<(Vec<Track>, Vec<Playlist>)> {
+    async fn library_cache(&self) -> Result<LibraryContents> {
         self.call(|store| Ok((store.liked_tracks()?, store.cached_playlists()?)))
             .await
     }
@@ -170,12 +170,12 @@ impl BlockingStore {
     /// transaction as the contents it vouches for.
     async fn replace_library_cache_if_current(
         &self,
-        liked_tracks: Vec<Track>,
+        liked_tracks: Vec<ListedTrack>,
         playlists: Vec<Playlist>,
         fingerprint: LibraryFingerprint,
         current_generation: Arc<AtomicU64>,
         generation: u64,
-    ) -> Result<Option<(Vec<Track>, Vec<Playlist>)>> {
+    ) -> Result<Option<LibraryContents>> {
         self.call(move |store| {
             if current_generation.load(Ordering::Acquire) != generation {
                 return Ok(None);
@@ -246,15 +246,19 @@ impl BlockingStore {
 /// cancels the request: the reply simply goes nowhere.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T>>;
 
-/// Tracks and playlists, as returned by both search and a library load.
+/// Tracks and playlists, as returned by search.
 pub type TrackAndPlaylistResults = (Vec<Track>, Vec<Playlist>);
+
+/// A library's liked tracks and playlists, as loaded from Spotify or its
+/// cache. The liked side carries each track's date added.
+pub type LibraryContents = (Vec<ListedTrack>, Vec<Playlist>);
 
 /// A library reload's answer: fresh contents, or proof nothing changed for
 /// the price of the two head requests.
 #[derive(Debug)]
 pub enum LibraryReload {
     Unchanged,
-    Fresh(TrackAndPlaylistResults),
+    Fresh(LibraryContents),
 }
 
 type SharedFingerprint = Arc<std::sync::Mutex<Option<LibraryFingerprint>>>;
@@ -293,7 +297,7 @@ pub enum BackendCommand {
     },
     LoadPlaylist {
         playlist: Playlist,
-        respond: Reply<Vec<Track>>,
+        respond: Reply<Vec<ListedTrack>>,
     },
     LoadArtist {
         source_id: String,
@@ -375,7 +379,7 @@ pub enum BackendEvent {
     QueueEnded,
     LibraryLoaded {
         generation: u64,
-        liked_tracks: Vec<Track>,
+        liked_tracks: Vec<ListedTrack>,
         playlists: Vec<Playlist>,
     },
     ProfileLoaded {
@@ -384,7 +388,7 @@ pub enum BackendEvent {
     },
     CachedLikedTracks {
         generation: u64,
-        tracks: Vec<Track>,
+        tracks: Vec<ListedTrack>,
     },
     LocalStateLoaded {
         favorites: Vec<Track>,
@@ -1713,7 +1717,8 @@ impl Worker {
         match connected {
             Some(Ok(Ok(player))) => {
                 log::info!("playback: connected");
-                self.connection.adopt(player, &self.events, &self.unavailable);
+                self.connection
+                    .adopt(player, &self.events, &self.unavailable);
                 self.playback_credentials_invalidated = false;
                 if let Err(error) = self.store.set_playback_credentials_invalidated(false).await {
                     send_error(&self.events, error);
@@ -2526,7 +2531,7 @@ impl CatalogFetches {
         });
     }
 
-    fn playlist(&mut self, spotify: Spotify, playlist: Playlist, respond: Reply<Vec<Track>>) {
+    fn playlist(&mut self, spotify: Spotify, playlist: Playlist, respond: Reply<Vec<ListedTrack>>) {
         Self::start(
             &mut self.playlist,
             respond,
@@ -2717,7 +2722,7 @@ async fn receive_shutdown_acknowledgment(
     None
 }
 
-async fn load_library(spotify: &Spotify) -> Result<(Vec<Track>, Vec<Playlist>)> {
+async fn load_library(spotify: &Spotify) -> Result<LibraryContents> {
     tokio::try_join!(spotify.liked_tracks(), spotify.playlists())
 }
 
@@ -2728,7 +2733,7 @@ async fn load_library(spotify: &Spotify) -> Result<(Vec<Track>, Vec<Playlist>)> 
 enum ProbedLibrary {
     Unchanged,
     Changed {
-        contents: (Vec<Track>, Vec<Playlist>),
+        contents: LibraryContents,
         fingerprint: LibraryFingerprint,
     },
 }
@@ -2762,7 +2767,7 @@ async fn probe_and_load_library(
 /// (both saved totals zero).
 fn boot_cache_is_plausible(
     persisted: &Option<LibraryFingerprint>,
-    cache: &(Vec<Track>, Vec<Playlist>),
+    cache: &LibraryContents,
 ) -> bool {
     let non_empty = !cache.0.is_empty() || !cache.1.is_empty();
     let account_is_empty = matches!(
@@ -2906,11 +2911,11 @@ fn spawn_library_load(
 
 async fn persist_library_cache(
     store: &BlockingStore,
-    contents: TrackAndPlaylistResults,
+    contents: LibraryContents,
     fingerprint: LibraryFingerprint,
     current_generation: Arc<AtomicU64>,
     generation: u64,
-) -> Result<Option<TrackAndPlaylistResults>> {
+) -> Result<Option<LibraryContents>> {
     store
         .replace_library_cache_if_current(
             contents.0,
@@ -3412,7 +3417,10 @@ mod tests {
             }
         }
 
-        assert_eq!(queue_on_first_track().current_uri(), Some("spotify:track:track-id"));
+        assert_eq!(
+            queue_on_first_track().current_uri(),
+            Some("spotify:track:track-id")
+        );
 
         let mut queue = queue_on_first_track();
         queue.play_requested = true;

@@ -20,7 +20,9 @@ use tokio::{
 
 use crate::{
     credential_worker,
-    model::{Album, AlbumRef, Artist, ArtistRef, Playlist, Provider, Track, UserProfile},
+    model::{
+        Album, AlbumRef, Artist, ArtistRef, ListedTrack, Playlist, Provider, Track, UserProfile,
+    },
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
 };
@@ -412,13 +414,19 @@ impl Spotify {
         .await
     }
 
-    pub async fn liked_tracks(&self) -> Result<Vec<Track>> {
+    pub async fn liked_tracks(&self) -> Result<Vec<ListedTrack>> {
         self.gated(async {
             self.client
                 .current_user_saved_tracks(None)
                 .map_err(anyhow::Error::from)
-                .and_then(|saved| async move { convert_saved_track(saved) })
-                .try_filter_map(|track| async move { Ok(track) })
+                .and_then(|saved| async move {
+                    let added_at = saved.added_at;
+                    Ok(convert_saved_track(saved)?.map(|track| ListedTrack {
+                        track,
+                        added_at: Some(added_at),
+                    }))
+                })
+                .try_filter_map(|listed| async move { Ok(listed) })
                 .try_collect()
                 .await
         })
@@ -496,25 +504,28 @@ impl Spotify {
         .await
     }
 
-    pub async fn playlist_tracks(&self, source_id: &str) -> Result<Vec<Track>> {
+    pub async fn playlist_tracks(&self, source_id: &str) -> Result<Vec<ListedTrack>> {
         let playlist_id = PlaylistId::from_id(source_id)?;
         self.gated(async {
             self.client
                 .playlist_items(playlist_id, None, None)
                 .map_err(anyhow::Error::from)
                 .and_then(|item| async move {
+                    let added_at = item.added_at;
                     if item.is_local {
                         return Ok(None);
                     }
                     match item.item {
                         Some(PlayableItem::Track(track)) if track.id.is_some() => {
                             let track = convert_track(track)?;
-                            Ok(track.is_displayable().then_some(track))
+                            Ok(track
+                                .is_displayable()
+                                .then_some(ListedTrack { track, added_at }))
                         }
                         _ => Ok(None),
                     }
                 })
-                .try_filter_map(|track| async move { Ok(track) })
+                .try_filter_map(|listed| async move { Ok(listed) })
                 .try_collect()
                 .await
         })

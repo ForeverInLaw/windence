@@ -38,7 +38,7 @@ pub(super) struct SearchPage {
     /// new search starts back at the top.
     results_query: String,
     kind: SearchKind,
-    tracks: Arc<[model::Track]>,
+    tracks: Arc<[model::ListedTrack]>,
     playlists: Arc<[model::Playlist]>,
     loaded: bool,
     searching: bool,
@@ -107,7 +107,7 @@ impl SearchPage {
                 match result {
                     Ok((tracks, playlists)) => {
                         page.results_query = query;
-                        page.tracks = tracks.into();
+                        page.tracks = model::ListedTrack::undated_slice(tracks);
                         page.playlists = playlists.into();
                         page.error = None;
                         cx.emit(PageEvent::Loaded);
@@ -145,7 +145,7 @@ impl SearchPage {
 pub(super) struct PlaylistPage {
     backend: BackendHandle,
     selected: Option<model::Playlist>,
-    tracks: Arc<[model::Track]>,
+    tracks: Arc<[model::ListedTrack]>,
     loaded: bool,
     error: Option<String>,
     request: Option<gpui::Task<()>>,
@@ -182,22 +182,23 @@ impl PlaylistPage {
     }
 
     /// Starts the page's contents from the top, if there is anything to play.
-    pub(super) fn play(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+    /// Plays what the rows show: the list's current sort order.
+    pub(super) fn play(&mut self, cx: &mut Context<Self>) {
+        let tracks = self.track_list.read(cx).displayed_tracks();
         if tracks.is_empty() {
             return;
         }
-        let tracks = tracks.to_vec();
         self.player.update(cx, |player, cx| {
             player.play_context(tracks, 0, ContextKind::Collection, cx)
         });
     }
 
     /// Starts the context shuffled and moves the global toggle to Shuffle.
-    pub(super) fn play_shuffled(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+    pub(super) fn play_shuffled(&mut self, cx: &mut Context<Self>) {
+        let tracks = self.track_list.read(cx).displayed_tracks();
         if tracks.is_empty() {
             return;
         }
-        let tracks = tracks.to_vec();
         self.player.update(cx, |player, cx| {
             player.play_context_shuffled(tracks, 0, ContextKind::Collection, cx)
         });
@@ -249,7 +250,7 @@ pub(super) struct ArtistPage {
     backend: BackendHandle,
     reference: Option<model::ArtistRef>,
     artist: Option<model::Artist>,
-    tracks: Arc<[model::Track]>,
+    tracks: Arc<[model::ListedTrack]>,
     albums: Arc<[model::Album]>,
     section: ArtistSection,
     loaded: bool,
@@ -331,7 +332,7 @@ impl ArtistPage {
                     match result {
                         Ok((artist, tracks, albums)) => {
                             page.artist = Some(artist);
-                            page.tracks = tracks.into();
+                            page.tracks = model::ListedTrack::undated_slice(tracks);
                             page.albums = albums.into();
                             page.loaded = true;
                             page.error = None;
@@ -475,7 +476,7 @@ pub(super) struct AlbumPage {
     backend: BackendHandle,
     reference: Option<model::AlbumRef>,
     album: Option<model::Album>,
-    tracks: Arc<[model::Track]>,
+    tracks: Arc<[model::ListedTrack]>,
     loaded: bool,
     error: Option<String>,
     loaded_at: Option<SystemTime>,
@@ -513,22 +514,26 @@ impl AlbumPage {
     }
 
     /// Starts the page's contents from the top, if there is anything to play.
-    pub(super) fn play(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+    pub(super) fn play(&mut self, tracks: &Arc<[model::ListedTrack]>, cx: &mut Context<Self>) {
         if tracks.is_empty() {
             return;
         }
-        let tracks = tracks.to_vec();
+        let tracks = model::ListedTrack::tracks(tracks);
         self.player.update(cx, |player, cx| {
             player.play_context(tracks, 0, ContextKind::Album, cx)
         });
     }
 
     /// Starts the album shuffled; albums get plain shuffle only.
-    pub(super) fn play_shuffled(&mut self, tracks: &Arc<[model::Track]>, cx: &mut Context<Self>) {
+    pub(super) fn play_shuffled(
+        &mut self,
+        tracks: &Arc<[model::ListedTrack]>,
+        cx: &mut Context<Self>,
+    ) {
         if tracks.is_empty() {
             return;
         }
-        let tracks = tracks.to_vec();
+        let tracks = model::ListedTrack::tracks(tracks);
         self.player.update(cx, |player, cx| {
             player.play_context_shuffled(tracks, 0, ContextKind::Album, cx)
         });
@@ -573,7 +578,7 @@ impl AlbumPage {
                     match result {
                         Ok((album, tracks)) => {
                             page.album = Some(album);
-                            page.tracks = tracks.into();
+                            page.tracks = model::ListedTrack::undated_slice(tracks);
                             page.loaded = true;
                             page.error = None;
                             page.loaded_at = Some(SystemTime::now());
@@ -623,7 +628,7 @@ impl Render for SearchPage {
         } else if kind == SearchKind::Tracks && !tracks.is_empty() {
             let list_id = (ElementId::from("search-tracks"), self.results_query.clone());
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks, ContextKind::Collection, cx)
+                list.show(list_id, tracks.clone(), None, ContextKind::Collection, cx)
             });
             self.track_list.clone().into_any_element()
         } else if kind == SearchKind::Playlists && !playlists.is_empty() {
@@ -715,7 +720,13 @@ impl Render for PlaylistPage {
                 playlist.source_id.clone(),
             );
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), ContextKind::Collection, cx)
+                list.show(
+                    list_id,
+                    tracks.clone(),
+                    Some(&playlist.source_id),
+                    ContextKind::Collection,
+                    cx,
+                )
             });
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
@@ -725,9 +736,6 @@ impl Render for PlaylistPage {
         } else {
             components::empty_state(palette, "Loading playlist…").into_any_element()
         };
-        let playback_tracks = tracks;
-        let shuffle_tracks = playback_tracks.clone();
-
         components::page("playlist-page")
             .pt(px(8.))
             .child(
@@ -756,7 +764,7 @@ impl Render for PlaylistPage {
                                     .child(
                                         components::pill(palette, "playlist-play", "Play", true)
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.play(&playback_tracks, cx);
+                                                this.play(cx);
                                             })),
                                     )
                                     .child(
@@ -767,7 +775,7 @@ impl Render for PlaylistPage {
                                         )
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
-                                                this.play_shuffled(&shuffle_tracks, cx);
+                                                this.play_shuffled(cx);
                                             }),
                                         ),
                                     )
@@ -836,7 +844,7 @@ impl Render for ArtistPage {
         } else if section == ArtistSection::Popular && !tracks.is_empty() {
             let list_id = (ElementId::from("artist-popular"), source_id);
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks, ContextKind::Collection, cx)
+                list.show(list_id, tracks.clone(), None, ContextKind::Collection, cx)
             });
             self.track_list.clone().into_any_element()
         } else if section == ArtistSection::Popular {
@@ -951,7 +959,7 @@ impl Render for AlbumPage {
                 .expect("open only loads albums that have a source id");
             let list_id = (ElementId::from("album-tracks"), source_id);
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), ContextKind::Album, cx)
+                list.show(list_id, tracks.clone(), None, ContextKind::Album, cx)
             });
             self.track_list.clone().into_any_element()
         } else if loaded {

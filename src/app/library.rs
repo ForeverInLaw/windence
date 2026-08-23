@@ -12,13 +12,13 @@ const REVALIDATION_DEBOUNCE: Duration = Duration::from_secs(30);
 /// Owned by the services global so a window can be rebuilt without refetching.
 pub(super) struct Library {
     backend: BackendHandle,
-    liked_tracks: Arc<[model::Track]>,
+    liked_tracks: Arc<[model::ListedTrack]>,
     playlists: Arc<[model::Playlist]>,
     loaded: bool,
-    favorites: Arc<[model::Track]>,
+    favorites: Arc<[model::ListedTrack]>,
     favorite_keys: HashMap<model::Provider, HashSet<String>>,
     pinned_playlists: Arc<[model::Playlist]>,
-    recently_played: Arc<[model::Track]>,
+    recently_played: Arc<[model::ListedTrack]>,
     local_loaded: bool,
     reload: Option<gpui::Task<()>>,
     /// When the contents last arrived, so returning to the window repeatedly
@@ -102,7 +102,7 @@ impl Library {
         cx.notify();
     }
 
-    pub(super) fn liked_tracks(&self) -> &Arc<[model::Track]> {
+    pub(super) fn liked_tracks(&self) -> &Arc<[model::ListedTrack]> {
         &self.liked_tracks
     }
 
@@ -114,7 +114,7 @@ impl Library {
         self.loaded
     }
 
-    pub(super) fn favorites(&self) -> &Arc<[model::Track]> {
+    pub(super) fn favorites(&self) -> &Arc<[model::ListedTrack]> {
         &self.favorites
     }
 
@@ -122,7 +122,7 @@ impl Library {
         &self.pinned_playlists
     }
 
-    pub(super) fn recently_played(&self) -> &Arc<[model::Track]> {
+    pub(super) fn recently_played(&self) -> &Arc<[model::ListedTrack]> {
         &self.recently_played
     }
 
@@ -217,9 +217,15 @@ impl Library {
                 recently_played,
             } => {
                 self.favorite_keys = index_favorites(&favorites);
-                self.favorites = favorites.into();
+                self.favorites = favorites
+                    .into_iter()
+                    .map(model::ListedTrack::undated)
+                    .collect();
                 self.pinned_playlists = pinned_playlists.into();
-                self.recently_played = recently_played.into();
+                self.recently_played = recently_played
+                    .into_iter()
+                    .map(model::ListedTrack::undated)
+                    .collect();
                 self.local_loaded = true;
                 cx.emit(LibraryLoaded);
             }

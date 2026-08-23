@@ -9,10 +9,75 @@ const INDEX_COLUMN_WIDTH: f32 = 44.;
 const STAR_COLUMN_WIDTH: f32 = 36.;
 const TIME_COLUMN_WIDTH: f32 = 60.;
 const ACTIONS_COLUMN_WIDTH: f32 = 36.;
+/// Wide enough for "Sep 28, 2026"; never squeezed below its content.
+const DATE_ADDED_COLUMN_WIDTH: f32 = 110.;
+
+/// What a header click does. One handler per sortable column; a missing
+/// handler renders the label inert, as lists without sorting do.
+#[derive(Default)]
+pub(super) struct TrackHeaderActions {
+    pub(super) title: Option<RowCallback>,
+    pub(super) album: Option<RowCallback>,
+    pub(super) date_added: Option<RowCallback>,
+}
 
 /// The column header for a track list. Lives beside `TrackRow` so the fixed
-/// columns cannot drift out of step with the rows they label.
-pub(super) fn track_list_header(palette: CadencePalette, compact: bool) -> Div {
+/// columns cannot drift out of step with the rows they label. `active`
+/// marks which column is sorted and which way; those headers draw an arrow.
+pub(super) fn track_list_header(
+    palette: CadencePalette,
+    columns: TrackTableColumns,
+    active: Option<model::ListSort>,
+    actions: TrackHeaderActions,
+) -> Div {
+    let arrow = |direction| {
+        components::icon(
+            match direction {
+                model::ListSortDirection::Ascending => "arrow-up",
+                model::ListSortDirection::Descending => "arrow-down",
+            },
+            11.,
+            palette.text_primary,
+        )
+    };
+    let sortable = |id: &'static str,
+                    label: &'static str,
+                    sort: Option<model::ListSortDirection>,
+                    handler: Option<RowCallback>| {
+        let button = components::button(palette, id)
+            .h(px(22.))
+            .px(px(6.))
+            .mx(px(-6.))
+            .rounded(px(6.))
+            .gap(px(3.))
+            .justify_start()
+            .text_color(rgb(palette.text_muted))
+            .child(label);
+        let button = if let Some(direction) = sort {
+            button.child(arrow(direction))
+        } else {
+            button
+        };
+        match handler {
+            Some(handler) => {
+                let route = handler;
+                // Hover lifts the label's color a step toward full contrast,
+                // rather than painting the cell: the header stays quiet.
+                button
+                    .hover(move |style| style.text_color(rgb(palette.text)))
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        route(event, window, cx);
+                    })
+            }
+            None => button.cursor_default(),
+        }
+    };
+    let direction_for = |column: model::ListSortColumn| {
+        active
+            .filter(|sort| sort.column == column)
+            .map(|sort| sort.direction)
+    };
     div()
         .h(px(40.))
         .flex_none()
@@ -29,10 +94,39 @@ pub(super) fn track_list_header(palette: CadencePalette, compact: bool) -> Div {
                 .flex_1()
                 .min_w_0()
                 .pr(px(COLUMN_GUTTER))
-                .child("Title"),
+                .child(sortable(
+                    "sort-title",
+                    "Title",
+                    direction_for(model::ListSortColumn::Title),
+                    actions.title,
+                )),
         )
-        .when(!compact, |header| {
-            header.child(div().flex_1().min_w_0().child("Album"))
+        .when(columns.album, |header| {
+            header.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pr(px(COLUMN_GUTTER))
+                    .child(sortable(
+                        "sort-album",
+                        "Album",
+                        direction_for(model::ListSortColumn::Album),
+                        actions.album,
+                    )),
+            )
+        })
+        .when(columns.date_added, |header| {
+            header.child(
+                div()
+                    .w(px(DATE_ADDED_COLUMN_WIDTH))
+                    .flex_none()
+                    .child(sortable(
+                        "sort-date-added",
+                        "Date added",
+                        direction_for(model::ListSortColumn::DateAdded),
+                        actions.date_added,
+                    )),
+            )
         })
         .child(
             div()
@@ -56,6 +150,28 @@ pub(super) fn track_list_header(palette: CadencePalette, compact: bool) -> Div {
         .child(div().w(px(ACTIONS_COLUMN_WIDTH)).flex_none())
 }
 
+/// How long ago a track entered its listing, Spotify-style: relative for
+/// the first month ("3 weeks ago"), an absolute date after that.
+pub(super) fn format_added_at(
+    now: chrono::DateTime<chrono::Utc>,
+    added_at: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let elapsed = now.signed_duration_since(added_at);
+    let ago =
+        |count: i64, unit: &str| format!("{count} {unit}{} ago", if count == 1 { "" } else { "s" });
+    if elapsed.num_hours() < 1 {
+        "Just now".to_owned()
+    } else if elapsed.num_days() < 1 {
+        ago(elapsed.num_hours(), "hour")
+    } else if elapsed.num_days() < 7 {
+        ago(elapsed.num_days(), "day")
+    } else if elapsed.num_days() <= 28 {
+        ago(elapsed.num_days() / 7, "week")
+    } else {
+        added_at.format("%b %-d, %Y").to_string()
+    }
+}
+
 /// A single line that ellipsizes at the column edge. Wrapping text with a
 /// one-line clamp rather than `.truncate()`: gpui 0.2's text-measure cache
 /// never recomputes truncation for nowrap text first measured at indefinite
@@ -65,7 +181,7 @@ fn ellipsized_line(text_size: f32) -> Div {
     div().text_ellipsis().line_clamp(1).text_size(px(text_size))
 }
 
-type RowCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub(super) type RowCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// One track in a list.
 ///
@@ -75,10 +191,15 @@ type RowCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 #[derive(IntoElement)]
 pub(super) struct TrackRow {
     index: usize,
+    /// The track's position in its context's default order, which the `#`
+    /// column keeps showing however the view is sorted.
+    default_position: usize,
     track: model::Track,
     palette: CadencePalette,
     image_cache: Entity<image_cache::BoundedImageCache>,
-    compact: bool,
+    columns: TrackTableColumns,
+    /// The preformatted "3 weeks ago" label, when the context dates tracks.
+    added_label: Option<SharedString>,
     current: bool,
     favorite: bool,
     menu_open: bool,
@@ -92,16 +213,20 @@ pub(super) struct TrackRow {
 impl TrackRow {
     pub(super) fn new(
         index: usize,
+        default_position: usize,
         track: model::Track,
         palette: CadencePalette,
         image_cache: Entity<image_cache::BoundedImageCache>,
+        columns: TrackTableColumns,
     ) -> Self {
         Self {
             index,
+            default_position,
             track,
             palette,
             image_cache,
-            compact: false,
+            columns,
+            added_label: None,
             current: false,
             favorite: false,
             menu_open: false,
@@ -112,8 +237,8 @@ impl TrackRow {
         }
     }
 
-    pub(super) fn compact(mut self, compact: bool) -> Self {
-        self.compact = compact;
+    pub(super) fn added_label(mut self, added_label: impl Into<SharedString>) -> Self {
+        self.added_label = Some(added_label.into());
         self
     }
 
@@ -187,7 +312,7 @@ impl RenderOnce for TrackRow {
                     .flex_none()
                     .text_size(px(13.))
                     .text_color(rgb(palette.text_muted))
-                    .child((index + 1).to_string()),
+                    .child(self.default_position.to_string()),
             )
             .child(
                 div()
@@ -227,7 +352,7 @@ impl RenderOnce for TrackRow {
                             ),
                     ),
             )
-            .when(!self.compact, |row| {
+            .when(self.columns.album, |row| {
                 row.child(
                     div().flex_1().min_w_0().flex().flex_col().child(
                         ellipsized_line(13.)
@@ -235,6 +360,19 @@ impl RenderOnce for TrackRow {
                             .child(self.track.album.clone()),
                     ),
                 )
+            })
+            .when(self.columns.date_added, |row| {
+                row.child({
+                    let date = div()
+                        .w(px(DATE_ADDED_COLUMN_WIDTH))
+                        .flex_none()
+                        .text_size(px(13.))
+                        .text_color(rgb(palette.text_muted));
+                    match self.added_label.clone() {
+                        Some(label) => date.child(label),
+                        None => date,
+                    }
+                })
             })
             .child(
                 components::button(palette, ("spotify-favorite", index))
@@ -391,5 +529,48 @@ impl RenderOnce for PlaylistRow {
                     ),
             )
             .when_some(self.on_open, |row, handler| row.on_click(handler))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_added_at;
+    use chrono::{TimeZone, Utc};
+
+    fn at(seconds: i64) -> chrono::DateTime<Utc> {
+        Utc.timestamp_opt(seconds, 0).unwrap()
+    }
+
+    #[test]
+    fn fresh_additions_show_hours_then_days_then_weeks() {
+        let now = at(10_000_000);
+        assert_eq!(format_added_at(now, now), "Just now");
+        assert_eq!(
+            format_added_at(now, now - chrono::Duration::hours(3)),
+            "3 hours ago"
+        );
+        assert_eq!(
+            format_added_at(now, now - chrono::Duration::hours(1)),
+            "1 hour ago"
+        );
+        assert_eq!(
+            format_added_at(now, now - chrono::Duration::days(2)),
+            "2 days ago"
+        );
+        assert_eq!(
+            format_added_at(now, now - chrono::Duration::days(7)),
+            "1 week ago"
+        );
+        assert_eq!(
+            format_added_at(now, now - chrono::Duration::days(28)),
+            "4 weeks ago"
+        );
+    }
+
+    #[test]
+    fn older_additions_show_an_absolute_date() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 23, 12, 0, 0).unwrap();
+        let added = Utc.with_ymd_and_hms(2026, 7, 18, 12, 0, 0).unwrap();
+        assert_eq!(format_added_at(now, added), "Jul 18, 2026");
     }
 }
