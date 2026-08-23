@@ -807,6 +807,51 @@ fn parse_context_kind(value: &str) -> ContextKind {
     }
 }
 
+/// How many "already offered" Smart Shuffle track ids to keep. Old entries
+/// fall off the end FIFO-style, so a track can be suggested again after
+/// roughly this many newer suggestions — months of listening, like
+/// Spotify's eventual rotation.
+const SMART_SHUFFLE_SEEN_CAP: usize = 500;
+
+const SMART_SHUFFLE_SEEN_KEY: &str = "smart_shuffle_seen";
+
+impl Store {
+    /// Tracks Smart Shuffle has already offered, oldest first. Survives
+    /// restarts and toggle cycles, so the same song is never suggested
+    /// twice within the retained window.
+    pub fn smart_shuffle_seen(&self) -> Result<Vec<String>> {
+        match self.preference(SMART_SHUFFLE_SEEN_KEY)? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Records newly offered track ids, dropping the oldest beyond the cap.
+    pub fn add_smart_shuffle_seen(&mut self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut seen = self.smart_shuffle_seen()?;
+        for id in ids {
+            if !seen.contains(id) {
+                seen.push(id.clone());
+            }
+        }
+        let excess = seen.len().saturating_sub(SMART_SHUFFLE_SEEN_CAP);
+        seen.drain(..excess);
+        self.set_preference(SMART_SHUFFLE_SEEN_KEY, &serde_json::to_string(&seen)?)
+    }
+
+    /// Drops the offered-history: part of signing out.
+    pub fn clear_smart_shuffle_seen(&mut self) -> Result<()> {
+        self.connection.execute(
+            "DELETE FROM preferences WHERE key = ?1",
+            params![SMART_SHUFFLE_SEEN_KEY],
+        )?;
+        Ok(())
+    }
+}
+
 /// One-time move of a database created under the pre-port Windows path
 /// (`...\Cadence\Cadence\data`) to its platform-correct home. Best effort:
 /// when nothing needs moving or a rename fails, the app simply starts with
@@ -1559,6 +1604,38 @@ mod tests {
                 .exists()
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn smart_shuffle_seen_history_round_trips_caps_and_clears() {
+        let mut store = Store::in_memory().unwrap();
+        assert!(store.smart_shuffle_seen().unwrap().is_empty());
+
+        store
+            .add_smart_shuffle_seen(&["one".to_owned(), "two".to_owned()])
+            .unwrap();
+        // Re-adding an id keeps one entry, oldest-first order preserved.
+        store
+            .add_smart_shuffle_seen(&["two".to_owned(), "three".to_owned()])
+            .unwrap();
+        assert_eq!(store.smart_shuffle_seen().unwrap(), ["one", "two", "three"]);
+
+        for i in 0..super::SMART_SHUFFLE_SEEN_CAP {
+            store
+                .add_smart_shuffle_seen(&[format!("fill-{i}")])
+                .unwrap();
+        }
+        let seen = store.smart_shuffle_seen().unwrap();
+        assert_eq!(seen.len(), super::SMART_SHUFFLE_SEEN_CAP);
+        // The oldest entries fell off; the newest additions survived.
+        assert!(!seen.contains(&"one".to_owned()));
+        assert_eq!(
+            seen.last().map(String::as_str),
+            Some(format!("fill-{}", super::SMART_SHUFFLE_SEEN_CAP - 1).as_str())
+        );
+
+        store.clear_smart_shuffle_seen().unwrap();
+        assert!(store.smart_shuffle_seen().unwrap().is_empty());
     }
 
     #[test]

@@ -227,6 +227,15 @@ impl BlockingStore {
     async fn add_history(&self, track: Track) -> Result<()> {
         self.call(move |store| store.add_history(&track)).await
     }
+
+    async fn smart_shuffle_seen(&self) -> Result<Vec<String>> {
+        self.call(|store| store.smart_shuffle_seen()).await
+    }
+
+    async fn add_smart_shuffle_seen(&self, ids: Vec<String>) -> Result<()> {
+        self.call(move |store| store.add_smart_shuffle_seen(&ids))
+            .await
+    }
 }
 
 /// Where a catalog request sends its answer. Dropping the receiving half
@@ -913,6 +922,9 @@ struct Worker {
     radio: Radio,
     autoplay: Autoplay,
     injections: Injections,
+    /// Track ids Smart Shuffle has ever offered, persisted across restarts
+    /// and toggle cycles; a suggestion is never repeated within this set.
+    injection_seen: HashSet<String>,
     session: SessionTasks,
 }
 
@@ -933,6 +945,7 @@ impl Worker {
             radio: Radio::default(),
             autoplay: Autoplay::default(),
             injections: Injections::default(),
+            injection_seen: HashSet::new(),
             session: SessionTasks::default(),
         }
     }
@@ -971,6 +984,10 @@ impl Worker {
             Err(error) => send_error(&self.events, error),
         }
         self.start_account_loads().await;
+        match self.store.smart_shuffle_seen().await {
+            Ok(seen) => self.injection_seen = seen.into_iter().collect(),
+            Err(error) => send_error(&self.events, error),
+        }
         self.connection.begin_connect(PlaybackConnectionRequest {
             load_saved_token: true,
             authorization: None,
@@ -1121,6 +1138,13 @@ impl Worker {
             send_error(&self.events, error);
         }
         if let Err(error) = self.store.clear_playback_state().await {
+            send_error(&self.events, error);
+        }
+        if let Err(error) = self
+            .store
+            .call(|store| store.clear_smart_shuffle_seen())
+            .await
+        {
             send_error(&self.events, error);
         }
         let _ = self.events.send(BackendEvent::LoggedOut);
@@ -1815,6 +1839,9 @@ impl Worker {
         self.queue.index = None;
         // A fresh session must not inherit the ended special-casing.
         self.queue.ended = false;
+        // Offered history belongs to the signed-in account; the store copy
+        // is cleared by the logout/config-reset flows.
+        self.injection_seen.clear();
     }
 
     /// Starts a radio prefetch when the playing track is the queue's last,
@@ -1956,8 +1983,9 @@ impl Worker {
 
     /// Keeps the upcoming tail's injection density topped up: buffered
     /// recommendations are woven in first, and only a still-thin tail with
-    /// no fetch in flight starts one, seeded on the playing track the way
-    /// autoplay is. No-op unless Smart is active on a live queue.
+    /// no fetch in flight starts one, seeded on already-heard music so the
+    /// offering keeps rotating. No-op unless Smart is active on a live
+    /// queue.
     async fn maybe_prefetch_injections(&mut self) {
         if !self.smart_active() {
             return;
@@ -1975,9 +2003,15 @@ impl Worker {
             let buffered = self.injections.buffer.drain(..).collect();
             let fresh = self.fresh_recommendations(buffered);
             let inserted = self.weave_injections(&fresh, deficit, index);
+            let offered: Vec<String> = fresh
+                .iter()
+                .take(inserted)
+                .map(|track| track.source_id.clone())
+                .collect();
             // Whatever did not fit this pass goes back on top of the
             // buffer instead of being refetched later.
             self.buffer_recommendations(fresh.into_iter().skip(inserted));
+            self.remember_injections(offered).await;
             if inserted > 0
                 && let Err(error) = self.commit_queue_change(index).await
             {
@@ -1990,13 +2024,24 @@ impl Worker {
         if remaining == 0 || self.injections.task.is_some() {
             return;
         }
-        let Some(seed) = self.queue.tracks.get(index).cloned() else {
+        // Seed on a track already heard this session, never the same one
+        // as the previous fetch, so consecutive batches come from
+        // different stations instead of re-offering the same list.
+        let Some(seed) = next_injection_seed(
+            self.queue.tracks[..index.min(self.queue.tracks.len())]
+                .iter()
+                .rev(),
+            self.queue.tracks.get(index),
+            self.injections.previous_seed.as_deref(),
+        )
+        .cloned() else {
             return;
         };
         if self.injections.fruitless_seed.as_deref() == Some(seed.source_id.as_str()) {
             return;
         }
         self.injections.seed_id = Some(seed.source_id.clone());
+        self.injections.previous_seed = Some(seed.source_id.clone());
         let player = self.connection.player.clone();
         let spotify = self.spotify.clone();
         self.injections.task = Some(tokio::spawn(async move {
@@ -2033,7 +2078,8 @@ impl Worker {
     }
 
     /// Filters a recommendation batch down to displayable tracks the queue
-    /// does not already hold anywhere, deduplicated among themselves.
+    /// does not already hold and Smart Shuffle has never offered before,
+    /// deduplicated among themselves.
     fn fresh_recommendations(&self, candidates: Vec<Track>) -> Vec<Track> {
         let known = self.queued_ids();
         let mut seen: HashSet<String> = HashSet::new();
@@ -2041,7 +2087,23 @@ impl Worker {
             .into_iter()
             .filter(|track| track.is_displayable() && seen.insert(track.source_id.clone()))
             .filter(|track| !known.contains(&track.source_id))
+            .filter(|track| !self.injection_seen.contains(&track.source_id))
             .collect()
+    }
+
+    /// Remembers offered tracks in memory and in the store, so they are
+    /// never suggested again within the retained history.
+    async fn remember_injections(&mut self, ids: impl IntoIterator<Item = String>) {
+        let ids: Vec<String> = ids
+            .into_iter()
+            .filter(|id| self.injection_seen.insert(id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        if let Err(error) = self.store.add_smart_shuffle_seen(ids).await {
+            send_error(&self.events, error);
+        }
     }
 
     /// Queues recommendations for later refills, skipping anything already
@@ -2093,6 +2155,11 @@ impl Worker {
         let deficit = self.injection_deficit(index);
         let fresh = self.fresh_recommendations(tracks);
         let inserted = self.weave_injections(&fresh, deficit, index);
+        let offered: Vec<String> = fresh
+            .iter()
+            .take(inserted)
+            .map(|track| track.source_id.clone())
+            .collect();
         // A dry or fully-stale batch marks its seed fruitless, mirroring
         // autoplay: retrying needs the queue to move first.
         if inserted == 0 {
@@ -2100,6 +2167,7 @@ impl Worker {
         } else {
             // The surplus stays ready for the next thinning, no refetch.
             self.buffer_recommendations(fresh.into_iter().skip(inserted));
+            self.remember_injections(offered).await;
         }
         if inserted > 0
             && let Err(error) = self.commit_queue_change(index).await
@@ -2267,14 +2335,19 @@ struct Autoplay {
 }
 
 /// Smart Shuffle's recommendation pipeline: one radio fetch in flight,
-/// seeded on the playing track and gated by the Smart toggle itself rather
-/// than by any preference, with fetched-but-unwoven tracks buffered so a
-/// refill only hits the network when the buffer runs dry too.
+/// gated by the Smart toggle itself rather than by any preference, with
+/// fetched-but-unwoven tracks buffered so a refill only hits the network
+/// when the buffer runs dry too.
 #[derive(Default)]
 struct Injections {
     task: Option<tokio::task::JoinHandle<Result<Vec<Track>>>>,
     /// The source id the in-flight (or last) fetch was seeded with.
     seed_id: Option<String>,
+    /// The seed the previous successful fetch used; the next fetch picks a
+    /// different one so consecutive batches come from different stations.
+    /// Survives `reset`: toggling Smart off and on must not re-offer the
+    /// same station.
+    previous_seed: Option<String>,
     /// A seed whose fetch failed or added nothing new; skipped until the
     /// playing track changes, so a failing endpoint cannot be hammered on
     /// every track advance.
@@ -2805,6 +2878,7 @@ async fn logout_account(store: BlockingStore, spotify: Spotify) -> Result<()> {
         delete_playback_refresh_token().await,
         store.clear_library_cache().await,
         store.clear_playback_state().await,
+        store.call(|store| store.clear_smart_shuffle_seen()).await,
     ] {
         if let Err(error) = result {
             errors.push(error.to_string());
@@ -3013,6 +3087,22 @@ fn favorite_needs_catalog_refresh(track: &Track) -> bool {
                 .is_none())
 }
 
+/// Picks which track seeds the next Smart Shuffle fetch: walk back through
+/// the tracks already heard this session, newest first, skipping the seed
+/// the previous fetch used, so consecutive batches come from different
+/// stations. Falls back to the playing track when the session has no other
+/// candidate — including when every heard track is the avoided one.
+fn next_injection_seed<'a>(
+    heard_newest_first: impl IntoIterator<Item = &'a Track>,
+    fallback: Option<&'a Track>,
+    avoid: Option<&str>,
+) -> Option<&'a Track> {
+    heard_newest_first
+        .into_iter()
+        .find(|track| Some(track.source_id.as_str()) != avoid)
+        .or(fallback)
+}
+
 /// One radio-pipeline round-trip shared by autoplay and Smart Shuffle:
 /// apollo station URIs seeded on one track, resolved into full tracks.
 async fn recommendation_tracks(
@@ -3060,7 +3150,7 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 mod tests {
     use super::{
         BackendCommand, BlockingStore, ShuffleState, build_radio_context,
-        favorite_needs_catalog_refresh, injected_flags, send_command,
+        favorite_needs_catalog_refresh, injected_flags, next_injection_seed, send_command,
     };
     use crate::model::{AlbumRef, ArtistRef, Provider, Track};
     use crate::shuffle::Origin;
@@ -3235,5 +3325,46 @@ mod tests {
             vec![false, true, false, false]
         );
         assert_eq!(injected_flags(&shuffle, 1, 4), vec![true, false, false]);
+    }
+
+    #[test]
+    fn injection_seed_rotates_through_heard_tracks_and_skips_the_previous_one() {
+        let heard = [
+            favorite(),
+            {
+                let mut previous = favorite();
+                previous.source_id = "previous".to_owned();
+                previous
+            },
+            {
+                let mut current = favorite();
+                current.source_id = "current".to_owned();
+                current
+            },
+        ];
+        // Newest-first walk skips the seed the last fetch used and lands
+        // on the next-newest heard track.
+        assert_eq!(
+            next_injection_seed(heard.iter().rev(), None, Some("current"))
+                .unwrap()
+                .source_id,
+            "previous"
+        );
+        // Nothing heard yet falls back to the playing track.
+        assert_eq!(
+            next_injection_seed([], Some(&heard[2]), None)
+                .unwrap()
+                .source_id,
+            "current"
+        );
+        // Every heard track is the avoided one: the fallback still fires
+        // rather than skipping the fetch entirely.
+        assert_eq!(
+            next_injection_seed([&heard[2]].into_iter(), Some(&heard[2]), Some("current"))
+                .unwrap()
+                .source_id,
+            "current"
+        );
+        assert!(next_injection_seed([], None, None).is_none());
     }
 }
