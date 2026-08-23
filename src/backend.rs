@@ -842,7 +842,8 @@ async fn run(
         Ok(startup) => startup,
         Err(acknowledged) => return acknowledged,
     };
-    let mut worker = Worker::new(startup, events);
+    let (unavailable, mut unavailable_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut worker = Worker::new(startup, events, unavailable);
     if let Err(acknowledged) = worker.boot(&mut commands, &mut shutdown).await {
         return acknowledged;
     }
@@ -867,7 +868,7 @@ async fn run(
                 continue;
             }
             reconnected = finished(&mut worker.connection.reconnect) => {
-                worker.connection.finish_reconnect(reconnected, &worker.events);
+                worker.connection.finish_reconnect(reconnected, &worker.events, &worker.unavailable);
                 continue;
             }
             connected = finished(&mut worker.connection.connect) => {
@@ -888,6 +889,13 @@ async fn run(
             }
             radio = finished(&mut worker.radio.task) => {
                 worker.finish_radio(radio).await;
+                continue;
+            }
+            unavailable = unavailable_rx.recv() => {
+                // The worker holds a sender, so the channel never closes.
+                if let Some(spotify_uri) = unavailable {
+                    worker.skip_unavailable_track(&spotify_uri).await;
+                }
                 continue;
             }
             authorization = finished(&mut worker.session.authorization) => {
@@ -913,6 +921,9 @@ type Finished<T> = Option<Result<T, tokio::task::JoinError>>;
 /// services that own the in-flight work.
 struct Worker {
     events: UnboundedSender<BackendEvent>,
+    /// Reports unplayable tracks from the player observer, so a dead
+    /// current entry can auto-skip to the next one.
+    unavailable: UnboundedSender<String>,
     store: BlockingStore,
     spotify: Spotify,
     configuration: Option<SpotifyConfiguration>,
@@ -933,9 +944,14 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(startup: Startup, events: UnboundedSender<BackendEvent>) -> Self {
+    fn new(
+        startup: Startup,
+        events: UnboundedSender<BackendEvent>,
+        unavailable: UnboundedSender<String>,
+    ) -> Self {
         Self {
             events,
+            unavailable,
             store: startup.store,
             spotify: startup.spotify,
             configuration: startup.configuration,
@@ -1463,6 +1479,7 @@ impl Worker {
         // The restore performed a fresh load; the ended special-casing must
         // not survive it, or seeks would be swallowed against a live player.
         self.queue.ended = false;
+        self.queue.play_requested = playing;
         self.queue.position_ms = position_ms;
         if let Err(error) = self.store.update_playback_position(position_ms).await {
             send_error(&self.events, error);
@@ -1502,6 +1519,7 @@ impl Worker {
             match &result {
                 Ok(()) => {
                     self.queue.ended = false;
+                    self.queue.play_requested = true;
                     // Replaying the still-last track re-arms the prefetch a
                     // failed earlier fetch may have left unarmed.
                     self.maybe_prefetch_autoplay();
@@ -1547,6 +1565,7 @@ impl Worker {
                 player.stop();
             }
             self.queue.ended = true;
+            self.queue.play_requested = false;
             self.queue.position_ms = 0;
             if let Err(error) = self.store.update_playback_position(0).await {
                 send_error(&self.events, error);
@@ -1558,6 +1577,18 @@ impl Worker {
             return Ok(());
         };
         self.load_queue_track(index).await
+    }
+
+    /// Advances past the playing track when Spotify reports it unplayable,
+    /// so one dead entry cannot stall the rest of the queue.
+    async fn skip_unavailable_track(&mut self, spotify_uri: &str) {
+        if !should_auto_skip_unavailable(&self.queue, spotify_uri) {
+            return;
+        }
+        log::info!("playback: skipping unavailable track {spotify_uri}");
+        if let Err(error) = self.next_track().await {
+            send_error(&self.events, error);
+        }
     }
 
     async fn previous_track(&mut self) -> Result<()> {
@@ -1603,6 +1634,8 @@ impl Worker {
         self.queue.index = Some(index);
         self.queue.position_ms = 0;
         self.queue.ended = false;
+        // Queue loads always start playing.
+        self.queue.play_requested = true;
         if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
         }
@@ -1661,7 +1694,7 @@ impl Worker {
         match connected {
             Some(Ok(Ok(player))) => {
                 log::info!("playback: connected");
-                self.connection.adopt(player, &self.events);
+                self.connection.adopt(player, &self.events, &self.unavailable);
                 self.playback_credentials_invalidated = false;
                 if let Err(error) = self.store.set_playback_credentials_invalidated(false).await {
                     send_error(&self.events, error);
@@ -2203,6 +2236,10 @@ struct PlayQueue {
     /// EndOfTrack, where play() and seek() are no-ops; only a fresh load
     /// leaves it, so Resume and Seek take different paths while this is set.
     ended: bool,
+    /// Whether the live load was asked to start playing. An unavailable
+    /// track auto-skips only then: a paused restore keeps its selection
+    /// until the user acts, rather than bursting into the next track.
+    play_requested: bool,
 }
 
 impl PlayQueue {
@@ -2216,6 +2253,7 @@ impl PlayQueue {
                 index: Some(snapshot.index),
                 position_ms: snapshot.position_ms,
                 ended: false,
+                play_requested: false,
             },
             None => Self::default(),
         }
@@ -2512,8 +2550,13 @@ impl PlaybackConnection {
         abort_task(&mut self.observer);
     }
 
-    fn adopt(&mut self, player: Playback, events: &UnboundedSender<BackendEvent>) {
-        self.observer = Some(observe_playback(&player, events));
+    fn adopt(
+        &mut self,
+        player: Playback,
+        events: &UnboundedSender<BackendEvent>,
+        unavailable: &UnboundedSender<String>,
+    ) {
+        self.observer = Some(observe_playback(&player, events, unavailable.clone()));
         self.player = Some(player);
     }
 
@@ -2562,12 +2605,13 @@ impl PlaybackConnection {
         &mut self,
         reconnected: Finished<Result<Playback>>,
         events: &UnboundedSender<BackendEvent>,
+        unavailable: &UnboundedSender<String>,
     ) {
         self.reconnect = None;
         match reconnected {
             Some(Ok(Ok(player))) => {
                 log::info!("playback: reconnected");
-                self.adopt(player, events);
+                self.adopt(player, events, unavailable);
                 self.reconnect_pending = false;
                 let _ = events.send(BackendEvent::PlaybackReconnected);
             }
@@ -2878,9 +2922,22 @@ async fn logout_account(store: BlockingStore, spotify: Spotify) -> Result<()> {
     }
 }
 
+/// Whether an unavailable-track report should advance the queue: only a
+/// still-current entry whose load was asked to start playing qualifies.
+/// Stale reports (the queue already moved on), preload failures for a
+/// not-yet-playing track, and paused restores all stay put.
+fn should_auto_skip_unavailable(queue: &PlayQueue, spotify_uri: &str) -> bool {
+    let current_uri = queue
+        .index
+        .and_then(|index| queue.tracks.get(index))
+        .and_then(|track| track.spotify_uri.as_deref());
+    queue.play_requested && !queue.ended && current_uri == Some(spotify_uri)
+}
+
 fn observe_playback(
     player: &Playback,
     events: &UnboundedSender<BackendEvent>,
+    unavailable: UnboundedSender<String>,
 ) -> tokio::task::JoinHandle<()> {
     let mut player_events = player.events();
     let event_sender = events.clone();
@@ -2919,10 +2976,17 @@ fn observe_playback(
                 PlayerEvent::EndOfTrack { track_id, .. } => Some(BackendEvent::EndOfTrack {
                     spotify_uri: track_id.to_string(),
                 }),
-                PlayerEvent::Unavailable { track_id, .. } => Some(BackendEvent::TrackFailed {
-                    spotify_uri: track_id.to_string(),
-                    error: "Spotify cannot play this track".to_owned(),
-                }),
+                PlayerEvent::Unavailable { track_id, .. } => {
+                    let spotify_uri = track_id.to_string();
+                    // The worker listens on its own channel so a dead
+                    // current track auto-skips; the UI only learns of the
+                    // failure through `TrackFailed`.
+                    let _ = unavailable.send(spotify_uri.clone());
+                    Some(BackendEvent::TrackFailed {
+                        spotify_uri,
+                        error: "Spotify cannot play this track".to_owned(),
+                    })
+                }
                 PlayerEvent::PositionChanged {
                     track_id,
                     position_ms,
@@ -3136,8 +3200,9 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendCommand, BlockingStore, ShuffleState, build_radio_context,
-        favorite_needs_catalog_refresh, injected_flags, next_injection_seed, send_command,
+        BackendCommand, BlockingStore, PlayQueue, ShuffleState, build_radio_context,
+        favorite_needs_catalog_refresh, injected_flags, next_injection_seed,
+        send_command, should_auto_skip_unavailable,
     };
     use crate::model::{AlbumRef, ArtistRef, Provider, Track};
     use crate::shuffle::Origin;
@@ -3292,6 +3357,37 @@ mod tests {
         let seed = favorite();
 
         assert!(build_radio_context(seed.clone(), vec![seed]).is_err());
+    }
+
+    #[test]
+    fn unavailable_track_autoskips_only_a_playing_load_of_the_current_entry() {
+        fn queue_on_first_track() -> PlayQueue {
+            let mut next = favorite();
+            next.source_id = "next".to_owned();
+            next.spotify_uri = Some("spotify:track:next".to_owned());
+            PlayQueue {
+                tracks: vec![favorite(), next],
+                index: Some(0),
+                ..PlayQueue::default()
+            }
+        }
+
+        let mut queue = queue_on_first_track();
+        queue.play_requested = true;
+        assert!(should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
+
+        // A paused restore keeps its selection instead of bursting into
+        // the next track on launch or reconnect.
+        queue.play_requested = false;
+        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
+        queue.play_requested = true;
+
+        // Stale report: the queue already moved past the failed track.
+        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:next"));
+
+        // Nothing may advance once the queue has ended.
+        queue.ended = true;
+        assert!(!should_auto_skip_unavailable(&queue, "spotify:track:track-id"));
     }
 
     #[test]
