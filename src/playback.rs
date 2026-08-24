@@ -21,7 +21,10 @@ use librespot::{
     },
     protocol::{
         connect::{Capabilities, Device, DeviceInfo, MemberType, PutStateReason, PutStateRequest},
-        player::{ContextPlayerOptions, PlayOrigin, PlayerState, Suppressions},
+        player::{
+            ContextIndex, ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack,
+            Suppressions,
+        },
     },
 };
 use oauth2::{
@@ -418,7 +421,7 @@ async fn run_dj_service(
         member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
         put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
         device: MessageField::some(Device {
-            device_info: MessageField::some(device_info),
+            device_info: MessageField::some(device_info.clone()),
             player_state: MessageField::some(PlayerState {
                 session_id: session.session_id(),
                 is_system_initiated: true,
@@ -461,6 +464,7 @@ async fn run_dj_service(
             .get_or_default()
             .context
             .get_or_default();
+        let dj_context_uri = context.uri.clone().unwrap_or_default();
         let Some(session_url) = context
             .url
             .as_deref()
@@ -512,9 +516,48 @@ async fn run_dj_service(
             break;
         }
 
-        // Starting the first track is what completes the cast handshake.
+        // Loading alone does not finish the cast: the sending client waits
+        // until the target publishes itself as the active device playing the
+        // context. Mirror what a real player reports right after a load.
         if let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok()) {
             player.load(first, true, 0);
+            let active = PutStateRequest {
+                client_side_timestamp: now_millis(),
+                member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+                put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
+                is_active: true,
+                device: MessageField::some(Device {
+                    device_info: MessageField::some(device_info.clone()),
+                    player_state: MessageField::some(PlayerState {
+                        session_id: session.session_id(),
+                        context_uri: dj_context_uri.clone(),
+                        timestamp: now_millis() as i64,
+                        position_as_of_timestamp: 0,
+                        playback_speed: 1.,
+                        is_playing: true,
+                        is_paused: false,
+                        play_origin: MessageField::some(PlayOrigin::new()),
+                        suppressions: MessageField::some(Suppressions::new()),
+                        options: MessageField::some(ContextPlayerOptions::new()),
+                        track: MessageField::some(ProvidedTrack {
+                            uri: uris[0].clone(),
+                            ..Default::default()
+                        }),
+                        index: MessageField::some(ContextIndex {
+                            page: 0,
+                            track: 0,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            match session.spclient().put_connect_state_request(&active).await {
+                Ok(_) => log::info!("dj service: published active playback state"),
+                Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
+            }
         }
     }
     log::info!("dj service: stopped");
