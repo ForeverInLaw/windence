@@ -441,6 +441,9 @@ async fn run_dj_service(
     }
     log::info!("dj service: registered as '{DJ_DEVICE_NAME}' on Spotify Connect");
 
+    // The DJ context this service already started playing, if any: repeat
+    // transfers for the same session must not restart the current track.
+    let mut playing_dj_uri: Option<String> = None;
     loop {
         let command = tokio::select! {
             interrupted = commands.next() => match interrupted {
@@ -449,6 +452,8 @@ async fn run_dj_service(
             },
         };
         let (request, sender) = command;
+        let command_message_id = request.message_id;
+        let command_sender_id = request.sent_by_device_id.clone();
         // Ack before anything else so the sending client stops waiting in
         // "connecting".
         let _ = sender.send(Reply::Success);
@@ -516,48 +521,60 @@ async fn run_dj_service(
             break;
         }
 
-        // Loading alone does not finish the cast: the sending client waits
-        // until the target publishes itself as the active device playing the
-        // context. Mirror what a real player reports right after a load.
-        if let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok()) {
+        // Reloading on every retry would restart the same track; only start
+        // the context when it is not the one already playing.
+        let already_playing = playing_dj_uri.as_deref() == Some(dj_context_uri.as_str());
+        if !already_playing
+            && let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok())
+        {
             player.load(first, true, 0);
-            let active = PutStateRequest {
-                client_side_timestamp: now_millis(),
-                member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
-                put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
-                is_active: true,
-                device: MessageField::some(Device {
-                    device_info: MessageField::some(device_info.clone()),
-                    player_state: MessageField::some(PlayerState {
-                        session_id: session.session_id(),
-                        context_uri: dj_context_uri.clone(),
-                        timestamp: now_millis() as i64,
-                        position_as_of_timestamp: 0,
-                        playback_speed: 1.,
-                        is_playing: true,
-                        is_paused: false,
-                        play_origin: MessageField::some(PlayOrigin::new()),
-                        suppressions: MessageField::some(Suppressions::new()),
-                        options: MessageField::some(ContextPlayerOptions::new()),
-                        track: MessageField::some(ProvidedTrack {
-                            uri: uris[0].clone(),
-                            ..Default::default()
-                        }),
-                        index: MessageField::some(ContextIndex {
-                            page: 0,
-                            track: 0,
-                            ..Default::default()
-                        }),
+        }
+
+        // Loading alone does not finish the cast: the sending client waits
+        // until the target reports itself active while referencing the very
+        // command that started the playback. Without the last-command pair
+        // the phone keeps re-sending the transfer forever.
+        let active = PutStateRequest {
+            client_side_timestamp: now_millis(),
+            member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+            put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
+            is_active: true,
+            last_command_sent_by_device_id: command_sender_id,
+            last_command_message_id: command_message_id,
+            device: MessageField::some(Device {
+                device_info: MessageField::some(device_info.clone()),
+                player_state: MessageField::some(PlayerState {
+                    session_id: session.session_id(),
+                    context_uri: dj_context_uri.clone(),
+                    timestamp: now_millis() as i64,
+                    position_as_of_timestamp: 0,
+                    playback_speed: 1.,
+                    is_playing: true,
+                    is_paused: false,
+                    play_origin: MessageField::some(PlayOrigin::new()),
+                    suppressions: MessageField::some(Suppressions::new()),
+                    options: MessageField::some(ContextPlayerOptions::new()),
+                    track: MessageField::some(ProvidedTrack {
+                        uri: uris[0].clone(),
+                        ..Default::default()
+                    }),
+                    index: MessageField::some(ContextIndex {
+                        page: 0,
+                        track: 0,
                         ..Default::default()
                     }),
                     ..Default::default()
                 }),
                 ..Default::default()
-            };
-            match session.spclient().put_connect_state_request(&active).await {
-                Ok(_) => log::info!("dj service: published active playback state"),
-                Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
+            }),
+            ..Default::default()
+        };
+        match session.spclient().put_connect_state_request(&active).await {
+            Ok(_) => {
+                log::info!("dj service: published active playback state");
+                playing_dj_uri = Some(dj_context_uri);
             }
+            Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
         }
     }
     log::info!("dj service: stopped");
