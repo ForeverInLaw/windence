@@ -247,6 +247,20 @@ async fn report_request(
                 context.url,
                 context.pages.len(),
             );
+            // The transfer names the session-bound resolver url: this is the
+            // channel that returns the materialized DJ lineup for a session
+            // this device took part in.
+            if let Some(session_url) = context
+                .url
+                .as_deref()
+                .filter(|url| url.starts_with("hm://"))
+            {
+                println!("[probe]     following SESSION URL: {session_url}");
+                match sp.get_next_page(session_url).await {
+                    Ok(body) => summarize_body("session body", &body, uri_limit),
+                    Err(error) => println!("[probe]       session fetch FAILED: {error}"),
+                }
+            }
             for (index, page) in context.pages.iter().enumerate() {
                 println!(
                     "[probe]       page {index}: tracks={} page_url={:?} next_page_url={:?}",
