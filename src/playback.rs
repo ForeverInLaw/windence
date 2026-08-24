@@ -367,6 +367,25 @@ async fn run_dj_service(
                 return;
             }
         };
+    // Cluster broadcasts show how real devices publish their state; casting
+    // to an official client next to a cast to Cadence gives a diffable pair.
+    let mut clusters =
+        match session
+            .dealer()
+            .listen_for(
+                "hm://connect-state/v1/cluster",
+                |message: Message| match message.payload {
+                    PayloadValue::Raw(bytes) => Ok(bytes),
+                    PayloadValue::Json(text) => text.into_bytes(),
+                    PayloadValue::Empty => Vec::new(),
+                },
+            ) {
+            Ok(clusters) => clusters,
+            Err(error) => {
+                log::warn!("dj service: cannot watch clusters: {error}");
+                return;
+            }
+        };
 
     if let Err(error) = session.dealer().start().await {
         log::warn!("dj service: dealer websocket failed: {error}");
@@ -445,9 +464,14 @@ async fn run_dj_service(
     // transfers for the same session must not restart the current track.
     let mut playing_dj_uri: Option<String> = None;
     loop {
-        let command = tokio::select! {
+        tokio::select! {
             interrupted = commands.next() => match interrupted {
                 Some(request_reply) => request_reply,
+                None => break,
+            },
+            cluster = clusters.next() => match cluster {
+                Some(Ok(bytes)) => report_cluster(&bytes),
+                Some(Err(error)) => log::warn!("dj service: cluster stream error: {error}"),
                 None => break,
             },
         };
@@ -456,7 +480,9 @@ async fn run_dj_service(
         let command_sender_id = request.sent_by_device_id.clone();
         // Ack before anything else so the sending client stops waiting in
         // "connecting".
-        let _ = sender.send(Reply::Success);
+        let Some((request, sender)) = command else {
+            continue;
+        };
 
         let Command::Transfer(transfer) = request.command else {
             continue;
@@ -601,6 +627,44 @@ async fn listed_tracks_for_uris(session: &Session, uris: &[String]) -> Vec<model
     .collect::<Vec<_>>()
     .await;
     fetched.into_iter().flatten().flatten().collect()
+}
+
+/// Logs the parts of a cluster update that reveal how the active device
+/// publishes itself: casting to an official client and casting to Cadence
+/// produces a diffable pair of these.
+fn report_cluster(bytes: &[u8]) {
+    use protobuf::Message as _;
+
+    let Ok(update) = librespot::protocol::connect::ClusterUpdate::parse_from_bytes(bytes) else {
+        return;
+    };
+    let cluster = update.cluster.get_or_default();
+    log::info!(
+        "dj service: CLUSTER active={:?} reason={} devices={}",
+        cluster.active_device_id,
+        update.update_reason.value(),
+        cluster.device.len(),
+    );
+    let player = cluster.player_state.get_or_default();
+    if player.context_uri.is_empty() {
+        return;
+    }
+    let track = player.track.get_or_default();
+    log::info!(
+        "dj service:   state ctx={:?} playing={} paused={} speed={} pos={}",
+        player.context_uri,
+        player.is_playing,
+        player.is_paused,
+        player.playback_speed,
+        player.position_as_of_timestamp,
+    );
+    log::info!(
+        "dj service:   track uri={:?} provider={:?} uid={:?} metadata_keys={:?}",
+        track.uri,
+        track.provider,
+        track.uid,
+        track.metadata.keys().collect::<Vec<_>>(),
+    );
 }
 
 fn now_millis() -> u64 {
