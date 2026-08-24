@@ -19,7 +19,10 @@ use librespot::core::{
     SpotifyId, SpotifyUri,
     authentication::Credentials,
     config::{DeviceType, SessionConfig},
-    dealer::protocol::{Message, PayloadValue},
+    dealer::{
+        manager::Reply,
+        protocol::{Command, Message, PayloadValue},
+    },
     session::Session,
 };
 use librespot::metadata::Metadata;
@@ -85,28 +88,6 @@ fn summarize_body(label: &str, body: &[u8], uri_limit: usize) -> usize {
 
 const PROBE_DEVICE_NAME: &str = "Cadence-Probe";
 
-/// Collects every hm:// url nested anywhere in a JSON payload.
-fn collect_hm_urls(value: Option<&serde_json::Value>, urls: &mut Vec<String>) {
-    let Some(value) = value else { return };
-    match value {
-        serde_json::Value::String(text) => {
-            if text.starts_with("hm://") && !urls.contains(text) {
-                urls.push(text.clone());
-            }
-        }
-        serde_json::Value::Array(items) => {
-            items
-                .iter()
-                .for_each(|item| collect_hm_urls(Some(item), urls));
-        }
-        serde_json::Value::Object(map) => {
-            map.values()
-                .for_each(|child| collect_hm_urls(Some(child), urls));
-        }
-        _ => {}
-    }
-}
-
 /// Prints a context skeleton and follows every resolvable pointer it offers,
 /// reporting what each hop returns. Returns how many spotify uris surfaced.
 async fn inspect_and_follow_context(session: &Session, dj_uri: &str, uri_limit: usize) -> usize {
@@ -161,43 +142,102 @@ async fn inspect_and_follow_context(session: &Session, dj_uri: &str, uri_limit: 
     found
 }
 
-/// Reports a dealer player command; when it names the DJ context, dumps the
-/// payload and follows every hm:// url it carries. Returns whether track
-/// uris surfaced.
-async fn report_command(session: &Session, text: &str, dj_uri: &str, uri_limit: usize) -> bool {
-    let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
-    let mentions_dj = text.contains(playlist_id)
-        || text.contains("lexicon")
-        || text.to_lowercase().contains("dj");
-    if !mentions_dj {
-        println!(
-            "[probe]   command ignored: {}",
-            &text[..text.len().min(120)]
-        );
-        return false;
-    }
-
-    println!("[probe]   DJ COMMAND arrived:");
-    println!("[probe]     raw: {}", &text[..text.len().min(1500)]);
-
-    let parsed = serde_json::from_str::<serde_json::Value>(text).ok();
-    let mut urls = Vec::new();
-    collect_hm_urls(parsed.as_ref(), &mut urls);
-    if urls.is_empty() {
-        println!("[probe]     payload carries no hm:// urls");
-        return false;
-    }
-
+/// Reports a dealer player command and follows the context it delivers.
+/// Returns whether track uris surfaced from the DJ context.
+async fn report_request(
+    session: &Session,
+    command: Command,
+    dj_uri: &str,
+    uri_limit: usize,
+) -> bool {
+    println!("[probe]   COMMAND arrived: {command}");
     let sp = session.spclient();
-    let mut found = 0usize;
-    for url in urls {
-        println!("[probe]     following {url}");
-        match sp.get_next_page(&url).await {
-            Ok(body) => found += summarize_body(&format!("handover body {url}"), &body, uri_limit),
-            Err(error) => println!("[probe]       fetch FAILED: {error}"),
+    match command {
+        Command::Play(play) => {
+            let context = &play.context;
+            println!(
+                "[probe]     play context uri={:?} ctx_url={:?} pages={}",
+                context.uri(),
+                context.url(),
+                context.pages.len(),
+            );
+            for (index, page) in context.pages.iter().enumerate() {
+                println!(
+                    "[probe]       page {index}: tracks={} page_url={:?} next_page_url={:?}",
+                    page.tracks.len(),
+                    page.page_url(),
+                    page.next_page_url(),
+                );
+            }
+            let mut found = context
+                .pages
+                .iter()
+                .map(|page| page.tracks.len())
+                .sum::<usize>();
+            for page in context.pages.iter().take(5) {
+                for pointer in [page.page_url(), page.next_page_url()] {
+                    if !pointer.starts_with("hm://") {
+                        continue;
+                    }
+                    match sp.get_next_page(pointer).await {
+                        Ok(body) => {
+                            found +=
+                                summarize_body(&format!("command page {pointer}"), &body, uri_limit)
+                        }
+                        Err(error) => println!("[probe]       fetch FAILED: {error}"),
+                    }
+                }
+            }
+            found > 0 && context.uri().contains(dj_uri)
+        }
+        Command::Transfer(transfer) => {
+            let Some(state) = transfer.data else {
+                println!("[probe]     bare transfer without state");
+                return false;
+            };
+            let session_state = state.current_session.get_or_default();
+            let context = session_state.context.get_or_default();
+            let tracks = context
+                .pages
+                .iter()
+                .map(|page| page.tracks.len())
+                .sum::<usize>();
+            println!(
+                "[probe]     transfer context uri={:?} url={:?} pages={} tracks={tracks}",
+                context.uri,
+                context.url,
+                context.pages.len(),
+            );
+            for (index, page) in context.pages.iter().enumerate() {
+                println!(
+                    "[probe]       page {index}: tracks={} page_url={:?} next_page_url={:?}",
+                    page.tracks.len(),
+                    page.page_url,
+                    page.next_page_url,
+                );
+            }
+            for page in context.pages.iter().take(3) {
+                let pointers = [page.page_url.as_deref(), page.next_page_url.as_deref()];
+                for pointer in pointers.into_iter().flatten() {
+                    if !pointer.starts_with("hm://") {
+                        continue;
+                    }
+                    match sp.get_next_page(pointer).await {
+                        Ok(body) => {
+                            summarize_body(&format!("transfer page {pointer}"), &body, uri_limit);
+                        }
+                        Err(error) => println!("[probe]       fetch FAILED: {error}"),
+                    }
+                }
+            }
+            false
+        }
+        other => {
+            println!("[probe]     not a play or transfer command; ignoring");
+            let _ = other;
+            false
         }
     }
-    found > 0
 }
 
 /// Reports a cluster update, calling out DJ queue material when present.
@@ -235,16 +275,14 @@ fn report_cluster(bytes: &[u8], dj_uri: &str) {
 async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize) -> Result<usize> {
     println!("[probe] STAGE C: registering '{PROBE_DEVICE_NAME}' as a Connect device");
 
-    // Subscriptions must exist before the socket comes up, or early messages
-    // race them.
-    let mut commands = session.dealer().listen_for(
-        "hm://connect-state/v1/player/command",
-        |message: Message| match message.payload {
-            PayloadValue::Json(text) => Ok(text),
-            PayloadValue::Raw(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
-            PayloadValue::Empty => Ok(String::new()),
-        },
-    )?;
+    // Subscriptions must exist before the socket comes up, or early
+    // messages race them. Player commands are dealer REQUESTS that need a
+    // reply: listening to them as messages sees nothing, and an unanswered
+    // request leaves the sending client hanging in "connecting" until it
+    // gives up.
+    let mut commands = session
+        .dealer()
+        .handle_for("hm://connect-state/v1/player/command")?;
     let mut clusters =
         session
             .dealer()
@@ -383,12 +421,14 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             command = commands.next() => match command {
-                Some(Ok(text)) => {
-                    if report_command(session, &text, dj_uri, uri_limit).await {
+                Some((request, sender)) => {
+                    // Ack before anything else so the sending client stops
+                    // waiting in "connecting".
+                    let _ = sender.send(Reply::Success);
+                    if report_request(session, request.command, dj_uri, uri_limit).await {
                         found += 1;
                     }
                 }
-                Some(Err(error)) => println!("[probe]   command stream error: {error}"),
                 None => {
                     println!("[probe]   command stream closed");
                     break;
