@@ -387,35 +387,40 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
         &connection_id[..connection_id.len().min(8)]
     );
 
+    // Mirrors go-librespot's proven registration (daemon/player_state.go):
+    // CONNECT_STATE membership, premium license, and the exact capability
+    // set that receives dealer player commands.
     let device_info = DeviceInfo {
         can_play: true,
+        volume: 65535,
         name: PROBE_DEVICE_NAME.to_owned(),
         device_id: session.device_id().to_string(),
         device_type: EnumOrUnknown::new(DeviceType::Speaker.into()),
         device_software_version: format!("cadence-probe {}", env!("CARGO_PKG_VERSION")),
-        spirc_version: "3.2.0".to_owned(),
+        spirc_version: "3.2.6".to_owned(),
         client_id: session.client_id(),
+        brand: "spotify".to_owned(),
+        model: "go-librespot".to_owned(),
+        license: "premium".to_owned(),
         capabilities: MessageField::some(Capabilities {
             can_be_player: true,
+            restrict_to_local: false,
+            gaia_eq_connect_id: true,
             is_observable: true,
-            is_controllable: true,
-            needs_full_player_state: true,
-            supports_gzip_pushes: true,
-            supports_playlist_v2: true,
-            supports_transfer_command: true,
-            supports_command_request: true,
-            supports_set_options_command: true,
-            command_acks: true,
             volume_steps: 64,
             supported_types: vec![
                 "audio/track".to_owned(),
                 "audio/episode".to_owned(),
-                // Official clients advertise the AI DJ as a supported media
-                // type; without it the server never routes a DJ cast here.
-                "audio/dj".to_owned(),
+                "audio/media".to_owned(),
             ],
-            // The experiment: advertise what official clients advertise for
-            // the AI DJ. librespot hardcodes this off.
+            command_acks: true,
+            supports_playlist_v2: true,
+            is_controllable: true,
+            supports_transfer_command: true,
+            supports_command_request: true,
+            needs_full_player_state: false,
+            supports_gzip_pushes: true,
+            supports_set_options_command: true,
             supports_dj: true,
             ..Default::default()
         }),
@@ -432,7 +437,11 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
     };
 
     let mut request = PutStateRequest {
-        member_type: EnumOrUnknown::new(MemberType::SPIRC_V3),
+        client_side_timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+        member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
         put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
         device: MessageField::some(Device {
             device_info: MessageField::some(device_info),
