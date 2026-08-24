@@ -9,7 +9,10 @@ use librespot::{
         SpotifyUri,
         authentication::Credentials,
         config::{DeviceType, SessionConfig},
-        dealer::{manager::Reply, protocol::Command},
+        dealer::{
+            manager::Reply,
+            protocol::{Command, Message, PayloadValue, Request},
+        },
         session::Session,
     },
     metadata::Metadata,
@@ -376,8 +379,8 @@ async fn run_dj_service(
                 "hm://connect-state/v1/cluster",
                 |message: Message| match message.payload {
                     PayloadValue::Raw(bytes) => Ok(bytes),
-                    PayloadValue::Json(text) => text.into_bytes(),
-                    PayloadValue::Empty => Vec::new(),
+                    PayloadValue::Json(text) => Ok(text.into_bytes()),
+                    PayloadValue::Empty => Ok(Vec::new()),
                 },
             ) {
             Ok(clusters) => clusters,
@@ -465,145 +468,160 @@ async fn run_dj_service(
     let mut playing_dj_uri: Option<String> = None;
     loop {
         tokio::select! {
-            interrupted = commands.next() => match interrupted {
-                Some(request_reply) => request_reply,
-                None => break,
-            },
-            cluster = clusters.next() => match cluster {
-                Some(Ok(bytes)) => report_cluster(&bytes),
-                Some(Err(error)) => log::warn!("dj service: cluster stream error: {error}"),
-                None => break,
-            },
-        };
-        let (request, sender) = command;
-        let command_message_id = request.message_id;
-        let command_sender_id = request.sent_by_device_id.clone();
-        // Ack before anything else so the sending client stops waiting in
-        // "connecting".
-        let Some((request, sender)) = command else {
-            continue;
-        };
-
-        let Command::Transfer(transfer) = request.command else {
-            continue;
-        };
-        let Some(state) = transfer.data else {
-            continue;
-        };
-        let context = state
-            .current_session
-            .get_or_default()
-            .context
-            .get_or_default();
-        let dj_context_uri = context.uri.clone().unwrap_or_default();
-        let Some(session_url) = context
-            .url
-            .as_deref()
-            .filter(|url| url.starts_with("hm://"))
-            .filter(|_| {
-                context
-                    .uri
-                    .as_deref()
-                    .is_some_and(|uri| uri.contains(dj::SOURCE_ID))
-            })
-        else {
-            continue;
-        };
-
-        log::info!("dj service: accepting a DJ handover");
-        let body = match session.spclient().get_next_page(session_url).await {
-            Ok(body) => body,
-            Err(error) => {
-                log::warn!("dj service: lexicon session fetch failed: {error}");
-                continue;
+            Some((request, sender)) = commands.next() => {
+                // Ack before anything else so the sending client stops
+                // waiting in "connecting".
+                let _ = sender.send(Reply::Success);
+                if process_dj_command(
+                    &session,
+                    &player,
+                    &device_info,
+                    &events,
+                    &mut playing_dj_uri,
+                    request,
+                )
+                .await
+                .is_none()
+                {
+                    break;
+                }
             }
-        };
-        let parsed = match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("dj service: lexicon session body is not json: {error}");
-                continue;
-            }
-        };
-        let uris = dj::session_track_uris(&parsed);
-        if uris.is_empty() {
-            log::warn!("dj service: the lexicon session carried no tracks");
-            continue;
+            Some(Ok(bytes)) = clusters.next() => report_cluster(&bytes),
+            else => break,
         }
+    }
+    log::info!("dj service: stopped");
+}
 
-        let listed = listed_tracks_for_uris(&session, &uris).await;
-        if listed.is_empty() {
-            log::warn!("dj service: none of the {} tracks resolved", uris.len());
-            continue;
+/// Handles one dealer command: acks it and, when it is a DJ handover,
+/// resolves the session body into a lineup and starts playback. Returns
+/// None when the service must stop (nobody consumes lineups anymore).
+async fn process_dj_command(
+    session: &Session,
+    player: &Arc<Player>,
+    device_info: &DeviceInfo,
+    events: &async_chan::Sender<dj::Lineup>,
+    playing_dj_uri: &mut Option<String>,
+    request: Request,
+) -> Option<()> {
+    let Command::Transfer(transfer) = request.command else {
+        return Some(());
+    };
+    let Some(state) = transfer.data else {
+        return Some(());
+    };
+    let context = state
+        .current_session
+        .get_or_default()
+        .context
+        .get_or_default();
+    let dj_context_uri = context.uri.clone().unwrap_or_default();
+    let Some(session_url) = context
+        .url
+        .as_deref()
+        .filter(|url| url.starts_with("hm://"))
+        .filter(|_| {
+            context
+                .uri
+                .as_deref()
+                .is_some_and(|uri| uri.contains(dj::SOURCE_ID))
+        })
+    else {
+        return Some(());
+    };
+
+    log::info!("dj service: accepting a DJ handover");
+    let body = match session.spclient().get_next_page(session_url).await {
+        Ok(body) => body,
+        Err(error) => {
+            log::warn!("dj service: lexicon session fetch failed: {error}");
+            return Some(());
         }
-
-        let playlist = dj::refreshed_playlist(uris.len() as u32, None);
-        if events
-            .send(dj::Lineup::Fresh(playlist, listed.clone()))
-            .await
-            .is_err()
-        {
-            log::info!("dj service: nobody is listening for lineups; stopping");
-            break;
+    };
+    let parsed = match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("dj service: lexicon session body is not json: {error}");
+            return Some(());
         }
+    };
+    let uris = dj::session_track_uris(&parsed);
+    if uris.is_empty() {
+        log::warn!("dj service: the lexicon session carried no tracks");
+        return Some(());
+    }
 
-        // Reloading on every retry would restart the same track; only start
-        // the context when it is not the one already playing.
-        let already_playing = playing_dj_uri.as_deref() == Some(dj_context_uri.as_str());
-        if !already_playing
-            && let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok())
-        {
-            player.load(first, true, 0);
-        }
+    let listed = listed_tracks_for_uris(session, &uris).await;
+    if listed.is_empty() {
+        log::warn!("dj service: none of the {} tracks resolved", uris.len());
+        return Some(());
+    }
 
-        // Loading alone does not finish the cast: the sending client waits
-        // until the target reports itself active while referencing the very
-        // command that started the playback. Without the last-command pair
-        // the phone keeps re-sending the transfer forever.
-        let active = PutStateRequest {
-            client_side_timestamp: now_millis(),
-            member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
-            put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
-            is_active: true,
-            last_command_sent_by_device_id: command_sender_id,
-            last_command_message_id: command_message_id,
-            device: MessageField::some(Device {
-                device_info: MessageField::some(device_info.clone()),
-                player_state: MessageField::some(PlayerState {
-                    session_id: session.session_id(),
-                    context_uri: dj_context_uri.clone(),
-                    timestamp: now_millis() as i64,
-                    position_as_of_timestamp: 0,
-                    playback_speed: 1.,
-                    is_playing: true,
-                    is_paused: false,
-                    play_origin: MessageField::some(PlayOrigin::new()),
-                    suppressions: MessageField::some(Suppressions::new()),
-                    options: MessageField::some(ContextPlayerOptions::new()),
-                    track: MessageField::some(ProvidedTrack {
-                        uri: uris[0].clone(),
-                        ..Default::default()
-                    }),
-                    index: MessageField::some(ContextIndex {
-                        page: 0,
-                        track: 0,
-                        ..Default::default()
-                    }),
+    let playlist = dj::refreshed_playlist(uris.len() as u32, None);
+    if events
+        .send(dj::Lineup::Fresh(playlist, listed))
+        .await
+        .is_err()
+    {
+        log::info!("dj service: nobody is listening for lineups; stopping");
+        return None;
+    }
+
+    // Reloading on every retry would restart the same track; only start the
+    // context when it is not the one already playing.
+    if playing_dj_uri.as_deref() != Some(dj_context_uri.as_str())
+        && let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok())
+    {
+        player.load(first, true, 0);
+    }
+
+    // Loading alone does not finish the cast: the sending client waits until
+    // the target reports itself active while referencing the very command
+    // that started the playback. Without the last-command pair the phone
+    // keeps re-sending the transfer forever.
+    let active = PutStateRequest {
+        client_side_timestamp: now_millis(),
+        member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+        put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
+        is_active: true,
+        last_command_sent_by_device_id: request.sent_by_device_id.clone(),
+        last_command_message_id: request.message_id,
+        device: MessageField::some(Device {
+            device_info: MessageField::some(device_info.clone()),
+            player_state: MessageField::some(PlayerState {
+                session_id: session.session_id(),
+                context_uri: dj_context_uri.clone(),
+                timestamp: now_millis() as i64,
+                position_as_of_timestamp: 0,
+                playback_speed: 1.,
+                is_playing: true,
+                is_paused: false,
+                play_origin: MessageField::some(PlayOrigin::new()),
+                suppressions: MessageField::some(Suppressions::new()),
+                options: MessageField::some(ContextPlayerOptions::new()),
+                track: MessageField::some(ProvidedTrack {
+                    uri: uris[0].clone(),
+                    ..Default::default()
+                }),
+                index: MessageField::some(ContextIndex {
+                    page: 0,
+                    track: 0,
                     ..Default::default()
                 }),
                 ..Default::default()
             }),
             ..Default::default()
-        };
-        match session.spclient().put_connect_state_request(&active).await {
-            Ok(_) => {
-                log::info!("dj service: published active playback state");
-                playing_dj_uri = Some(dj_context_uri);
-            }
-            Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
+        }),
+        ..Default::default()
+    };
+    match session.spclient().put_connect_state_request(&active).await {
+        Ok(_) => {
+            log::info!("dj service: published active playback state");
+            *playing_dj_uri = Some(dj_context_uri);
         }
+        Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
     }
-    log::info!("dj service: stopped");
+    Some(())
 }
 async fn listed_tracks_for_uris(session: &Session, uris: &[String]) -> Vec<model::ListedTrack> {
     use protobuf::Message as _;
