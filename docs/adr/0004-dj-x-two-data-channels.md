@@ -61,6 +61,27 @@ Both implementations are handover-first. Nobody has demonstrated starting a DJ
 session without an entitled client, and this repo's spike now shows the
 self-start paths that seemed plausible are closed.
 
+## Resolution (2026-08-24, live test)
+
+The channel is now proven end-to-end with the instrumented probe. The working
+sequence:
+
+1. Register as a `CONNECT_STATE` member with go-librespot's proven device
+   record (premium license, brand/model, their capability set). With
+   `SPIRC_V3` membership the server never routed anything to us.
+2. The user casts DJ X from the official app. The transfer arrives as a dealer
+   player command whose `current_session.context.url` is
+   `hm://lexicon-session-provider/context-resolve/v2/session?contextUri=<dj>`.
+3. Fetching that session url returns the materialized context as JSON: about
+   59 KB, 56 `spotify:track:` uris, `lexicon_set_type: your_dj`, plus
+   restrictions and per-track metadata.
+
+The lineup is reachable exactly once per live session, at cast time, through
+the session url inside the transfer. Self-start remains closed. The endless
+"connecting…" the sending client showed during probe runs is the missing half
+a real player supplies: load the first track and publish player state to
+finish the handshake.
+
 ## Decision
 
 There is no fetchable DJ X channel, so the sidebar entry cannot open a lineup
