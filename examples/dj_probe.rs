@@ -328,14 +328,15 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
     // missed its topic.
     // The legacy Connect pusher path: this is where cast commands actually
     // arrived in live tests (hm://remote/3/user/<user>/<hash>).
-    let mut remote =
-        session
-            .dealer()
-            .listen_for("hm://remote/3/", |message: Message| match message.payload {
+    let mut remote = session
+        .dealer()
+        .listen_for("hm://remote/3/", |message: Message| {
+            Ok(match message.payload {
                 PayloadValue::Json(text) => text.into_bytes(),
                 PayloadValue::Raw(bytes) => bytes,
                 PayloadValue::Empty => Vec::new(),
-            })?;
+            })
+        })?;
     let mut everything = session.dealer().listen_for("hm://", |message: Message| {
         let text = match message.payload {
             PayloadValue::Json(text) => text,

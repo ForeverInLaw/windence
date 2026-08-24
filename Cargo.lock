@@ -7515,6 +7515,7 @@ dependencies = [
  "chrono",
  "directories",
  "env_logger",
+ "flate2",
  "futures",
  "gpui",
  "gpui-component",
