@@ -266,6 +266,17 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
                     .cloned()
                     .unwrap_or_default())
             })?;
+    // Catch-all: every other dealer message gets logged, so silence in the
+    // listen window means the network was silent, not that a subscription
+    // missed its topic.
+    let mut everything = session.dealer().listen_for("hm://", |message: Message| {
+        let text = match message.payload {
+            PayloadValue::Json(text) => text,
+            PayloadValue::Raw(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            PayloadValue::Empty => String::new(),
+        };
+        Ok((message.uri, text))
+    })?;
 
     session
         .dealer()
@@ -388,6 +399,22 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
                 Some(Err(error)) => println!("[probe]   cluster stream error: {error}"),
                 None => {
                     println!("[probe]   cluster stream closed");
+                    break;
+                }
+            },
+            traffic = everything.next() => match traffic {
+                Some(Ok((uri, text))) => {
+                    if uri.starts_with("hm://pusher/v1/connections/") {
+                        continue;
+                    }
+                    println!(
+                        "[probe]   dealer traffic on {uri}: {}",
+                        &text[..text.len().min(200)]
+                    );
+                }
+                Some(Err(error)) => println!("[probe]   dealer stream error: {error}"),
+                None => {
+                    println!("[probe]   dealer stream closed");
                     break;
                 }
             },
