@@ -82,6 +82,18 @@ the session url inside the transfer. Self-start remains closed. The endless
 a real player supplies: load the first track and publish player state to
 finish the handshake.
 
+## Known limitation (first working build)
+
+The first implementation accepts the handover, snapshots the lineup and
+starts local audio, but the sending client does not finalize the cast: after
+a few seconds the phone reclaims activity. Cluster captures show why — a
+fully recognized player publishes a living state (advancing position,
+ProvidedTrack with provider/uid/metadata, playback_id, buffering-to-playing
+transitions), while the service currently sends a single static snapshot.
+Closing that gap means participating in the spirc state machine properly;
+the reference shapes are captured by the cluster observer built into the
+dj service.
+
 ## Decision
 
 There is no fetchable DJ X channel, so the sidebar entry cannot open a lineup
