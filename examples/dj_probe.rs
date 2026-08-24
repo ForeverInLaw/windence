@@ -107,6 +107,26 @@ fn decode_push(raw: &[u8]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Pulls every `spotify:track:` uri out of possibly-binary frame bytes.
+/// Spirc state frames carry the queue as plain uri fields, so a scan is
+/// enough for diagnosis without vendoring the legacy protos.
+fn collect_track_uris(text: &str) -> Vec<String> {
+    const PREFIX: &str = "spotify:track:";
+    let mut uris = Vec::new();
+    let mut rest = text;
+    while let Some(position) = rest.find(PREFIX) {
+        let tail = &rest[position + PREFIX.len()..];
+        let id: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if id.len() == 22 && !uris.iter().any(|existing: &String| existing.ends_with(&id)) {
+            uris.push(format!("{PREFIX}{id}"));
+        }
+        rest = &tail[id.len().min(tail.len())..];
+    }
+    uris
+}
 /// Prints a context skeleton and follows every resolvable pointer it offers,
 /// reporting what each hop returns. Returns how many spotify uris surfaced.
 async fn inspect_and_follow_context(session: &Session, dj_uri: &str, uri_limit: usize) -> usize {
@@ -477,28 +497,42 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
             },
             remote = remote.next() => match remote {
                 Some(Ok((uri, raw))) => {
-                    let text = decode_push(&raw);
                     println!("[probe]   REMOTE MESSAGE on {uri} ({} bytes)", raw.len());
-                    println!("[probe]     {}", head(&text, 2500));
+                    let text = decode_push(&raw);
+                    let track_uris = collect_track_uris(&text);
                     let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
-                    if text.contains(playlist_id) {
-                        // A real player accepts the handover by activating
-                        // the delivered context; mirror that so the sending
-                        // client stops showing "connecting".
-                        let mut ack = request.clone();
-                        ack.is_active = true;
-                        ack.put_state_reason =
-                            EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED);
-                        ack.device
-                            .mut_or_insert_default()
-                            .player_state
-                            .mut_or_insert_default()
-                            .context_uri = dj_uri.to_owned();
-                        match session.spclient().put_connect_state_request(&ack).await {
-                            Ok(_) => println!("[probe]     sent active-state ack for DJ"),
-                            Err(error) => println!("[probe]     ack FAILED: {error}"),
-                        }
+                    let mentions_dj = text.contains(playlist_id);
+                    if track_uris.is_empty() && !mentions_dj {
+                        println!("[probe]     no DJ material; head: {}", head(&text, 300));
+                        continue;
                     }
+                    println!(
+                        "[probe]     mentions DJ context: {mentions_dj}; {} track uris seen",
+                        track_uris.len()
+                    );
+                    for track_uri in track_uris.iter().take(uri_limit) {
+                        println!("[probe]       {track_uri}");
+                    }
+                    if !mentions_dj {
+                        continue;
+                    }
+                    // A real player accepts the handover by activating the
+                    // delivered context; mirror that so the sending client
+                    // stops showing "connecting".
+                    let mut ack = request.clone();
+                    ack.is_active = true;
+                    ack.put_state_reason =
+                        EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED);
+                    ack.device
+                        .mut_or_insert_default()
+                        .player_state
+                        .mut_or_insert_default()
+                        .context_uri = dj_uri.to_owned();
+                    match session.spclient().put_connect_state_request(&ack).await {
+                        Ok(_) => println!("[probe]     sent active-state ack for DJ"),
+                        Err(error) => println!("[probe]     ack FAILED: {error}"),
+                    }
+                    found += track_uris.len();
                 }
                 Some(Err(error)) => println!("[probe]   remote stream error: {error}"),
                 None => {
