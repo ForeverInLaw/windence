@@ -331,11 +331,14 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
     let mut remote = session
         .dealer()
         .listen_for("hm://remote/3/", |message: Message| {
-            Ok(match message.payload {
-                PayloadValue::Json(text) => text.into_bytes(),
-                PayloadValue::Raw(bytes) => bytes,
-                PayloadValue::Empty => Vec::new(),
-            })
+            Ok((
+                message.uri,
+                match message.payload {
+                    PayloadValue::Json(text) => text.into_bytes(),
+                    PayloadValue::Raw(bytes) => bytes,
+                    PayloadValue::Empty => Vec::new(),
+                },
+            ))
         })?;
     let mut everything = session.dealer().listen_for("hm://", |message: Message| {
         let text = match message.payload {
@@ -473,8 +476,9 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
                 }
             },
             remote = remote.next() => match remote {
-                Some(Ok((uri, text))) => {
-                    println!("[probe]   REMOTE MESSAGE on {uri}");
+                Some(Ok((uri, raw))) => {
+                    let text = decode_push(&raw);
+                    println!("[probe]   REMOTE MESSAGE on {uri} ({} bytes)", raw.len());
                     println!("[probe]     {}", head(&text, 2500));
                     let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
                     if text.contains(playlist_id) {
