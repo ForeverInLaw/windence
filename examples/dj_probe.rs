@@ -407,7 +407,13 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
             supports_set_options_command: true,
             command_acks: true,
             volume_steps: 64,
-            supported_types: vec!["audio/track".to_owned(), "audio/episode".to_owned()],
+            supported_types: vec![
+                "audio/track".to_owned(),
+                "audio/episode".to_owned(),
+                // Official clients advertise the AI DJ as a supported media
+                // type; without it the server never routes a DJ cast here.
+                "audio/dj".to_owned(),
+            ],
             // The experiment: advertise what official clients advertise for
             // the AI DJ. librespot hardcodes this off.
             supports_dj: true,
