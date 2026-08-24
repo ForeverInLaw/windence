@@ -466,6 +466,7 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    env_logger::init();
     let playlist_id = std::env::var("DJ_PROBE_PLAYLIST_ID")
         .unwrap_or_else(|_| spotify_gpui_client::dj::SOURCE_ID.to_owned());
     let track_limit: usize = std::env::var("DJ_PROBE_TRACK_LIMIT")
