@@ -57,7 +57,7 @@ A preference-gated behaviour that appends recommended tracks when the queue reac
 _Avoid_: Smart Shuffle (injects while the queue still runs), Radio
 
 **DJ X**:
-Spotify's AI-curated personal lineup, served as one Spotify-owned playlist whose tracks the server keeps rewriting for the listening account. Cadence treats it as an ordinary context: starting it snapshots the current lineup into the queue. Voice commentary and spoken requests are part of Spotify's own client, not of the context.
+Spotify's AI-curated personal station: the server picks tracks per account and speaks between them in its own client. The lineup has no fetchable form — it exists only inside a live playback session that Spotify's own clients start.
 _Avoid_: DJX, AI DJ, mix
 
 **Date Added**:
