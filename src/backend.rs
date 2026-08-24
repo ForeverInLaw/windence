@@ -3036,78 +3036,110 @@ fn observe_playback(
     unavailable: UnboundedSender<String>,
 ) -> tokio::task::JoinHandle<()> {
     let mut player_events = player.events();
+    let dj_notices = player.dj_now_playings();
     let event_sender = events.clone();
     tokio::spawn(async move {
-        while let Some(event) = player_events.recv().await {
-            let event = match event {
-                PlayerEvent::Loading { track_id, .. } => Some(BackendEvent::Loading {
-                    spotify_uri: track_id.to_string(),
-                }),
-                PlayerEvent::Playing {
-                    track_id,
-                    position_ms,
-                    ..
-                } => {
-                    let _ = event_sender.send(BackendEvent::PositionChanged {
-                        spotify_uri: track_id.to_string(),
-                        position_ms,
-                    });
-                    Some(BackendEvent::Playing {
-                        spotify_uri: track_id.to_string(),
-                    })
-                }
-                PlayerEvent::Paused {
-                    track_id,
-                    position_ms,
-                    ..
-                } => {
-                    let _ = event_sender.send(BackendEvent::PositionChanged {
-                        spotify_uri: track_id.to_string(),
-                        position_ms,
-                    });
-                    Some(BackendEvent::Paused {
-                        spotify_uri: track_id.to_string(),
-                    })
-                }
-                PlayerEvent::EndOfTrack { track_id, .. } => Some(BackendEvent::EndOfTrack {
-                    spotify_uri: track_id.to_string(),
-                }),
-                PlayerEvent::Unavailable { track_id, .. } => {
-                    let spotify_uri = track_id.to_string();
-                    // The worker listens on its own channel so a dead
-                    // current track auto-skips; the UI only learns of the
-                    // failure through `TrackFailed`.
-                    let _ = unavailable.send(spotify_uri.clone());
-                    Some(BackendEvent::TrackFailed {
-                        spotify_uri,
-                        error: "Spotify cannot play this track".to_owned(),
-                    })
-                }
-                PlayerEvent::PositionChanged {
-                    track_id,
-                    position_ms,
-                    ..
-                }
-                | PlayerEvent::PositionCorrection {
-                    track_id,
-                    position_ms,
-                    ..
-                }
-                | PlayerEvent::Seeked {
-                    track_id,
-                    position_ms,
-                    ..
-                } => Some(BackendEvent::PositionChanged {
-                    spotify_uri: track_id.to_string(),
-                    position_ms,
-                }),
-                _ => None,
+        loop {
+            let event = tokio::select! {
+                event = player_events.recv() => match event {
+                    Some(event) => map_player_event(event, &event_sender, &unavailable),
+                    None => break,
+                },
+                notice = dj_notices.recv() => match notice {
+                    // The handover service started playing: adopt the DJ
+                    // context like any other play request so the player bar
+                    // follows along.
+                    Ok(notice) => {
+                        let injected = std::iter::once(false)
+                            .chain(notice.next.iter().map(|_| false))
+                            .collect();
+                        Some(BackendEvent::PlaybackContext {
+                            current: notice.current,
+                            next: notice.next,
+                            injected,
+                        })
+                    }
+                    Err(_) => break,
+                },
             };
             if let Some(event) = event {
                 let _ = event_sender.send(event);
             }
         }
     })
+}
+
+/// Maps one raw player event to the backend event that carries the same
+/// information, if any.
+fn map_player_event(
+    event: PlayerEvent,
+    event_sender: &UnboundedSender<BackendEvent>,
+    unavailable: &UnboundedSender<String>,
+) -> Option<BackendEvent> {
+    match event {
+        PlayerEvent::Loading { track_id, .. } => Some(BackendEvent::Loading {
+            spotify_uri: track_id.to_string(),
+        }),
+        PlayerEvent::Playing {
+            track_id,
+            position_ms,
+            ..
+        } => {
+            let _ = event_sender.send(BackendEvent::PositionChanged {
+                spotify_uri: track_id.to_string(),
+                position_ms,
+            });
+            Some(BackendEvent::Playing {
+                spotify_uri: track_id.to_string(),
+            })
+        }
+        PlayerEvent::Paused {
+            track_id,
+            position_ms,
+            ..
+        } => {
+            let _ = event_sender.send(BackendEvent::PositionChanged {
+                spotify_uri: track_id.to_string(),
+                position_ms,
+            });
+            Some(BackendEvent::Paused {
+                spotify_uri: track_id.to_string(),
+            })
+        }
+        PlayerEvent::EndOfTrack { track_id, .. } => Some(BackendEvent::EndOfTrack {
+            spotify_uri: track_id.to_string(),
+        }),
+        PlayerEvent::Unavailable { track_id, .. } => {
+            let spotify_uri = track_id.to_string();
+            // The worker listens on its own channel so a dead current track
+            // auto-skips; the UI only learns of the failure through
+            // `TrackFailed`.
+            let _ = unavailable.send(spotify_uri.clone());
+            Some(BackendEvent::TrackFailed {
+                spotify_uri,
+                error: "Spotify cannot play this track".to_owned(),
+            })
+        }
+        PlayerEvent::PositionChanged {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::PositionCorrection {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::Seeked {
+            track_id,
+            position_ms,
+            ..
+        } => Some(BackendEvent::PositionChanged {
+            spotify_uri: track_id.to_string(),
+            position_ms,
+        }),
+        _ => None,
+    }
 }
 
 /// Loads the queue entry at `index` and starts it playing. With

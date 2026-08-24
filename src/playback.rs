@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,7 +30,7 @@ use librespot::{
         connect::{Capabilities, Device, DeviceInfo, MemberType, PutStateReason, PutStateRequest},
         player::{
             ContextIndex, ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack,
-            Suppressions,
+            Restrictions, Suppressions,
         },
     },
 };
@@ -129,6 +129,9 @@ pub struct Playback {
     /// Delivers lineups materialized by live DJ sessions (ADR 0004): the
     /// background service sends one per accepted handover.
     pub(crate) dj_lineups: async_chan::Receiver<dj::Lineup>,
+    /// Delivers what the handover service started playing, so the player
+    /// bar adopts the DJ context like any other play request.
+    pub(crate) dj_now_playing: async_chan::Receiver<dj::DjNowPlaying>,
 }
 
 struct PlaybackOAuthToken {
@@ -258,12 +261,19 @@ impl Playback {
             low_latency_sdl_sink(None, AudioFormat::default())
         });
         let (dj_sender, dj_lineups) = async_chan::unbounded();
-        tokio::spawn(run_dj_service(session.clone(), player.clone(), dj_sender));
+        let (dj_notice_sender, dj_now_playing) = async_chan::unbounded();
+        tokio::spawn(run_dj_service(
+            session.clone(),
+            player.clone(),
+            dj_sender,
+            dj_notice_sender,
+        ));
         Ok(Self {
             player,
             mixer,
             session,
             dj_lineups,
+            dj_now_playing,
         })
     }
 
@@ -328,6 +338,12 @@ impl Playback {
     pub fn load_uri(&self, spotify_uri: SpotifyUri, playing: bool, position_ms: u32) {
         self.player.load(spotify_uri, playing, position_ms);
     }
+
+    /// Receives what the handover service started playing, for bridging
+    /// into backend events.
+    pub(crate) fn dj_now_playings(&self) -> async_chan::Receiver<dj::DjNowPlaying> {
+        self.dj_now_playing.clone()
+    }
 }
 
 /// How long the service waits for each dealer handshake step.
@@ -345,6 +361,7 @@ async fn run_dj_service(
     session: Session,
     player: Arc<Player>,
     events: async_chan::Sender<dj::Lineup>,
+    notices: async_chan::Sender<dj::DjNowPlaying>,
 ) {
     // Subscriptions must exist before the socket comes up, or early messages
     // race them.
@@ -471,6 +488,7 @@ async fn run_dj_service(
     let mut state_ticker = tokio::time::interval(Duration::from_secs(5));
     state_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut active: Option<DjActive> = None;
+    let mut reported_devices: HashSet<String> = HashSet::new();
     loop {
         tokio::select! {
             Some((request, sender)) = commands.next() => {
@@ -482,6 +500,7 @@ async fn run_dj_service(
                     &player,
                     &device_info,
                     &events,
+                    &notices,
                     &mut active,
                     request,
                 )
@@ -491,9 +510,17 @@ async fn run_dj_service(
                     break;
                 }
             }
-            Some(Ok(bytes)) = clusters.next() => report_cluster(&bytes),
+            Some(Ok(bytes)) = clusters.next() => report_cluster(&bytes, &mut reported_devices),
             Some(event) = player_events.recv() => {
-                handle_player_event(&session, &player, &device_info, &mut active, event).await;
+                handle_player_event(
+                    &session,
+                    &player,
+                    &device_info,
+                    &notices,
+                    &mut active,
+                    event,
+                )
+                .await;
             }
             // A real player's state keeps moving; a frozen one makes the
             // sending client reclaim the cast.
@@ -512,17 +539,27 @@ async fn run_dj_service(
 
 /// The living playback state of an accepted DJ handover. Every change is
 /// republished to connect-state so the sending client sees a player that
-/// behaves like the official ones.
+/// behaves like the official ones. The transfer-derived fields (origin,
+/// restrictions, context metadata) mirror what the sender's own state
+/// carried — the reference spirc warns that a player without them is
+/// treated as inactive.
 struct DjActive {
     context_uri: String,
     playback_id: String,
     tracks: Vec<dj::SessionTrack>,
+    /// Metadata-fetched tracks aligned by uri with `tracks`; failures drop
+    /// entries, so lookups go by uri, never by position.
+    listed: Vec<model::ListedTrack>,
     track_index: usize,
-    duration_ms: u32,
     position_ms: u32,
     position_at: Instant,
     is_playing: bool,
     is_buffering: bool,
+    play_origin: Option<PlayOrigin>,
+    suppressions: Option<Suppressions>,
+    options: Option<ContextPlayerOptions>,
+    restrictions: Option<Restrictions>,
+    context_metadata: HashMap<String, String>,
     last_command_sent_by_device_id: String,
     last_command_message_id: u32,
 }
@@ -541,6 +578,29 @@ impl DjActive {
     fn current_track(&self) -> &dj::SessionTrack {
         &self.tracks[self.track_index.min(self.tracks.len() - 1)]
     }
+
+    /// Finds the metadata track for a session track uri.
+    fn listed_for(&self, uri: &str) -> Option<&model::ListedTrack> {
+        self.listed
+            .iter()
+            .find(|listed| listed.track.spotify_uri.as_deref() == Some(uri))
+    }
+
+    fn duration_of_current(&self) -> u32 {
+        self.listed_for(&self.current_track().uri)
+            .map(|listed| listed.track.duration_ms)
+            .unwrap_or_default()
+    }
+
+    /// The player-bar notice for what is playing now and what follows.
+    fn now_playing(&self) -> Option<dj::DjNowPlaying> {
+        let current = self.listed_for(&self.current_track().uri)?.track.clone();
+        let next = self.tracks[self.track_index + 1..]
+            .iter()
+            .filter_map(|track| self.listed_for(&track.uri).map(|l| l.track.clone()))
+            .collect();
+        Some(dj::DjNowPlaying { current, next })
+    }
 }
 
 /// A fresh connect-state playback id: sixteen random bytes, hex, like the
@@ -558,6 +618,48 @@ fn fresh_playback_id() -> String {
 async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjActive) {
     let track = state.current_track();
     let position_ms = state.live_position_ms();
+    // The context url must always carry a value: the reference spirc notes
+    // a player without one is treated as inactive by the server.
+    let provided = |session_track: &dj::SessionTrack| ProvidedTrack {
+        uri: session_track.uri.clone(),
+        uid: session_track.uid.clone(),
+        provider: "context".to_owned(),
+        metadata: session_track.metadata.clone(),
+        ..Default::default()
+    };
+    let index = state.track_index.min(state.tracks.len() - 1);
+    let player_state = PlayerState {
+        session_id: session.session_id(),
+        context_uri: state.context_uri.clone(),
+        context_url: format!("context://{}", state.context_uri),
+        playback_id: state.playback_id.clone(),
+        timestamp: now_millis() as i64,
+        position_as_of_timestamp: position_ms as i64,
+        duration: state.duration_of_current() as i64,
+        playback_speed: 1.,
+        is_playing: state.is_playing,
+        is_paused: !state.is_playing && !state.is_buffering,
+        is_buffering: state.is_buffering,
+        play_origin: MessageField::some(state.play_origin.clone().unwrap_or_default()),
+        suppressions: MessageField::some(state.suppressions.clone().unwrap_or_default()),
+        options: MessageField::some(state.options.clone().unwrap_or_default()),
+        restrictions: MessageField::from(state.restrictions.clone()),
+        context_metadata: state.context_metadata.clone(),
+        track: MessageField::some(provided(track)),
+        prev_tracks: state.tracks[..index]
+            .iter()
+            .rev()
+            .take(10)
+            .map(provided)
+            .collect(),
+        next_tracks: state.tracks[index + 1..].iter().map(provided).collect(),
+        index: MessageField::some(ContextIndex {
+            page: 0,
+            track: index as u32,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let active = PutStateRequest {
         client_side_timestamp: now_millis(),
         member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
@@ -567,34 +669,7 @@ async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjA
         last_command_message_id: state.last_command_message_id,
         device: MessageField::some(Device {
             device_info: MessageField::some(device_info.clone()),
-            player_state: MessageField::some(PlayerState {
-                session_id: session.session_id(),
-                context_uri: state.context_uri.clone(),
-                playback_id: state.playback_id.clone(),
-                timestamp: now_millis() as i64,
-                position_as_of_timestamp: position_ms as i64,
-                duration: state.duration_ms as i64,
-                playback_speed: 1.,
-                is_playing: state.is_playing,
-                is_paused: !state.is_playing && !state.is_buffering,
-                is_buffering: state.is_buffering,
-                play_origin: MessageField::some(PlayOrigin::new()),
-                suppressions: MessageField::some(Suppressions::new()),
-                options: MessageField::some(ContextPlayerOptions::new()),
-                track: MessageField::some(ProvidedTrack {
-                    uri: track.uri.clone(),
-                    uid: track.uid.clone(),
-                    provider: "context".to_owned(),
-                    metadata: track.metadata.clone(),
-                    ..Default::default()
-                }),
-                index: MessageField::some(ContextIndex {
-                    page: 0,
-                    track: state.track_index as u32,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
+            player_state: MessageField::some(player_state),
             ..Default::default()
         }),
         ..Default::default()
@@ -617,6 +692,7 @@ async fn handle_player_event(
     session: &Session,
     player: &Arc<Player>,
     device_info: &DeviceInfo,
+    notices: &async_chan::Sender<dj::DjNowPlaying>,
     active: &mut Option<DjActive>,
     event: PlayerEvent,
 ) {
@@ -677,7 +753,7 @@ async fn handle_player_event(
             state.position_at = Instant::now();
         }
         PlayerEvent::EndOfTrack { track_id, .. } if is_dj_track(&track_id) => {
-            advance_dj_track(session, player, device_info, active).await;
+            advance_dj_track(session, player, device_info, notices, active).await;
         }
         _ => {}
     }
@@ -690,37 +766,49 @@ async fn advance_dj_track(
     session: &Session,
     player: &Arc<Player>,
     device_info: &DeviceInfo,
+    notices: &async_chan::Sender<dj::DjNowPlaying>,
     active: &mut Option<DjActive>,
 ) {
-    let Some(state) = active.as_mut() else {
-        return;
-    };
-    let next = state.track_index + 1;
-    let Some(track) = state.tracks.get(next) else {
-        log::info!("dj service: lineup finished");
-        *active = None;
-        return;
-    };
-    let Ok(uri) = SpotifyUri::from_uri(&track.uri) else {
-        return;
-    };
-    player.load(uri, true, 0);
-    state.track_index = next;
-    state.is_buffering = true;
-    state.is_playing = true;
-    state.position_ms = 0;
-    state.position_at = Instant::now();
-    publish_active(session, device_info, state).await;
+    let next_index;
+    let notice;
+    {
+        let Some(state) = active.as_mut() else {
+            return;
+        };
+        next_index = state.track_index + 1;
+        let Some(track) = state.tracks.get(next_index) else {
+            log::info!("dj service: lineup finished");
+            *active = None;
+            return;
+        };
+        let Ok(uri) = SpotifyUri::from_uri(&track.uri) else {
+            return;
+        };
+        player.load(uri, true, 0);
+        let state = active.as_mut().expect("checked above");
+        state.track_index = next_index;
+        state.is_buffering = true;
+        state.is_playing = true;
+        state.position_ms = 0;
+        state.position_at = Instant::now();
+        notice = state.now_playing();
+        publish_active(session, device_info, state).await;
+    }
+    if let Some(notice) = notice {
+        let _ = notices.send(notice).await;
+    }
 }
 
 /// Handles one dealer command: acks it and, when it is a DJ handover,
-/// resolves the session body into a lineup and starts playback. Returns
-/// None when the service must stop (nobody consumes lineups anymore).
+/// resolves the session body into a lineup and starts playback from the
+/// track the sender was on. Returns None when the service must stop
+/// (nobody consumes lineups anymore).
 async fn process_dj_command(
     session: &Session,
     player: &Arc<Player>,
     device_info: &DeviceInfo,
     events: &async_chan::Sender<dj::Lineup>,
+    notices: &async_chan::Sender<dj::DjNowPlaying>,
     active: &mut Option<DjActive>,
     request: Request,
 ) -> Option<()> {
@@ -730,24 +818,36 @@ async fn process_dj_command(
     let Some(state) = transfer.data else {
         return Some(());
     };
-    let context = state
-        .current_session
-        .get_or_default()
-        .context
-        .get_or_default();
+    let session_state = state.current_session.get_or_default();
+    let context = session_state.context.get_or_default();
     let dj_context_uri = context.uri.clone().unwrap_or_default();
     let Some(session_url) = context
         .url
         .as_deref()
         .filter(|url| url.starts_with("hm://"))
-        .filter(|_| {
-            context
-                .uri
-                .as_deref()
-                .is_some_and(|uri| uri.contains(dj::SOURCE_ID))
-        })
+        .filter(|_| dj_context_uri.contains(dj::SOURCE_ID))
     else {
         return Some(());
+    };
+
+    // The sender tells us exactly where it is: which track plays, at what
+    // position, paused or not. Continuing from there is what makes the cast
+    // seamless — starting over from the first lineup track is what made
+    // every cast replay the same song.
+    let playback = state.playback.get_or_default();
+    let transfer_track_uri = playback
+        .current_track
+        .get_or_default()
+        .uri
+        .clone()
+        .unwrap_or_default();
+    let is_paused = playback.is_paused.unwrap_or(true);
+    let transfer_position = playback.position_as_of_timestamp.unwrap_or_default();
+    let position_ms = if !is_paused && playback.timestamp.unwrap_or_default() > 0 {
+        transfer_position.max(0) as u32
+            + now_millis().saturating_sub(playback.timestamp.unwrap_or_default() as u64) as u32
+    } else {
+        transfer_position.max(0) as u32
     };
 
     log::info!("dj service: accepting a DJ handover");
@@ -777,45 +877,96 @@ async fn process_dj_command(
         log::warn!("dj service: none of the {} tracks resolved", uris.len());
         return Some(());
     }
-    let duration_ms = listed[0].track.duration_ms;
     let playlist = dj::refreshed_playlist(uris.len() as u32, None);
     if events
-        .send(dj::Lineup::Fresh(playlist, listed))
+        .send(dj::Lineup::Fresh(playlist, listed.clone()))
         .await
         .is_err()
     {
         log::info!("dj service: nobody is listening for lineups; stopping");
         return None;
     }
+
+    // The transfer's own state carries the sender's playback identity; a
+    // player without it is treated as inactive, so it rides along into
+    // every publication.
+    let transfer_state = DjActive {
+        context_uri: dj_context_uri.clone(),
+        playback_id: fresh_playback_id(),
+        listed,
+        play_origin: session_state
+            .play_origin
+            .clone()
+            .into_option()
+            .and_then(|origin| convert_proto(&origin)),
+        suppressions: session_state
+            .suppressions
+            .clone()
+            .into_option()
+            .and_then(|suppressions| convert_proto(&suppressions)),
+        options: state
+            .options
+            .clone()
+            .into_option()
+            .and_then(|options| convert_proto(&options)),
+        restrictions: context
+            .restrictions
+            .clone()
+            .into_option()
+            .and_then(|restrictions| convert_proto(&restrictions)),
+        context_metadata: context.metadata.clone(),
+        last_command_sent_by_device_id: request.sent_by_device_id.clone(),
+        last_command_message_id: request.message_id,
+        tracks,
+        track_index: 0,
+        position_ms: 0,
+        position_at: Instant::now(),
+        is_playing: !is_paused,
+        is_buffering: true,
+    };
+    let start_index = transfer_state
+        .tracks
+        .iter()
+        .position(|track| track.uri == transfer_track_uri);
+
     // Reloading on every retry would restart the same track; only start the
-    // context when it is not the one already playing. A fresh handover
-    // publishes a buffering state right away — the Playing event and the
-    // ticker keep it moving from there — while a repeat transfer for the
-    // live session just refreshes the command pair the sender waits on.
+    // context when it is not the one already playing.
     if active.as_ref().map(|state| state.context_uri.as_str()) != Some(dj_context_uri.as_str()) {
-        if let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok()) {
-            player.load(first, true, 0);
+        let mut started = transfer_state;
+        started.track_index = start_index.unwrap_or(0);
+        started.position_ms = position_ms;
+        started.position_at = Instant::now();
+        if let Some(uri) = started
+            .tracks
+            .get(started.track_index)
+            .and_then(|track| SpotifyUri::from_uri(&track.uri).ok())
+        {
+            log::info!(
+                "dj service: starting from lineup position {} at {position_ms} ms",
+                started.track_index
+            );
+            player.load(uri, !is_paused, position_ms);
         }
-        *active = Some(DjActive {
-            context_uri: dj_context_uri,
-            playback_id: fresh_playback_id(),
-            tracks,
-            track_index: 0,
-            duration_ms,
-            position_ms: 0,
-            position_at: Instant::now(),
-            is_playing: true,
-            is_buffering: true,
-            last_command_sent_by_device_id: request.sent_by_device_id,
-            last_command_message_id: request.message_id,
-        });
-        publish_active(session, device_info, active.as_ref().expect("just set")).await;
+        if let Some(notice) = started.now_playing()
+            && notices.send(notice).await.is_err()
+        {
+            log::info!("dj service: nobody is listening for playback notices; stopping");
+            return None;
+        }
+        publish_active(session, device_info, &started).await;
+        *active = Some(started);
     } else if let Some(state) = active {
         state.last_command_sent_by_device_id = request.sent_by_device_id;
         state.last_command_message_id = request.message_id;
         publish_active(session, device_info, state).await;
     }
     Some(())
+}
+
+/// The transfer-state protos duplicate the player protos with identical
+/// field numbers; a byte round-trip converts between the two copies.
+fn convert_proto<From: protobuf::Message, To: protobuf::Message>(from: &From) -> Option<To> {
+    To::parse_from_bytes(&from.write_to_bytes().ok()?).ok()
 }
 async fn listed_tracks_for_uris(session: &Session, uris: &[String]) -> Vec<model::ListedTrack> {
     use protobuf::Message as _;
@@ -843,8 +994,10 @@ async fn listed_tracks_for_uris(session: &Session, uris: &[String]) -> Vec<model
 
 /// Logs the parts of a cluster update that reveal how the active device
 /// publishes itself: casting to an official client and casting to Cadence
-/// produces a diffable pair of these.
-fn report_cluster(bytes: &[u8]) {
+/// produces a diffable pair of these. The first state seen from an active
+/// device is dumped in full — that raw reference is how missing fields in
+/// our own publications get found.
+fn report_cluster(bytes: &[u8], reported_devices: &mut HashSet<String>) {
     use protobuf::Message as _;
 
     let Ok(update) = librespot::protocol::connect::ClusterUpdate::parse_from_bytes(bytes) else {
@@ -857,6 +1010,15 @@ fn report_cluster(bytes: &[u8]) {
         update.update_reason.value(),
         cluster.device.len(),
     );
+    if !cluster.active_device_id.is_empty()
+        && reported_devices.insert(cluster.active_device_id.clone())
+    {
+        log::info!(
+            "dj service: CLUSTER full state from {:?}: {:?}",
+            cluster.active_device_id,
+            cluster.player_state
+        );
+    }
     let player = cluster.player_state.get_or_default();
     if player.context_uri.is_empty() {
         return;

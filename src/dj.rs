@@ -12,7 +12,15 @@ use std::collections::HashMap;
 
 use librespot::core::error::ErrorKind;
 
-use crate::model::{ListedTrack, Playlist, Provider};
+use crate::model::{ListedTrack, Playlist, Provider, Track};
+
+/// What the handover service tells the app shell about live DJ playback,
+/// so the player bar adopts the context like any other play request.
+#[derive(Debug, Clone)]
+pub(crate) struct DjNowPlaying {
+    pub current: Track,
+    pub next: Vec<Track>,
+}
 
 /// What resolving the lineup delivered.
 #[derive(Debug)]
