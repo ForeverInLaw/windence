@@ -307,6 +307,18 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
     // Catch-all: every other dealer message gets logged, so silence in the
     // listen window means the network was silent, not that a subscription
     // missed its topic.
+    // The legacy Connect pusher path: this is where cast commands actually
+    // arrived in live tests (hm://remote/3/user/<user>/<hash>).
+    let mut remote = session
+        .dealer()
+        .listen_for("hm://remote/3/", |message: Message| {
+            let text = match message.payload {
+                PayloadValue::Json(text) => text,
+                PayloadValue::Raw(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                PayloadValue::Empty => String::new(),
+            };
+            Ok((message.uri, text))
+        })?;
     let mut everything = session.dealer().listen_for("hm://", |message: Message| {
         let text = match message.payload {
             PayloadValue::Json(text) => text,
@@ -439,6 +451,36 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
                 Some(Err(error)) => println!("[probe]   cluster stream error: {error}"),
                 None => {
                     println!("[probe]   cluster stream closed");
+                    break;
+                }
+            },
+            remote = remote.next() => match remote {
+                Some(Ok((uri, text))) => {
+                    println!("[probe]   REMOTE MESSAGE on {uri}");
+                    println!("[probe]     {}", &text[..text.len().min(2500)]);
+                    let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
+                    if text.contains(playlist_id) {
+                        // A real player accepts the handover by activating
+                        // the delivered context; mirror that so the sending
+                        // client stops showing "connecting".
+                        let mut ack = request.clone();
+                        ack.is_active = true;
+                        ack.put_state_reason =
+                            EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED);
+                        ack.device
+                            .mut_or_insert_default()
+                            .player_state
+                            .mut_or_insert_default()
+                            .context_uri = dj_uri.to_owned();
+                        match session.spclient().put_connect_state_request(&ack).await {
+                            Ok(_) => println!("[probe]     sent active-state ack for DJ"),
+                            Err(error) => println!("[probe]     ack FAILED: {error}"),
+                        }
+                    }
+                }
+                Some(Err(error)) => println!("[probe]   remote stream error: {error}"),
+                None => {
+                    println!("[probe]   remote stream closed");
                     break;
                 }
             },
