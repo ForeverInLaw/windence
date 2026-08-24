@@ -498,6 +498,15 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
             remote = remote.next() => match remote {
                 Some(Ok((uri, raw))) => {
                     println!("[probe]   REMOTE MESSAGE on {uri} ({} bytes)", raw.len());
+                    let dump = format!(
+                        "dj_frame_{}.bin",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                    );
+                    let _ = std::fs::write(&dump, &raw);
+                    println!("[probe]     raw frame saved: {dump}");
                     let text = decode_push(&raw);
                     let track_uris = collect_track_uris(&text);
                     let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
