@@ -18,7 +18,8 @@ pub enum Lineup {
     /// The fresh lineup plus the refreshed entry the page header shows:
     /// real track count and artwork, still named "DJ X".
     Fresh(Playlist, Vec<ListedTrack>),
-    /// Spotify does not offer the lineup to this account or region.
+    /// Spotify serves the lineup only inside its own live Connect sessions,
+    /// so no fetch can return it (see docs/adr/0004).
     NotOffered,
 }
 

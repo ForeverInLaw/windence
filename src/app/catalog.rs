@@ -147,8 +147,8 @@ pub(super) struct PlaylistPage {
     selected: Option<model::Playlist>,
     tracks: Arc<[model::ListedTrack]>,
     loaded: bool,
-    /// Spotify refuses to serve this playlist to this account or region —
-    /// a restriction with its own empty state, not a load error.
+    /// The DJ lineup is session-bound on Spotify's side and cannot be
+    /// fetched (ADR 0004) — its own empty state, not a load error.
     unavailable: bool,
     error: Option<String>,
     request: Option<gpui::Task<()>>,
@@ -748,8 +748,12 @@ impl Render for PlaylistPage {
             components::empty_state(palette, format!("Unable to load playlist: {error}"))
                 .into_any_element()
         } else if self.unavailable {
-            components::empty_state(palette, "DJ X is not available on this account or region")
-                .into_any_element()
+            components::empty_state(
+                palette,
+                "DJ X plays only inside Spotify's own live sessions, so there is no \
+                 lineup Cadence can fetch yet",
+            )
+            .into_any_element()
         } else if let Some(playlist) = self.selected.as_ref().filter(|_| !tracks.is_empty()) {
             let list_id = (
                 ElementId::from("playlist-tracks"),

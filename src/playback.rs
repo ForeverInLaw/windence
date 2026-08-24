@@ -290,7 +290,8 @@ impl Playback {
     /// rides the playback session instead.
     ///
     /// [`dj::Lineup::NotOffered`] covers every "Spotify will not serve this
-    /// here" outcome: a refusal (not found / forbidden) or an empty lineup.
+    /// here" outcome: a refusal (not found / forbidden), or the empty shell
+    /// that confirms the lineup is session-bound and not fetchable (ADR 0004).
     /// Transport failures stay errors and keep the ordinary retry treatment.
     pub async fn dj_lineup(&self) -> Result<dj::Lineup> {
         use protobuf::Message as _;
@@ -320,7 +321,8 @@ impl Playback {
         };
         let contents = content.contents.get_or_default();
         if content.length() <= 0 || contents.items.is_empty() {
-            // The account sees no lineup at all — same page as a refusal.
+            // The empty shell is what a session-bound lineup looks like over
+            // any fetch channel (ADR 0004). Same page as a refusal.
             return Ok(dj::Lineup::NotOffered);
         }
         if contents.truncated() {

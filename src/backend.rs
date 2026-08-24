@@ -259,8 +259,8 @@ pub enum PlaylistContents {
         playlist: Option<Playlist>,
         tracks: Vec<ListedTrack>,
     },
-    /// Spotify does not offer this playlist to this account or region.
-    /// Only the DJ lineup can hit this today.
+    /// Spotify keeps this playlist outside every fetchable channel. Only
+    /// the DJ lineup hits this today (see docs/adr/0004).
     NotOffered,
 }
 
