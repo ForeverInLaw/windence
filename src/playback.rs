@@ -1,10 +1,16 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
+use async_channel as async_chan;
+use futures::StreamExt as _;
 use keyring::Entry;
 use librespot::{
     core::{
-        SpotifyId, SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session,
+        SpotifyUri,
+        authentication::Credentials,
+        config::{DeviceType, SessionConfig},
+        dealer::{manager::Reply, protocol::Command},
+        session::Session,
     },
     metadata::Metadata,
     oauth::OAuthClientBuilder,
@@ -13,12 +19,17 @@ use librespot::{
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
     },
+    protocol::{
+        connect::{Capabilities, Device, DeviceInfo, MemberType, PutStateReason, PutStateRequest},
+        player::{ContextPlayerOptions, PlayOrigin, PlayerState, Suppressions},
+    },
 };
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, EndpointNotSet, EndpointSet,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
     basic::BasicClient,
 };
+use protobuf::{EnumOrUnknown, MessageField};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -28,7 +39,6 @@ use crate::{
     oauth_page::{OAuthStep, success_page},
     proto_convert,
 };
-use futures::StreamExt as _;
 
 const PLAYBACK_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
@@ -39,6 +49,8 @@ const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
 /// lineup: a full page resolves well inside the catalog timeout without
 /// bursting one access point.
 const DJ_TRACK_CONCURRENCY: usize = 4;
+/// The device name Cadence presents as on Spotify Connect. Casts target it.
+const DJ_DEVICE_NAME: &str = "Cadence";
 
 type PlaybackOAuthClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
@@ -99,16 +111,19 @@ impl PlaybackAuthorization {
     }
 }
 
-struct PlaybackOAuthToken {
-    access_token: String,
-    refresh_token: String,
-}
-
 #[derive(Clone)]
 pub struct Playback {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
     session: Session,
+    /// Delivers lineups materialized by live DJ sessions (ADR 0004): the
+    /// background service sends one per accepted handover.
+    pub(crate) dj_lineups: async_chan::Receiver<dj::Lineup>,
+}
+
+struct PlaybackOAuthToken {
+    access_token: String,
+    refresh_token: String,
 }
 
 impl Playback {
@@ -232,10 +247,13 @@ impl Playback {
         let player = Player::new(player_config, session.clone(), volume, move || {
             low_latency_sdl_sink(None, AudioFormat::default())
         });
+        let (dj_sender, dj_lineups) = async_chan::unbounded();
+        tokio::spawn(run_dj_service(session.clone(), player.clone(), dj_sender));
         Ok(Self {
             player,
             mixer,
             session,
+            dj_lineups,
         })
     }
 
@@ -283,109 +301,253 @@ impl Playback {
         extract_track_uris(&response).context("Spotify track radio returned invalid JSON")
     }
 
-    /// Resolves the DJ lineup through the internal protocol: one playlist
-    /// protobuf for order, counts, artwork, and added-at dates, then bounded
-    /// concurrent per-track metadata lookups. The Web API refuses to serve
-    /// this playlist to development-mode apps, which is why this context
-    /// rides the playback session instead.
-    ///
-    /// [`dj::Lineup::NotOffered`] covers every "Spotify will not serve this
-    /// here" outcome: a refusal (not found / forbidden), or the empty shell
-    /// that confirms the lineup is session-bound and not fetchable (ADR 0004).
-    /// Transport failures stay errors and keep the ordinary retry treatment.
-    pub async fn dj_lineup(&self) -> Result<dj::Lineup> {
-        use protobuf::Message as _;
+    /// Returns the freshest DJ lineup the handover service has received, if
+    /// any. The lineup is materialized by a live session (ADR 0004): until a
+    /// cast happens there is nothing to show, and the honest empty state
+    /// covers that case.
+    pub fn dj_lineup(&self) -> dj::Lineup {
+        match self.dj_lineups.try_recv() {
+            Ok(lineup) => lineup,
+            Err(_) => dj::Lineup::NotOffered,
+        }
+    }
 
-        let playlist_id =
-            SpotifyId::from_base62(dj::SOURCE_ID).context("the DJ playlist id is invalid")?;
-        let playlist_uri = SpotifyUri::Playlist {
-            user: None,
-            id: playlist_id,
-        };
-        let response = <librespot::metadata::playlist::Playlist as Metadata>::request(
-            &self.session,
-            &playlist_uri,
-        )
-        .await;
-        let content = match response {
-            Ok(response) => {
-                librespot::protocol::playlist4_external::SelectedListContent::parse_from_bytes(
-                    &response,
-                )
-                .context("the DJ playlist endpoint returned invalid metadata")?
+    /// Loads a track by uri straight into the player: how the service starts
+    /// playback for an accepted DJ handover without round-tripping through
+    /// the app layer.
+    pub fn load_uri(&self, spotify_uri: SpotifyUri, playing: bool, position_ms: u32) {
+        self.player.load(spotify_uri, playing, position_ms);
+    }
+}
+
+/// How long the service waits for each dealer handshake step.
+const DJ_DEALER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Registers Cadence as a `CONNECT_STATE` device on the live session and
+/// watches dealer commands for DJ handovers (ADR 0004). A handover carries
+/// the session-bound lexicon url; fetching it yields the materialized lineup,
+/// which is sent to [`Playback::dj_lineup`] consumers while the first track
+/// loads into the player — completing the cast handshake with real audio.
+///
+/// The task exits when Spotify closes the dealer socket, which happens as
+/// soon as the same device id reconnects elsewhere in the app.
+async fn run_dj_service(
+    session: Session,
+    player: Arc<Player>,
+    events: async_chan::Sender<dj::Lineup>,
+) {
+    // Subscriptions must exist before the socket comes up, or early messages
+    // race them.
+    let mut commands = match session
+        .dealer()
+        .handle_for("hm://connect-state/v1/player/command")
+    {
+        Ok(commands) => commands,
+        Err(error) => {
+            log::warn!("dj service: dealer handle unavailable: {error}");
+            return;
+        }
+    };
+    let mut connection_ids =
+        match session
+            .dealer()
+            .listen_for("hm://pusher/v1/connections/", |message| {
+                Ok(message
+                    .headers
+                    .get("Spotify-Connection-Id")
+                    .cloned()
+                    .unwrap_or_default())
+            }) {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!("dj service: cannot watch connections: {error}");
+                return;
             }
-            // Not found or forbidden means this account or region has no
-            // DJ at all; anything else is a transport failure.
-            Err(error) if dj::refusal(error.kind) => return Ok(dj::Lineup::NotOffered),
-            Err(error) => return Err(error.into()),
         };
-        let contents = content.contents.get_or_default();
-        if content.length() <= 0 || contents.items.is_empty() {
-            // The empty shell is what a session-bound lineup looks like over
-            // any fetch channel (ADR 0004). Same page as a refusal.
-            return Ok(dj::Lineup::NotOffered);
+
+    if let Err(error) = session.dealer().start().await {
+        log::warn!("dj service: dealer websocket failed: {error}");
+        return;
+    }
+    let connection_id = match tokio::time::timeout(DJ_DEALER_TIMEOUT, connection_ids.next()).await {
+        Ok(Some(Ok(id))) if !id.is_empty() => id,
+        _ => {
+            log::warn!("dj service: no connection id from the dealer hello");
+            return;
         }
-        if contents.truncated() {
-            log::warn!(
-                "DJ lineup returned truncated contents: {} of {} tracks",
-                contents.items.len(),
-                content.length()
-            );
+    };
+    session.set_connection_id(&connection_id);
+
+    let device_info = DeviceInfo {
+        can_play: true,
+        volume: 65535,
+        name: DJ_DEVICE_NAME.to_owned(),
+        device_id: session.device_id().to_string(),
+        device_type: EnumOrUnknown::new(DeviceType::Speaker.into()),
+        device_software_version: format!("cadence {}", env!("CARGO_PKG_VERSION")),
+        spirc_version: "3.2.6".to_owned(),
+        client_id: session.client_id(),
+        brand: "spotify".to_owned(),
+        model: "cadence".to_owned(),
+        license: "premium".to_owned(),
+        capabilities: MessageField::some(Capabilities {
+            can_be_player: true,
+            gaia_eq_connect_id: true,
+            is_observable: true,
+            volume_steps: 64,
+            supported_types: vec![
+                "audio/track".to_owned(),
+                "audio/episode".to_owned(),
+                "audio/media".to_owned(),
+            ],
+            command_acks: true,
+            supports_playlist_v2: true,
+            is_controllable: true,
+            supports_transfer_command: true,
+            supports_command_request: true,
+            supports_gzip_pushes: true,
+            supports_set_options_command: true,
+            supports_dj: true,
+            ..Default::default()
+        }),
+        metadata_map: std::collections::HashMap::from([("tier1_port".to_owned(), "0".to_owned())]),
+        ..Default::default()
+    };
+    let request = PutStateRequest {
+        client_side_timestamp: now_millis(),
+        member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+        put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
+        device: MessageField::some(Device {
+            device_info: MessageField::some(device_info),
+            player_state: MessageField::some(PlayerState {
+                session_id: session.session_id(),
+                is_system_initiated: true,
+                playback_speed: 1.,
+                play_origin: MessageField::some(PlayOrigin::new()),
+                suppressions: MessageField::some(Suppressions::new()),
+                options: MessageField::some(ContextPlayerOptions::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    if let Err(error) = session.spclient().put_connect_state_request(&request).await {
+        log::warn!("dj service: connect-state registration failed: {error}");
+        return;
+    }
+    log::info!("dj service: registered as '{DJ_DEVICE_NAME}' on Spotify Connect");
+
+    loop {
+        let command = tokio::select! {
+            interrupted = commands.next() => match interrupted {
+                Some(request_reply) => request_reply,
+                None => break,
+            },
+        };
+        let (request, sender) = command;
+        // Ack before anything else so the sending client stops waiting in
+        // "connecting".
+        let _ = sender.send(Reply::Success);
+
+        let Command::Transfer(transfer) = request.command else {
+            continue;
+        };
+        let Some(state) = transfer.data else {
+            continue;
+        };
+        let context = state
+            .current_session
+            .get_or_default()
+            .context
+            .get_or_default();
+        let Some(session_url) = context
+            .url
+            .as_deref()
+            .filter(|url| url.starts_with("hm://"))
+            .filter(|_| {
+                context
+                    .uri
+                    .as_deref()
+                    .is_some_and(|uri| uri.contains(dj::SOURCE_ID))
+            })
+        else {
+            continue;
+        };
+
+        log::info!("dj service: accepting a DJ handover");
+        let body = match session.spclient().get_next_page(session_url).await {
+            Ok(body) => body,
+            Err(error) => {
+                log::warn!("dj service: lexicon session fetch failed: {error}");
+                continue;
+            }
+        };
+        let parsed = match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("dj service: lexicon session body is not json: {error}");
+                continue;
+            }
+        };
+        let uris = dj::session_track_uris(&parsed);
+        if uris.is_empty() {
+            log::warn!("dj service: the lexicon session carried no tracks");
+            continue;
         }
 
-        // Lineups can carry non-track entries; only plain tracks convert.
-        let items = contents
-            .items
-            .iter()
-            .filter(|item| proto_convert::is_track_item(item.uri()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let fetched = futures::stream::iter(items.into_iter().map(|item| async move {
-            let uri = SpotifyUri::from_uri(item.uri())?;
+        let listed = listed_tracks_for_uris(&session, &uris).await;
+        if listed.is_empty() {
+            log::warn!("dj service: none of the {} tracks resolved", uris.len());
+            continue;
+        }
+
+        let playlist = dj::refreshed_playlist(uris.len() as u32, None);
+        if events
+            .send(dj::Lineup::Fresh(playlist, listed.clone()))
+            .await
+            .is_err()
+        {
+            log::info!("dj service: nobody is listening for lineups; stopping");
+            break;
+        }
+
+        // Starting the first track is what completes the cast handshake.
+        if let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok()) {
+            player.load(first, true, 0);
+        }
+    }
+    log::info!("dj service: stopped");
+}
+async fn listed_tracks_for_uris(session: &Session, uris: &[String]) -> Vec<model::ListedTrack> {
+    use protobuf::Message as _;
+
+    let fetched = futures::stream::iter(uris.iter().cloned().map(|uri| async move {
+        let result: Result<Option<model::ListedTrack>> = async {
+            let track_uri = SpotifyUri::from_uri(&uri)?;
             let message = librespot::protocol::metadata::Track::parse_from_bytes(
-                &librespot::metadata::Track::request(&self.session, &uri).await?,
+                &librespot::metadata::Track::request(session, &track_uri).await?,
             )
             .map_err(anyhow::Error::from)?;
-            proto_convert::track(&message).map(|track| (item, track))
-        }))
-        .buffered(DJ_TRACK_CONCURRENCY)
-        .collect::<Vec<_>>()
+            Ok(proto_convert::track(&message)
+                .ok()
+                .filter(|track| track.is_displayable())
+                .map(model::ListedTrack::undated))
+        }
         .await;
+        result
+    }))
+    .buffered(DJ_TRACK_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+    fetched.into_iter().flatten().flatten().collect()
+}
 
-        let attempted = fetched.len();
-        let mut listed = Vec::with_capacity(attempted);
-        let mut failures = 0usize;
-        for result in fetched {
-            match result {
-                Ok((item, track)) => {
-                    // The Web API playlist path drops tracks the pages and
-                    // player cannot show; this path keeps the same rule.
-                    if track.is_displayable() {
-                        listed.push(model::ListedTrack {
-                            track,
-                            added_at: proto_convert::added_at(&item),
-                        });
-                    }
-                }
-                Err(error) => {
-                    failures += 1;
-                    log::warn!("dropping a DJ lineup track: {error:#}");
-                }
-            }
-        }
-        if listed.is_empty() && failures > 0 {
-            // Every lookup failed: a transport problem, not an empty lineup.
-            return Err(anyhow!(
-                "could not fetch any of the {attempted} DJ lineup tracks"
-            ));
-        }
-        let artwork = proto_convert::playlist_artwork(content.attributes.get_or_default());
-        let track_count = u32::try_from(content.length()).unwrap_or(0);
-        Ok(dj::Lineup::Fresh(
-            dj::refreshed_playlist(track_count, artwork),
-            listed,
-        ))
-    }
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn playback_oauth_client() -> Result<PlaybackOAuthClient> {

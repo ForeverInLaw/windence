@@ -84,6 +84,40 @@ pub fn refusal(error_kind: ErrorKind) -> bool {
     matches!(error_kind, NotFound | PermissionDenied)
 }
 
+/// Extracts the ordered track uris from a lexicon session body: the JSON
+/// context the session resolver returns for a live DJ session (see
+/// docs/adr/0004). Track entries carry their uri either directly or only as
+/// `canonical_track_uri` metadata; non-track entries are skipped.
+pub(crate) fn session_track_uris(value: &serde_json::Value) -> Vec<String> {
+    let mut uris = Vec::new();
+    let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) else {
+        return uris;
+    };
+    for page in pages {
+        let Some(tracks) = page.get("tracks").and_then(|tracks| tracks.as_array()) else {
+            continue;
+        };
+        for entry in tracks {
+            let direct_uri = entry.get("uri").and_then(|uri| uri.as_str()).unwrap_or("");
+            let chosen = match entry
+                .get("metadata")
+                .and_then(|metadata| metadata.get("canonical_track_uri"))
+                .and_then(|uri| uri.as_str())
+            {
+                Some(canonical) if !canonical.is_empty() => canonical,
+                _ if direct_uri.starts_with("spotify:track:") => direct_uri,
+                _ => continue,
+            };
+            if chosen.starts_with("spotify:track:")
+                && !uris.iter().any(|existing| existing == chosen)
+            {
+                uris.push(chosen.to_owned());
+            }
+        }
+    }
+    uris
+}
+
 #[cfg(test)]
 mod tests {
     use librespot::core::error::ErrorKind;
@@ -155,5 +189,32 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(kind, expected)| assert_eq!(refusal(kind), expected, "{kind:?}"));
+    }
+
+    #[test]
+    fn session_body_yields_ordered_track_uris() {
+        let body = serde_json::json!({
+            "uri": format!("spotify:playlist:{SOURCE_ID}"),
+            "pages": [
+                {"tracks": [
+                    {
+                        "uri": "",
+                        "metadata": {
+                            "canonical_track_uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx"
+                        }
+                    },
+                    {"uri": "spotify:track:17Hwn1YgUxBVQuMxDXEdNI"},
+                    {"uri": "spotify:album:1234567890123456789012"}
+                ]},
+                {"tracks": []}
+            ]
+        });
+        assert_eq!(
+            super::session_track_uris(&body),
+            vec![
+                "spotify:track:4v5ElcHnmIUim0ezLQOyAx".to_owned(),
+                "spotify:track:17Hwn1YgUxBVQuMxDXEdNI".to_owned(),
+            ]
+        );
     }
 }

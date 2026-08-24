@@ -2583,13 +2583,13 @@ impl CatalogFetches {
             async move {
                 let player =
                     player.ok_or_else(|| anyhow!("Spotify playback is not connected yet"))?;
-                match player.dj_lineup().await? {
-                    dj::Lineup::NotOffered => Ok(PlaylistContents::NotOffered),
-                    dj::Lineup::Fresh(playlist, tracks) => Ok(PlaylistContents::Loaded {
+                Ok(match player.dj_lineup() {
+                    dj::Lineup::NotOffered => PlaylistContents::NotOffered,
+                    dj::Lineup::Fresh(playlist, tracks) => PlaylistContents::Loaded {
                         playlist: Some(playlist),
                         tracks,
-                    }),
-                }
+                    },
+                })
             },
         );
     }
