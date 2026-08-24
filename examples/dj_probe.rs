@@ -258,7 +258,10 @@ async fn report_request(
                 println!("[probe]     following SESSION URL: {session_url}");
                 match sp.get_next_page(session_url).await {
                     Ok(body) => summarize_body("session body", &body, uri_limit),
-                    Err(error) => println!("[probe]       session fetch FAILED: {error}"),
+                    Err(error) => {
+                        println!("[probe]       session fetch FAILED: {error}");
+                        0
+                    }
                 }
             }
             for (index, page) in context.pages.iter().enumerate() {
