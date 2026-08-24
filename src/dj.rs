@@ -104,19 +104,13 @@ pub(crate) struct SessionTrack {
     pub metadata: HashMap<String, String>,
 }
 
-/// Extracts the ordered tracks from a lexicon session body: the JSON
-/// context the session resolver returns for a live DJ session (see
-/// docs/adr/0004). Track entries carry their uri either directly or only as
+/// Extracts the ordered tracks from a DJ context body: either a whole
+/// session body with `pages`, or one materialized context page (the JSON a
+/// skeleton page's `page_url` resolves to) with `tracks` at the top level.
+/// Track entries carry their uri either directly or only as
 /// `canonical_track_uri` metadata; non-track entries are skipped.
 pub(crate) fn session_tracks(value: &serde_json::Value) -> Vec<SessionTrack> {
-    let mut tracks: Vec<SessionTrack> = Vec::new();
-    let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) else {
-        return tracks;
-    };
-    for page in pages {
-        let Some(entries) = page.get("tracks").and_then(|tracks| tracks.as_array()) else {
-            continue;
-        };
+    fn push_entries(entries: &[serde_json::Value], tracks: &mut Vec<SessionTrack>) {
         for entry in entries {
             let direct_uri = entry.get("uri").and_then(|uri| uri.as_str()).unwrap_or("");
             let chosen = match entry
@@ -154,6 +148,17 @@ pub(crate) fn session_tracks(value: &serde_json::Value) -> Vec<SessionTrack> {
                 metadata,
             });
         }
+    }
+
+    let mut tracks: Vec<SessionTrack> = Vec::new();
+    if let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) {
+        for page in pages {
+            if let Some(entries) = page.get("tracks").and_then(|tracks| tracks.as_array()) {
+                push_entries(entries, &mut tracks);
+            }
+        }
+    } else if let Some(entries) = value.get("tracks").and_then(|tracks| tracks.as_array()) {
+        push_entries(entries, &mut tracks);
     }
     tracks
 }

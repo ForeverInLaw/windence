@@ -545,8 +545,14 @@ async fn run_dj_service(
 /// treated as inactive.
 struct DjActive {
     context_uri: String,
+    /// The context url exactly as the sender carried it: official clients
+    /// publish the resolver url here, not a `context://` reconstruction.
+    context_url: String,
     playback_id: String,
     tracks: Vec<dj::SessionTrack>,
+    /// Per track: (context page index, track position inside that page) —
+    /// the index a coherent connect-state publication reports.
+    positions: Vec<(u32, u32)>,
     /// Metadata-fetched tracks aligned by uri with `tracks`; failures drop
     /// entries, so lookups go by uri, never by position.
     listed: Vec<model::ListedTrack>,
@@ -628,10 +634,19 @@ async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjA
         ..Default::default()
     };
     let index = state.track_index.min(state.tracks.len() - 1);
+    let (page, track_in_page) = state
+        .positions
+        .get(index)
+        .copied()
+        .unwrap_or((0, index as u32));
     let player_state = PlayerState {
         session_id: session.session_id(),
         context_uri: state.context_uri.clone(),
-        context_url: format!("context://{}", state.context_uri),
+        context_url: if state.context_url.is_empty() {
+            format!("context://{}", state.context_uri)
+        } else {
+            state.context_url.clone()
+        },
         playback_id: state.playback_id.clone(),
         timestamp: now_millis() as i64,
         position_as_of_timestamp: position_ms as i64,
@@ -646,16 +661,15 @@ async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjA
         restrictions: MessageField::from(state.restrictions.clone()),
         context_metadata: state.context_metadata.clone(),
         track: MessageField::some(provided(track)),
-        prev_tracks: state.tracks[..index]
+        // History in listening order, bounded like the reference spirc's.
+        prev_tracks: state.tracks[index.saturating_sub(10)..index]
             .iter()
-            .rev()
-            .take(10)
             .map(provided)
             .collect(),
         next_tracks: state.tracks[index + 1..].iter().map(provided).collect(),
         index: MessageField::some(ContextIndex {
-            page: 0,
-            track: index as u32,
+            page,
+            track: track_in_page,
             ..Default::default()
         }),
         ..Default::default()
@@ -821,14 +835,11 @@ async fn process_dj_command(
     let session_state = state.current_session.get_or_default();
     let context = session_state.context.get_or_default();
     let dj_context_uri = context.uri.clone().unwrap_or_default();
-    let Some(session_url) = context
+    let session_url = context
         .url
         .as_deref()
         .filter(|url| url.starts_with("hm://"))
-        .filter(|_| dj_context_uri.contains(dj::SOURCE_ID))
-    else {
-        return Some(());
-    };
+        .filter(|_| dj_context_uri.contains(dj::SOURCE_ID));
 
     // The sender tells us exactly where it is: which track plays, at what
     // position, paused or not. Continuing from there is what makes the cast
@@ -851,23 +862,94 @@ async fn process_dj_command(
     };
 
     log::info!("dj service: accepting a DJ handover");
-    let body = match session.spclient().get_next_page(session_url).await {
-        Ok(body) => body,
-        Err(error) => {
-            log::warn!("dj service: lexicon session fetch failed: {error}");
-            return Some(());
+    // Materialize the live queue from the transfer's own context: pages
+    // that already carry tracks are used as they are, skeleton pages are
+    // fetched from their page_url. The session resolver url returns the
+    // canonical set rather than this session's queue, so it is only the
+    // fallback when the transfer carries nothing usable.
+    let mut tracks: Vec<dj::SessionTrack> = Vec::new();
+    // Per track: (context page index, track position inside that page) —
+    // the index a coherent connect-state publication reports.
+    let mut positions: Vec<(u32, u32)> = Vec::new();
+    for (page_index, page) in context.pages.iter().enumerate() {
+        let page_index = page_index as u32;
+        if page.tracks.is_empty() {
+            let Some(page_url) = page
+                .page_url
+                .as_deref()
+                .filter(|url| url.starts_with("hm://"))
+            else {
+                continue;
+            };
+            let body = match session.spclient().get_next_page(page_url).await {
+                Ok(body) => body,
+                Err(error) => {
+                    log::warn!("dj service: page fetch failed: {error}");
+                    continue;
+                }
+            };
+            let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) else {
+                log::warn!("dj service: page body is not json");
+                continue;
+            };
+            for track in dj::session_tracks(&parsed) {
+                if !tracks.iter().any(|existing| existing.uri == track.uri) {
+                    positions.push((page_index, u32::try_from(tracks.len()).unwrap_or(u32::MAX)));
+                    tracks.push(track);
+                }
+            }
+        } else {
+            let mut position_in_page = 0u32;
+            for track in page.tracks.iter() {
+                let uri = track.uri.clone().unwrap_or_default();
+                let canonical = track
+                    .metadata
+                    .get("canonical_track_uri")
+                    .cloned()
+                    .unwrap_or_default();
+                let chosen = if !canonical.is_empty() {
+                    canonical
+                } else {
+                    uri
+                };
+                if !chosen.starts_with("spotify:track:")
+                    || tracks.iter().any(|existing| existing.uri == chosen)
+                {
+                    continue;
+                }
+                positions.push((page_index, position_in_page));
+                position_in_page += 1;
+                tracks.push(dj::SessionTrack {
+                    uri: chosen.clone(),
+                    uid: track.uid.clone().unwrap_or_default(),
+                    metadata: track.metadata.clone(),
+                });
+            }
         }
-    };
-    let parsed = match serde_json::from_slice::<serde_json::Value>(&body) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("dj service: lexicon session body is not json: {error}");
-            return Some(());
-        }
-    };
-    let tracks = dj::session_tracks(&parsed);
+    }
     if tracks.is_empty() {
-        log::warn!("dj service: the lexicon session carried no tracks");
+        let Some(session_url) = session_url else {
+            log::warn!("dj service: the handover carried no usable pages and no resolver url");
+            return Some(());
+        };
+        let body = match session.spclient().get_next_page(session_url).await {
+            Ok(body) => body,
+            Err(error) => {
+                log::warn!("dj service: lexicon session fetch failed: {error}");
+                return Some(());
+            }
+        };
+        let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            log::warn!("dj service: lexicon session body is not json");
+            return Some(());
+        };
+        for track in dj::session_tracks(&parsed) {
+            positions.push((0, u32::try_from(tracks.len()).unwrap_or(u32::MAX)));
+            tracks.push(track);
+        }
+    }
+    if tracks.is_empty() {
+        log::warn!("dj service: the handover carried no tracks");
         return Some(());
     }
     let uris: Vec<String> = tracks.iter().map(|track| track.uri.clone()).collect();
@@ -892,7 +974,9 @@ async fn process_dj_command(
     // every publication.
     let transfer_state = DjActive {
         context_uri: dj_context_uri.clone(),
+        context_url: context.url.clone().unwrap_or_default(),
         playback_id: fresh_playback_id(),
+        positions,
         listed,
         play_origin: session_state
             .play_origin
