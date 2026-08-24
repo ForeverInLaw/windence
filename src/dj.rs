@@ -8,6 +8,8 @@
 //! playback session (see [`crate::playback`]); the Web API never serves this
 //! playlist to development-mode apps.
 
+use std::collections::HashMap;
+
 use librespot::core::error::ErrorKind;
 
 use crate::model::{ListedTrack, Playlist, Provider};
@@ -84,20 +86,30 @@ pub fn refusal(error_kind: ErrorKind) -> bool {
     matches!(error_kind, NotFound | PermissionDenied)
 }
 
-/// Extracts the ordered track uris from a lexicon session body: the JSON
+/// One materialized track from a lexicon session body, carrying what a
+/// connect-state publication needs beyond the uri: the server-assigned uid
+/// and the metadata map the official client mirrors into its player state.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionTrack {
+    pub uri: String,
+    pub uid: String,
+    pub metadata: HashMap<String, String>,
+}
+
+/// Extracts the ordered tracks from a lexicon session body: the JSON
 /// context the session resolver returns for a live DJ session (see
 /// docs/adr/0004). Track entries carry their uri either directly or only as
 /// `canonical_track_uri` metadata; non-track entries are skipped.
-pub(crate) fn session_track_uris(value: &serde_json::Value) -> Vec<String> {
-    let mut uris = Vec::new();
+pub(crate) fn session_tracks(value: &serde_json::Value) -> Vec<SessionTrack> {
+    let mut tracks: Vec<SessionTrack> = Vec::new();
     let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) else {
-        return uris;
+        return tracks;
     };
     for page in pages {
-        let Some(tracks) = page.get("tracks").and_then(|tracks| tracks.as_array()) else {
+        let Some(entries) = page.get("tracks").and_then(|tracks| tracks.as_array()) else {
             continue;
         };
-        for entry in tracks {
+        for entry in entries {
             let direct_uri = entry.get("uri").and_then(|uri| uri.as_str()).unwrap_or("");
             let chosen = match entry
                 .get("metadata")
@@ -108,14 +120,34 @@ pub(crate) fn session_track_uris(value: &serde_json::Value) -> Vec<String> {
                 _ if direct_uri.starts_with("spotify:track:") => direct_uri,
                 _ => continue,
             };
-            if chosen.starts_with("spotify:track:")
-                && !uris.iter().any(|existing| existing == chosen)
+            if !chosen.starts_with("spotify:track:")
+                || tracks.iter().any(|track| track.uri == chosen)
             {
-                uris.push(chosen.to_owned());
+                continue;
             }
+            let metadata = entry
+                .get("metadata")
+                .and_then(|metadata| metadata.as_object())
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|value| (key.clone(), value.to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            tracks.push(SessionTrack {
+                uri: chosen.to_owned(),
+                uid: entry
+                    .get("uid")
+                    .and_then(|uid| uid.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                metadata,
+            });
         }
     }
-    uris
+    tracks
 }
 
 #[cfg(test)]
@@ -192,29 +224,38 @@ mod tests {
     }
 
     #[test]
-    fn session_body_yields_ordered_track_uris() {
+    fn session_body_yields_ordered_tracks_with_state_fields() {
         let body = serde_json::json!({
             "uri": format!("spotify:playlist:{SOURCE_ID}"),
             "pages": [
                 {"tracks": [
                     {
                         "uri": "",
+                        "uid": "a6c4340d312da2fb9bc8",
                         "metadata": {
-                            "canonical_track_uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx"
+                            "canonical_track_uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx",
+                            "title": "Lost Mercer"
                         }
                     },
-                    {"uri": "spotify:track:17Hwn1YgUxBVQuMxDXEdNI"},
+                    {"uri": "spotify:track:17Hwn1YgUxBVQuMxDXEdNI", "uid": "u2"},
                     {"uri": "spotify:album:1234567890123456789012"}
                 ]},
                 {"tracks": []}
             ]
         });
+        let tracks = super::session_tracks(&body);
         assert_eq!(
-            super::session_track_uris(&body),
-            vec![
-                "spotify:track:4v5ElcHnmIUim0ezLQOyAx".to_owned(),
-                "spotify:track:17Hwn1YgUxBVQuMxDXEdNI".to_owned(),
+            tracks.iter().map(|t| t.uri.as_str()).collect::<Vec<_>>(),
+            [
+                "spotify:track:4v5ElcHnmIUim0ezLQOyAx",
+                "spotify:track:17Hwn1YgUxBVQuMxDXEdNI",
             ]
         );
+        assert_eq!(tracks[0].uid, "a6c4340d312da2fb9bc8");
+        assert_eq!(
+            tracks[0].metadata.get("title").map(String::as_str),
+            Some("Lost Mercer")
+        );
+        assert_eq!(tracks[1].metadata.get("title"), None);
     }
 }

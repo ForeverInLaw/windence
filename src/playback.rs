@@ -1,4 +1,8 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel as async_chan;
@@ -20,7 +24,7 @@ use librespot::{
     playback::{
         config::{AudioFormat, PlayerConfig, VolumeCtrl},
         mixer::{self, Mixer, MixerConfig},
-        player::{Player, PlayerEventChannel},
+        player::{Player, PlayerEvent, PlayerEventChannel},
     },
     protocol::{
         connect::{Capabilities, Device, DeviceInfo, MemberType, PutStateReason, PutStateRequest},
@@ -463,9 +467,10 @@ async fn run_dj_service(
     }
     log::info!("dj service: registered as '{DJ_DEVICE_NAME}' on Spotify Connect");
 
-    // The DJ context this service already started playing, if any: repeat
-    // transfers for the same session must not restart the current track.
-    let mut playing_dj_uri: Option<String> = None;
+    let mut player_events = player.get_player_event_channel();
+    let mut state_ticker = tokio::time::interval(Duration::from_secs(5));
+    state_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut active: Option<DjActive> = None;
     loop {
         tokio::select! {
             Some((request, sender)) = commands.next() => {
@@ -477,7 +482,7 @@ async fn run_dj_service(
                     &player,
                     &device_info,
                     &events,
-                    &mut playing_dj_uri,
+                    &mut active,
                     request,
                 )
                 .await
@@ -487,10 +492,225 @@ async fn run_dj_service(
                 }
             }
             Some(Ok(bytes)) = clusters.next() => report_cluster(&bytes),
+            Some(event) = player_events.recv() => {
+                handle_player_event(&session, &player, &device_info, &mut active, event).await;
+            }
+            // A real player's state keeps moving; a frozen one makes the
+            // sending client reclaim the cast.
+            _ = state_ticker.tick() => {
+                if let Some(state) = &active
+                    && state.is_playing
+                {
+                    publish_active(&session, &device_info, state).await;
+                }
+            }
             else => break,
         }
     }
     log::info!("dj service: stopped");
+}
+
+/// The living playback state of an accepted DJ handover. Every change is
+/// republished to connect-state so the sending client sees a player that
+/// behaves like the official ones.
+struct DjActive {
+    context_uri: String,
+    playback_id: String,
+    tracks: Vec<dj::SessionTrack>,
+    track_index: usize,
+    duration_ms: u32,
+    position_ms: u32,
+    position_at: Instant,
+    is_playing: bool,
+    is_buffering: bool,
+    last_command_sent_by_device_id: String,
+    last_command_message_id: u32,
+}
+
+impl DjActive {
+    /// The position right now: the last event position plus the time since.
+    fn live_position_ms(&self) -> u32 {
+        if self.is_playing {
+            self.position_ms
+                .saturating_add(self.position_at.elapsed().as_millis() as u32)
+        } else {
+            self.position_ms
+        }
+    }
+
+    fn current_track(&self) -> &dj::SessionTrack {
+        &self.tracks[self.track_index.min(self.tracks.len() - 1)]
+    }
+}
+
+/// A fresh connect-state playback id: sixteen random bytes, hex, like the
+/// official clients generate.
+fn fresh_playback_id() -> String {
+    use rand::RngCore as _;
+
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Publishes the active DJ playback state, including the command pair from
+/// the accepted transfer so the sending client sees its request honored.
+async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjActive) {
+    let track = state.current_track();
+    let position_ms = state.live_position_ms();
+    let active = PutStateRequest {
+        client_side_timestamp: now_millis(),
+        member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+        put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
+        is_active: true,
+        last_command_sent_by_device_id: state.last_command_sent_by_device_id.clone(),
+        last_command_message_id: state.last_command_message_id,
+        device: MessageField::some(Device {
+            device_info: MessageField::some(device_info.clone()),
+            player_state: MessageField::some(PlayerState {
+                session_id: session.session_id(),
+                context_uri: state.context_uri.clone(),
+                playback_id: state.playback_id.clone(),
+                timestamp: now_millis() as i64,
+                position_as_of_timestamp: position_ms as i64,
+                duration: state.duration_ms as i64,
+                playback_speed: 1.,
+                is_playing: state.is_playing,
+                is_paused: !state.is_playing && !state.is_buffering,
+                is_buffering: state.is_buffering,
+                play_origin: MessageField::some(PlayOrigin::new()),
+                suppressions: MessageField::some(Suppressions::new()),
+                options: MessageField::some(ContextPlayerOptions::new()),
+                track: MessageField::some(ProvidedTrack {
+                    uri: track.uri.clone(),
+                    uid: track.uid.clone(),
+                    provider: "context".to_owned(),
+                    metadata: track.metadata.clone(),
+                    ..Default::default()
+                }),
+                index: MessageField::some(ContextIndex {
+                    page: 0,
+                    track: state.track_index as u32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    match session.spclient().put_connect_state_request(&active).await {
+        Ok(_) => log::info!(
+            "dj service: published playback state (pos {position_ms} ms, buffering={})",
+            state.is_buffering
+        ),
+        Err(error) => log::warn!("dj service: playback state PUT failed: {error}"),
+    }
+}
+
+/// Keeps the published state aligned with the real player: buffering and
+/// playing transitions republish immediately, position corrections only
+/// update the tracked position, and a finished DJ track advances the lineup.
+/// Events about foreign tracks are ignored — the app can play anything else
+/// through the same player without disturbing the cast state.
+async fn handle_player_event(
+    session: &Session,
+    player: &Arc<Player>,
+    device_info: &DeviceInfo,
+    active: &mut Option<DjActive>,
+    event: PlayerEvent,
+) {
+    let Some(state) = active else {
+        return;
+    };
+    let is_dj_track = |uri: &SpotifyUri| uri.to_string() == state.current_track().uri;
+    match event {
+        PlayerEvent::Loading {
+            track_id,
+            position_ms,
+            ..
+        } if is_dj_track(&track_id) => {
+            state.is_buffering = true;
+            state.is_playing = true;
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+            publish_active(session, device_info, state).await;
+        }
+        PlayerEvent::Playing {
+            track_id,
+            position_ms,
+            ..
+        } if is_dj_track(&track_id) => {
+            state.is_buffering = false;
+            state.is_playing = true;
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+            publish_active(session, device_info, state).await;
+        }
+        PlayerEvent::Paused {
+            track_id,
+            position_ms,
+            ..
+        } if is_dj_track(&track_id) => {
+            state.is_playing = false;
+            state.is_buffering = false;
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+            publish_active(session, device_info, state).await;
+        }
+        PlayerEvent::PositionCorrection {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::PositionChanged {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::Seeked {
+            track_id,
+            position_ms,
+            ..
+        } if is_dj_track(&track_id) => {
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+        }
+        PlayerEvent::EndOfTrack { track_id, .. } if is_dj_track(&track_id) => {
+            advance_dj_track(session, player, device_info, active).await;
+        }
+        _ => {}
+    }
+}
+
+/// Loads the next lineup track when the current one ends. The DJ queue is
+/// server-driven, but the materialized snapshot carries the whole first
+/// page, which keeps the music going until the next handover refreshes it.
+async fn advance_dj_track(
+    session: &Session,
+    player: &Arc<Player>,
+    device_info: &DeviceInfo,
+    active: &mut Option<DjActive>,
+) {
+    let Some(state) = active.as_mut() else {
+        return;
+    };
+    let next = state.track_index + 1;
+    let Some(track) = state.tracks.get(next) else {
+        log::info!("dj service: lineup finished");
+        *active = None;
+        return;
+    };
+    let Ok(uri) = SpotifyUri::from_uri(&track.uri) else {
+        return;
+    };
+    player.load(uri, true, 0);
+    state.track_index = next;
+    state.is_buffering = true;
+    state.is_playing = true;
+    state.position_ms = 0;
+    state.position_at = Instant::now();
+    publish_active(session, device_info, state).await;
 }
 
 /// Handles one dealer command: acks it and, when it is a DJ handover,
@@ -501,7 +721,7 @@ async fn process_dj_command(
     player: &Arc<Player>,
     device_info: &DeviceInfo,
     events: &async_chan::Sender<dj::Lineup>,
-    playing_dj_uri: &mut Option<String>,
+    active: &mut Option<DjActive>,
     request: Request,
 ) -> Option<()> {
     let Command::Transfer(transfer) = request.command else {
@@ -545,18 +765,19 @@ async fn process_dj_command(
             return Some(());
         }
     };
-    let uris = dj::session_track_uris(&parsed);
-    if uris.is_empty() {
+    let tracks = dj::session_tracks(&parsed);
+    if tracks.is_empty() {
         log::warn!("dj service: the lexicon session carried no tracks");
         return Some(());
     }
+    let uris: Vec<String> = tracks.iter().map(|track| track.uri.clone()).collect();
 
     let listed = listed_tracks_for_uris(session, &uris).await;
     if listed.is_empty() {
         log::warn!("dj service: none of the {} tracks resolved", uris.len());
         return Some(());
     }
-
+    let duration_ms = listed[0].track.duration_ms;
     let playlist = dj::refreshed_playlist(uris.len() as u32, None);
     if events
         .send(dj::Lineup::Fresh(playlist, listed))
@@ -566,60 +787,33 @@ async fn process_dj_command(
         log::info!("dj service: nobody is listening for lineups; stopping");
         return None;
     }
-
     // Reloading on every retry would restart the same track; only start the
-    // context when it is not the one already playing.
-    if playing_dj_uri.as_deref() != Some(dj_context_uri.as_str())
-        && let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok())
-    {
-        player.load(first, true, 0);
-    }
-
-    // Loading alone does not finish the cast: the sending client waits until
-    // the target reports itself active while referencing the very command
-    // that started the playback. Without the last-command pair the phone
-    // keeps re-sending the transfer forever.
-    let active = PutStateRequest {
-        client_side_timestamp: now_millis(),
-        member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
-        put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
-        is_active: true,
-        last_command_sent_by_device_id: request.sent_by_device_id.clone(),
-        last_command_message_id: request.message_id,
-        device: MessageField::some(Device {
-            device_info: MessageField::some(device_info.clone()),
-            player_state: MessageField::some(PlayerState {
-                session_id: session.session_id(),
-                context_uri: dj_context_uri.clone(),
-                timestamp: now_millis() as i64,
-                position_as_of_timestamp: 0,
-                playback_speed: 1.,
-                is_playing: true,
-                is_paused: false,
-                play_origin: MessageField::some(PlayOrigin::new()),
-                suppressions: MessageField::some(Suppressions::new()),
-                options: MessageField::some(ContextPlayerOptions::new()),
-                track: MessageField::some(ProvidedTrack {
-                    uri: uris[0].clone(),
-                    ..Default::default()
-                }),
-                index: MessageField::some(ContextIndex {
-                    page: 0,
-                    track: 0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    match session.spclient().put_connect_state_request(&active).await {
-        Ok(_) => {
-            log::info!("dj service: published active playback state");
-            *playing_dj_uri = Some(dj_context_uri);
+    // context when it is not the one already playing. A fresh handover
+    // publishes a buffering state right away — the Playing event and the
+    // ticker keep it moving from there — while a repeat transfer for the
+    // live session just refreshes the command pair the sender waits on.
+    if active.as_ref().map(|state| state.context_uri.as_str()) != Some(dj_context_uri.as_str()) {
+        if let Some(first) = uris.first().and_then(|uri| SpotifyUri::from_uri(uri).ok()) {
+            player.load(first, true, 0);
         }
-        Err(error) => log::warn!("dj service: active state PUT failed: {error}"),
+        *active = Some(DjActive {
+            context_uri: dj_context_uri,
+            playback_id: fresh_playback_id(),
+            tracks,
+            track_index: 0,
+            duration_ms,
+            position_ms: 0,
+            position_at: Instant::now(),
+            is_playing: true,
+            is_buffering: true,
+            last_command_sent_by_device_id: request.sent_by_device_id,
+            last_command_message_id: request.message_id,
+        });
+        publish_active(session, device_info, active.as_ref().expect("just set")).await;
+    } else if let Some(state) = active {
+        state.last_command_sent_by_device_id = request.sent_by_device_id;
+        state.last_command_message_id = request.message_id;
+        publish_active(session, device_info, state).await;
     }
     Some(())
 }
