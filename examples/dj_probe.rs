@@ -11,7 +11,9 @@
 //!   DJ_PROBE_PLAYLIST_ID — base62 playlist id (default: the DJ X id)
 //!   DJ_PROBE_TRACK_LIMIT — track metadata lookups after the list fetch
 
-use std::time::Duration;
+use std::{borrow::Cow, io::Read as _, time::Duration};
+
+use flate2::read::GzDecoder;
 
 use anyhow::{Context as _, Result, anyhow};
 use futures::StreamExt;
@@ -48,10 +50,7 @@ fn summarize_body(label: &str, body: &[u8], uri_limit: usize) -> usize {
     println!("[probe]     {label}: {} bytes", body.len());
     let parsed = serde_json::from_str::<serde_json::Value>(text.trim()).ok();
     let Some(value) = parsed else {
-        println!(
-            "[probe]       not json, head: {}",
-            &text[..text.len().min(300)]
-        );
+        println!("[probe]       not json, head: {}", head(&text, 200));
         return 0;
     };
     if let Some(map) = value.as_object() {
@@ -82,11 +81,31 @@ fn summarize_body(label: &str, body: &[u8], uri_limit: usize) -> usize {
     for uri in uris.iter().take(uri_limit) {
         println!("[probe]         {uri}");
     }
-    println!("[probe]       raw head: {}", &text[..text.len().min(500)]);
+    println!("[probe]       raw head: {}", head(&text, 500));
     uris.len()
 }
 
 const PROBE_DEVICE_NAME: &str = "Cadence-Probe";
+
+/// First `n` chars of a string, never splitting a code point in half.
+fn head(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
+/// Dealer push payloads arrive as JSON or gzipped bytes; normalize to text.
+fn decode_push(raw: &[u8]) -> String {
+    let bytes: Cow<'_, [u8]> = if raw.starts_with(&[0x1f, 0x8b]) {
+        let mut decoder = GzDecoder::new(raw);
+        let mut out = Vec::new();
+        match decoder.read_to_end(&mut out) {
+            Ok(_) => Cow::Owned(out),
+            Err(_) => Cow::Borrowed(raw),
+        }
+    } else {
+        Cow::Borrowed(raw)
+    };
+    String::from_utf8_lossy(&bytes).into_owned()
+}
 
 /// Prints a context skeleton and follows every resolvable pointer it offers,
 /// reporting what each hop returns. Returns how many spotify uris surfaced.
@@ -309,16 +328,14 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
     // missed its topic.
     // The legacy Connect pusher path: this is where cast commands actually
     // arrived in live tests (hm://remote/3/user/<user>/<hash>).
-    let mut remote = session
-        .dealer()
-        .listen_for("hm://remote/3/", |message: Message| {
-            let text = match message.payload {
-                PayloadValue::Json(text) => text,
-                PayloadValue::Raw(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                PayloadValue::Empty => String::new(),
-            };
-            Ok((message.uri, text))
-        })?;
+    let mut remote =
+        session
+            .dealer()
+            .listen_for("hm://remote/3/", |message: Message| match message.payload {
+                PayloadValue::Json(text) => text.into_bytes(),
+                PayloadValue::Raw(bytes) => bytes,
+                PayloadValue::Empty => Vec::new(),
+            })?;
     let mut everything = session.dealer().listen_for("hm://", |message: Message| {
         let text = match message.payload {
             PayloadValue::Json(text) => text,
@@ -457,7 +474,7 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
             remote = remote.next() => match remote {
                 Some(Ok((uri, text))) => {
                     println!("[probe]   REMOTE MESSAGE on {uri}");
-                    println!("[probe]     {}", &text[..text.len().min(2500)]);
+                    println!("[probe]     {}", head(&text, 2500));
                     let playlist_id = dj_uri.rsplit(':').next().unwrap_or_default();
                     if text.contains(playlist_id) {
                         // A real player accepts the handover by activating
@@ -491,7 +508,7 @@ async fn connect_device_stage(session: &Session, dj_uri: &str, uri_limit: usize)
                     }
                     println!(
                         "[probe]   dealer traffic on {uri}: {}",
-                        &text[..text.len().min(200)]
+                        head(&text, 200)
                     );
                 }
                 Some(Err(error)) => println!("[probe]   dealer stream error: {error}"),
