@@ -256,12 +256,15 @@ async fn report_request(
                 .filter(|url| url.starts_with("hm://"))
             {
                 println!("[probe]     following SESSION URL: {session_url}");
-                match sp.get_next_page(session_url).await {
+                let session_uris = match sp.get_next_page(session_url).await {
                     Ok(body) => summarize_body("session body", &body, uri_limit),
                     Err(error) => {
                         println!("[probe]       session fetch FAILED: {error}");
                         0
                     }
+                };
+                if session_uris > 0 {
+                    println!("[probe]       SESSION RESOLVED WITH {session_uris} TRACK URIS");
                 }
             }
             for (index, page) in context.pages.iter().enumerate() {
