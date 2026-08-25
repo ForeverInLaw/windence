@@ -172,7 +172,6 @@ impl TrackList {
         .current(is_current_track)
         .favorite(favorite)
         .menu(menu_open, menu)
-        .on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)))
         .on_favorite(cx.listener(move |this, _, _, cx| {
             this.library.update(cx, |library, cx| {
                 library.set_favorite(favorite_track.clone(), !favorite, cx)
@@ -182,6 +181,9 @@ impl TrackList {
             this.menu_open = (!menu_open).then(|| menu_key.clone());
             cx.notify();
         }));
+        if !self.sort_key.as_deref().is_some_and(dj::row_play_hidden) {
+            row = row.on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)));
+        }
         if let Some(added_at) = entry.added_at {
             row = row.added_label(track_row::format_added_at(chrono::Utc::now(), added_at));
         }

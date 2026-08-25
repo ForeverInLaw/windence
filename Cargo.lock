@@ -7537,6 +7537,7 @@ dependencies = [
  "serde",
  "serde_json",
  "souvlaki",
+ "symphonia",
  "tokio",
  "url",
  "vergen",

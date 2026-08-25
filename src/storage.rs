@@ -362,6 +362,20 @@ impl Store {
         self.set_preference("theme", value)
     }
 
+    /// The DJ station's cursor: the internal-protocol url that hands back
+    /// the stretch after the one last queued. Kept across restarts because
+    /// starting a session afresh always returns the same opening stretch,
+    /// however far the station has actually moved.
+    pub fn dj_cursor(&self) -> Result<Option<String>> {
+        Ok(self
+            .preference("dj_cursor")?
+            .filter(|cursor| !cursor.is_empty()))
+    }
+
+    pub fn set_dj_cursor(&mut self, cursor: Option<&str>) -> Result<()> {
+        self.set_preference("dj_cursor", cursor.unwrap_or_default())
+    }
+
     pub fn spotify_client_id(&self) -> Result<Option<String>> {
         Ok(self
             .preference("spotify_client_id")?

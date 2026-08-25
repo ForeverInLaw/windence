@@ -46,12 +46,160 @@ pub fn pin_hidden(source_id: &str) -> bool {
     matches(source_id)
 }
 
+/// Whether a list's rows refuse to start playback when clicked: the DJ
+/// station plays the running order the DJ built, and picking a song out
+/// of it is the one thing a station does not do.
+pub fn row_play_hidden(source_id: &str) -> bool {
+    matches(source_id)
+}
+
 /// Whether the shuffle-play action is hidden on a playlist's page: the
 /// lineup is already curated by Spotify, so reordering it adds nothing.
 /// This is the entire shuffle treatment — no DJ-specific ordering code
 /// exists anywhere else.
 pub fn shuffle_hidden(source_id: &str) -> bool {
     matches(source_id)
+}
+
+/// The internal-protocol url that starts a DJ session and returns its
+/// first stretch of songs. `interactive` is idempotent — asking twice
+/// returns the same stretch — so opening the page costs the session
+/// nothing. The stretch after this one is reached through the returned
+/// [`SessionPage::next_page_url`], never by asking again.
+pub(crate) fn session_url() -> String {
+    format!(
+        "hm://lexicon-session-provider/context-resolve/v2/session\
+         ?contextUri=spotify:playlist:{SOURCE_ID}&reason=interactive"
+    )
+}
+
+/// One line the DJ has prepared, ready to be synthesized.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Line {
+    pub ssml: String,
+    pub sample_rate: u32,
+}
+
+/// One song of a DJ session, with whatever the DJ prepared to say on the
+/// way in. Most songs carry nothing: only the first of each stretch does.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionTrack {
+    pub uri: String,
+    /// Spoken when the song is reached in the ordinary way.
+    pub intro: Option<Line>,
+    /// Spoken when the listener skipped to get here.
+    pub jump: Option<Line>,
+}
+
+impl SessionTrack {
+    /// What to speak before this song, given how it was reached. The two
+    /// variants are not interchangeable: the DJ's "moving on" line only
+    /// makes sense after a skip, and its introduction only without one.
+    pub fn line(&self, after_skip: bool) -> Option<&Line> {
+        if after_skip {
+            self.jump.as_ref()
+        } else {
+            self.intro.as_ref()
+        }
+    }
+}
+
+/// One stretch of a DJ session: the songs, and where the next stretch
+/// lives. A session that has expired answers with neither, which is how
+/// its end is recognised.
+#[derive(Debug, Default)]
+pub(crate) struct SessionPage {
+    pub tracks: Vec<SessionTrack>,
+    /// The server-side cursor. Fetching it is what moves the session on,
+    /// so it is followed rather than re-derived.
+    pub next_page_url: Option<String>,
+}
+
+/// Reads one lexicon body, whether it is a whole session (songs under
+/// `pages`) or a single stretch (songs at the top level). Entries that
+/// name no song are skipped, and a song already listed is not repeated.
+pub(crate) fn session_page(value: &serde_json::Value) -> SessionPage {
+    let entries = value
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .chain(std::iter::once(value))
+        .filter_map(|page| page.get("tracks").and_then(serde_json::Value::as_array))
+        .flatten();
+
+    let mut tracks: Vec<SessionTrack> = Vec::new();
+    for entry in entries {
+        let metadata = entry.get("metadata");
+        let field = |name: &str| {
+            metadata
+                .and_then(|metadata| metadata.get(name))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+        };
+        // The song's uri is normally on the entry; when it is empty the
+        // real one hides in the metadata.
+        let uri = match field("canonical_track_uri") {
+            canonical if !canonical.is_empty() => canonical,
+            _ => entry
+                .get("uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        };
+        if !uri.starts_with("spotify:track:") || tracks.iter().any(|track| track.uri == uri) {
+            continue;
+        }
+        let line = |variant: &str| {
+            let ssml = field(&format!("narration.{variant}.ssml"));
+            (!ssml.is_empty()).then(|| Line {
+                ssml: ssml.to_owned(),
+                sample_rate: field(&format!("narration.{variant}.sample_rate"))
+                    .parse()
+                    .unwrap_or(NARRATION_SAMPLE_RATE),
+            })
+        };
+        tracks.push(SessionTrack {
+            uri: uri.to_owned(),
+            intro: line("intro"),
+            jump: line("jump"),
+        });
+    }
+
+    SessionPage {
+        tracks,
+        next_page_url: value
+            .get("next_page_url")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| url.starts_with("hm://"))
+            .map(str::to_owned),
+    }
+}
+
+/// What the narration service is asked for when a line carries no sample
+/// rate of its own — the rate every recorded session used.
+const NARRATION_SAMPLE_RATE: u32 = 44100;
+
+/// Encodes the synthesis request for one line. The service ships no proto
+/// file with our dependencies and the message is five scalar fields, so
+/// the wire format is written directly. Field numbers and enum values are
+/// recorded from the official desktop client: the ssml as field 2, then
+/// MP3 output, voice one, the fast Sonantic provider, and the rate.
+pub(crate) fn tts_request(line: &Line) -> Vec<u8> {
+    fn varint(buffer: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            buffer.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        buffer.push(value as u8);
+    }
+
+    let mut body = vec![0x12];
+    varint(&mut body, line.ssml.len() as u64);
+    body.extend_from_slice(line.ssml.as_bytes());
+    body.extend_from_slice(&[0x18, 0x05, 0x28, 0x01, 0x30, 0x06, 0x38]);
+    varint(&mut body, u64::from(line.sample_rate));
+    body
 }
 
 /// Whether a failed internal-protocol fetch means Spotify refuses to serve
@@ -120,5 +268,105 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(kind, expected)| assert_eq!(refusal(kind), expected, "{kind:?}"));
+    }
+
+    #[test]
+    fn a_session_body_yields_its_songs_and_its_cursor() {
+        let body = serde_json::json!({
+            "uri": format!("spotify:playlist:{SOURCE_ID}"),
+            "pages": [{"tracks": [
+                {
+                    "uri": "spotify:track:2IilktLdCKhha2Mynoibtk",
+                    "uid": "265a42c870f2f46f140b",
+                    "metadata": {
+                        "narration.intro.ssml": "<speak>Up next</speak>",
+                        "narration.intro.sample_rate": "44100",
+                        "narration.jump.ssml": "<speak>Moving on</speak>",
+                        "narration.jump.sample_rate": "22050"
+                    }
+                },
+                {"uri": "", "uid": "u2", "metadata": {
+                    "canonical_track_uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx"
+                }},
+                {"uri": "spotify:album:1234567890123456789012", "uid": "u3"},
+                {"uri": "spotify:track:2IilktLdCKhha2Mynoibtk", "uid": "dupe"}
+            ]}],
+            "next_page_url": "hm://lexicon-session-provider/context-resolve/v2/session/0?x=1"
+        });
+
+        let page = super::session_page(&body);
+
+        assert_eq!(
+            page.tracks
+                .iter()
+                .map(|t| t.uri.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "spotify:track:2IilktLdCKhha2Mynoibtk",
+                "spotify:track:4v5ElcHnmIUim0ezLQOyAx",
+            ]
+        );
+        assert_eq!(
+            page.next_page_url.as_deref(),
+            Some("hm://lexicon-session-provider/context-resolve/v2/session/0?x=1")
+        );
+    }
+
+    #[test]
+    fn a_page_body_parses_the_same_way_as_a_session_body() {
+        let body = serde_json::json!({
+            "tracks": [{"uri": "spotify:track:1HZ552FFwv8ydigu29DKpk", "uid": "p1"}],
+            "next_page_url": "hm://lexicon-session-provider/next"
+        });
+
+        let page = super::session_page(&body);
+
+        assert_eq!(page.tracks.len(), 1);
+        assert_eq!(page.tracks[0].uri, "spotify:track:1HZ552FFwv8ydigu29DKpk");
+        assert_eq!(
+            page.next_page_url.as_deref(),
+            Some("hm://lexicon-session-provider/next")
+        );
+    }
+
+    #[test]
+    fn a_skip_is_answered_with_the_moving_on_line_and_an_ordinary_arrival_with_the_intro() {
+        let body = serde_json::json!({"tracks": [
+            {"uri": "spotify:track:2IilktLdCKhha2Mynoibtk", "metadata": {
+                "narration.intro.ssml": "<speak>Up next</speak>",
+                "narration.intro.sample_rate": "44100",
+                "narration.jump.ssml": "<speak>Moving on</speak>",
+                "narration.jump.sample_rate": "22050"
+            }},
+            {"uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx"}
+        ]});
+        let tracks = super::session_page(&body).tracks;
+
+        let spoken = |index: usize, after_skip: bool| {
+            tracks[index]
+                .line(after_skip)
+                .map(|line| (line.ssml.as_str(), line.sample_rate))
+        };
+        assert_eq!(spoken(0, false), Some(("<speak>Up next</speak>", 44100)));
+        assert_eq!(spoken(0, true), Some(("<speak>Moving on</speak>", 22050)));
+        assert_eq!(spoken(1, false), None);
+        assert_eq!(spoken(1, true), None);
+    }
+
+    #[test]
+    fn a_synthesis_request_matches_the_bytes_the_official_client_sends() {
+        let line = super::Line {
+            ssml: "<speak>hi</speak>".to_owned(),
+            sample_rate: 44100,
+        };
+
+        let encoded = super::tts_request(&line);
+
+        // Recorded from the desktop client: the ssml as field 2, then
+        // MP3, VOICE1, SONANTIC_FAST, and the sample rate as a varint.
+        let mut expected = vec![0x12, 17];
+        expected.extend_from_slice(b"<speak>hi</speak>");
+        expected.extend_from_slice(&[0x18, 0x05, 0x28, 0x01, 0x30, 0x06, 0x38, 0xc4, 0xd8, 0x02]);
+        assert_eq!(encoded, expected);
     }
 }

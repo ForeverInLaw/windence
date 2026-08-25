@@ -1,4 +1,9 @@
-use std::{thread, time::Duration};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
+use async_channel as async_chan;
 
 use librespot::playback::{
     NUM_CHANNELS, SAMPLE_RATE,
@@ -12,11 +17,45 @@ use sdl2::audio::{AudioFormatNum, AudioQueue, AudioSpecDesired, AudioStatus};
 const QUEUE_TARGET: Duration = Duration::from_millis(150);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub fn low_latency_sdl_sink(_device: Option<String>, format: AudioFormat) -> Box<dyn Sink> {
-    Box::new(LowLatencySdlSink::open(format))
+/// Something to say before the next song: already decoded, interleaved,
+/// and at the playback sample rate, because the audio thread must not be
+/// held up decoding.
+pub struct NarrationClip {
+    pub samples: Vec<f64>,
 }
 
-enum LowLatencySdlSink {
+impl NarrationClip {
+    fn duration(&self) -> Duration {
+        let frames = self.samples.len() / usize::from(NUM_CHANNELS);
+        Duration::from_secs_f64(frames as f64 / f64::from(SAMPLE_RATE))
+    }
+}
+
+/// Opens the output device. SDL refuses to initialize from a second
+/// thread and its device handles cross none, so this is the one place
+/// audio leaves the process — spoken lines included, which is why the
+/// sink takes their inbox.
+pub fn low_latency_sdl_sink(
+    format: AudioFormat,
+    narration: async_chan::Receiver<NarrationClip>,
+) -> Box<dyn Sink> {
+    Box::new(LowLatencySdlSink {
+        device: Device::open(format),
+        narration,
+        speaking_until: Instant::now(),
+    })
+}
+
+struct LowLatencySdlSink {
+    device: Device,
+    narration: async_chan::Receiver<NarrationClip>,
+    /// When the queued line finishes. Until then the device queue is
+    /// allowed to run that much longer than usual, so song audio lines up
+    /// behind the voice instead of the writer stalling on it.
+    speaking_until: Instant,
+}
+
+enum Device {
     F32(AudioQueue<f32>),
     S32(AudioQueue<i32>),
     S16(AudioQueue<i16>),
@@ -37,7 +76,7 @@ impl AudioOpenError {
     }
 }
 
-impl LowLatencySdlSink {
+impl Device {
     fn open(format: AudioFormat) -> Self {
         if !matches!(
             format,
@@ -96,79 +135,125 @@ impl LowLatencySdlSink {
 
 impl Sink for LowLatencySdlSink {
     fn start(&mut self) -> SinkResult<()> {
-        match self {
-            Self::F32(queue) => {
+        self.device.each(
+            |queue| {
                 queue.clear();
                 queue.resume();
-            }
-            Self::S32(queue) => {
+            },
+            |queue| {
                 queue.clear();
                 queue.resume();
-            }
-            Self::S16(queue) => {
+            },
+            |queue| {
                 queue.clear();
                 queue.resume();
-            }
-            Self::Failed(error) => return Err(error.sink_error()),
-        }
-        Ok(())
+            },
+        )
     }
 
     fn stop(&mut self) -> SinkResult<()> {
-        match self {
-            Self::F32(queue) => {
+        // A skip lands here, and clearing takes the unfinished line with
+        // the unfinished song: nobody wants the DJ talking over the next
+        // choice.
+        self.speaking_until = Instant::now();
+        let _ = self.device.each(
+            |queue| {
                 queue.pause();
                 queue.clear();
-            }
-            Self::S32(queue) => {
+            },
+            |queue| {
                 queue.pause();
                 queue.clear();
-            }
-            Self::S16(queue) => {
+            },
+            |queue| {
                 queue.pause();
                 queue.clear();
-            }
-            Self::Failed(_) => {}
-        }
+            },
+        );
         Ok(())
     }
 
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
-        if let Self::Failed(error) = self {
-            return Err(error.sink_error());
+        // Anything the DJ has to say goes in first, so the song queues up
+        // behind the voice and follows it without a gap.
+        while let Ok(clip) = self.narration.try_recv() {
+            let spoken = clip.duration();
+            self.enqueue(&clip.samples, converter, Duration::ZERO)?;
+            self.speaking_until = self.speaking_until.max(Instant::now()) + spoken;
         }
         let samples = packet
             .samples()
             .map_err(|error| SinkError::OnWrite(error.to_string()))?;
-        match self {
-            Self::F32(queue) => {
-                drain_queue(queue, std::mem::size_of::<f32>())?;
+        let spoken_left = self
+            .speaking_until
+            .saturating_duration_since(Instant::now());
+        self.enqueue(samples, converter, spoken_left)
+    }
+}
+
+impl LowLatencySdlSink {
+    /// Queues samples for the device, first waiting for the queue to run
+    /// down to the usual few frames — plus however much of a spoken line
+    /// is still ahead of them, which is not a backlog to wait out.
+    fn enqueue(
+        &mut self,
+        samples: &[f64],
+        converter: &mut Converter,
+        allowance: Duration,
+    ) -> SinkResult<()> {
+        match &self.device {
+            Device::F32(queue) => {
+                drain_queue(queue, size_of::<f32>(), allowance)?;
                 queue
                     .queue_audio(&converter.f64_to_f32(samples))
                     .map_err(SinkError::OnWrite)
             }
-            Self::S32(queue) => {
-                drain_queue(queue, std::mem::size_of::<i32>())?;
+            Device::S32(queue) => {
+                drain_queue(queue, size_of::<i32>(), allowance)?;
                 queue
                     .queue_audio(&converter.f64_to_s32(samples))
                     .map_err(SinkError::OnWrite)
             }
-            Self::S16(queue) => {
-                drain_queue(queue, std::mem::size_of::<i16>())?;
+            Device::S16(queue) => {
+                drain_queue(queue, size_of::<i16>(), allowance)?;
                 queue
                     .queue_audio(&converter.f64_to_s16(samples))
                     .map_err(SinkError::OnWrite)
             }
-            Self::Failed(error) => Err(error.sink_error()),
+            Device::Failed(error) => Err(error.sink_error()),
         }
     }
 }
 
-fn drain_queue<T: AudioFormatNum>(queue: &AudioQueue<T>, sample_size: usize) -> SinkResult<()> {
+impl Device {
+    /// Applies whichever of the three sample-type actions fits the open
+    /// device, so callers state the action once per type instead of
+    /// matching the enum themselves.
+    fn each(
+        &self,
+        f32_action: impl FnOnce(&AudioQueue<f32>),
+        s32_action: impl FnOnce(&AudioQueue<i32>),
+        s16_action: impl FnOnce(&AudioQueue<i16>),
+    ) -> SinkResult<()> {
+        match self {
+            Self::F32(queue) => f32_action(queue),
+            Self::S32(queue) => s32_action(queue),
+            Self::S16(queue) => s16_action(queue),
+            Self::Failed(error) => return Err(error.sink_error()),
+        }
+        Ok(())
+    }
+}
+
+fn drain_queue<T: AudioFormatNum>(
+    queue: &AudioQueue<T>,
+    sample_size: usize,
+    allowance: Duration,
+) -> SinkResult<()> {
     let target_bytes = u128::from(SAMPLE_RATE)
         * u128::from(NUM_CHANNELS)
         * sample_size as u128
-        * QUEUE_TARGET.as_millis()
+        * (QUEUE_TARGET + allowance).as_millis()
         / 1000;
     let target_bytes = u32::try_from(target_bytes).unwrap_or(u32::MAX);
     let deadline = std::time::Instant::now() + DRAIN_TIMEOUT;
@@ -194,8 +279,11 @@ mod tests {
 
     #[test]
     fn unsupported_audio_formats_return_sink_errors() {
-        let mut sink = LowLatencySdlSink::open(AudioFormat::F64);
+        let device = Device::open(AudioFormat::F64);
 
-        assert!(matches!(sink.start(), Err(SinkError::InvalidParams(_))));
+        assert!(matches!(
+            device.each(|_| {}, |_| {}, |_| {}),
+            Err(SinkError::InvalidParams(_))
+        ));
     }
 }

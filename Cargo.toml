@@ -34,6 +34,10 @@ rspotify = { version = "0.16.0", default-features = false, features = ["client-r
 reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = ["rustls-tls", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
+# The DJ's spoken lines arrive as MP3 from Spotify's TTS CDN. This is the
+# same decoder librespot-playback already builds, pinned to the same
+# minor, so no second copy of symphonia enters the graph.
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
 serde_json = "1.0"
 flate2 = "1"
 sdl2 = { version = "0.38", features = ["bundled", "static-link"] }

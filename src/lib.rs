@@ -4,6 +4,7 @@ mod credential_worker;
 pub mod dj;
 pub mod lifecycle;
 pub mod model;
+pub(crate) mod narration;
 mod oauth_callback;
 mod oauth_page;
 pub mod playback;

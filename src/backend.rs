@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -14,6 +14,8 @@ use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::{
+    audio::NarrationClip,
+    dj,
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
@@ -331,6 +333,9 @@ pub enum BackendCommand {
         /// Where this context was started from, which gates Smart Shuffle.
         kind: ContextKind,
     },
+    /// Starts the DJ station: Cadence resolves the session itself, so the
+    /// caller hands over no tracks.
+    PlayDj,
     PlayNext(Track),
     AppendToQueue(Track),
     SetShuffleMode(ShuffleMode),
@@ -894,6 +899,14 @@ async fn run(
                 worker.finish_autoplay(extended).await;
                 continue;
             }
+            stretch = finished(&mut worker.dj.task) => {
+                worker.finish_dj_stretch(stretch).await;
+                continue;
+            }
+            ready = finished(&mut worker.dj.voice) => {
+                worker.finish_voice(ready);
+                continue;
+            }
             fetched = finished(&mut worker.injections.task) => {
                 worker.finish_injection_fetch(fetched).await;
                 continue;
@@ -947,6 +960,7 @@ struct Worker {
     favorites: FavoriteRefresh,
     radio: Radio,
     autoplay: Autoplay,
+    dj: Dj,
     injections: Injections,
     /// Track ids Smart Shuffle has ever offered, persisted across restarts
     /// and toggle cycles; an offered track is never repeated within this set.
@@ -975,6 +989,7 @@ impl Worker {
             favorites: FavoriteRefresh::default(),
             radio: Radio::default(),
             autoplay: Autoplay::default(),
+            dj: Dj::default(),
             injections: Injections::default(),
             smart_shuffle_seen: HashSet::new(),
             session: SessionTasks::default(),
@@ -1070,8 +1085,13 @@ impl Worker {
                 Ok(())
             }
             BackendCommand::LoadPlaylist { playlist, respond } => {
-                self.catalog
-                    .playlist(self.spotify.clone(), playlist, respond);
+                if dj::matches(&playlist.source_id) {
+                    self.catalog
+                        .dj_lineup(self.connection.player.clone(), respond);
+                } else {
+                    self.catalog
+                        .playlist(self.spotify.clone(), playlist, respond);
+                }
                 Ok(())
             }
             BackendCommand::LoadArtist { source_id, respond } => {
@@ -1098,7 +1118,11 @@ impl Worker {
                 index,
                 shuffled,
                 kind,
-            } => self.play_context(tracks, index, shuffled, kind).await,
+            } => {
+                self.stand_down_dj();
+                self.play_context(tracks, index, shuffled, kind).await
+            }
+            BackendCommand::PlayDj => self.start_dj(),
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
@@ -1114,7 +1138,10 @@ impl Worker {
             }
             BackendCommand::Resume => self.resume().await,
             BackendCommand::Pause => self.pause().await,
-            BackendCommand::Next => self.next_track(true).await,
+            BackendCommand::Next => {
+                self.dj.skipped = true;
+                self.next_track(true).await
+            }
             BackendCommand::Previous => self.previous_track().await,
             BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
             BackendCommand::SavePlaybackPosition {
@@ -1499,7 +1526,7 @@ impl Worker {
             send_error(&self.events, error);
         }
         if playing {
-            self.maybe_prefetch_autoplay();
+            self.top_up_queue();
             self.maybe_prefetch_injections().await;
         }
         result
@@ -1537,7 +1564,7 @@ impl Worker {
                     self.queue.current_unavailable = false;
                     // Replaying the still-last track re-arms the prefetch a
                     // failed earlier fetch may have left unarmed.
-                    self.maybe_prefetch_autoplay();
+                    self.top_up_queue();
                 }
                 Err(_) => {
                     let _ = self.events.send(BackendEvent::PlaybackSettled);
@@ -1558,7 +1585,7 @@ impl Worker {
         } else {
             // Playback continues from the original playing load.
             self.queue.play_requested = true;
-            self.maybe_prefetch_autoplay();
+            self.top_up_queue();
         }
         result
     }
@@ -1604,7 +1631,7 @@ impl Worker {
             let _ = self.events.send(BackendEvent::QueueEnded);
             // Late fallback: if the song outran the autoplay prefetch (or
             // none ran), this fetch resumes playback on arrival.
-            self.maybe_prefetch_autoplay();
+            self.top_up_queue();
             return Ok(());
         };
         self.load_queue_track(index, record_history).await
@@ -1643,6 +1670,7 @@ impl Worker {
 
     /// Loads the queue entry at `index` and persists it as the playing track.
     async fn load_queue_track(&mut self, index: usize, record_history: bool) -> Result<()> {
+        self.speak_before(index);
         let result = load_context_track(
             &self.connection.player,
             &self.queue.shuffle,
@@ -1675,7 +1703,8 @@ impl Worker {
         if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
         }
-        self.maybe_prefetch_autoplay();
+        self.top_up_queue();
+        self.prepare_next_line(index);
         // The advance consumed an injection from the upcoming tail; this
         // refills before it runs dry.
         self.maybe_prefetch_injections().await;
@@ -1908,6 +1937,226 @@ impl Worker {
         // Offered history belongs to the signed-in account; the store copy
         // is cleared by the logout/config-reset flows.
         self.smart_shuffle_seen.clear();
+    }
+
+    /// Keeps the queue from running out. The DJ station follows its own
+    /// cursor, which is where the session decides what comes next; every
+    /// other context falls back to autoplay radio.
+    fn top_up_queue(&mut self) {
+        if self.dj.playing {
+            self.maybe_extend_dj();
+        } else {
+            self.maybe_prefetch_autoplay();
+        }
+    }
+
+    /// Starts the DJ station. The persisted cursor is followed when there
+    /// is one, so a restart continues where the listener left off rather
+    /// than replaying the opening stretch — starting a session afresh
+    /// always returns that same stretch, however far the station has moved.
+    fn start_dj(&mut self) -> Result<()> {
+        abort_task(&mut self.dj.task);
+        self.dj.playing = false;
+        let playback = self.connection.player.clone();
+        let store = self.store.clone();
+        self.dj.task = Some(tokio::spawn(async move {
+            let playback = playback.context("Spotify playback is not connected")?;
+            let cursor = store.call(|store| store.dj_cursor()).await?;
+            run_with_timeout(60, "Spotify DJ session", dj_stretch_from(&playback, cursor)).await
+        }));
+        Ok(())
+    }
+
+    /// Fetches the next stretch as the queued one runs low, so the station
+    /// never stops to wait for the network.
+    fn maybe_extend_dj(&mut self) {
+        let Some(index) = self.queue.index else {
+            return;
+        };
+        if index + DJ_TOP_UP_LEAD < self.queue.tracks.len() || self.dj.task.is_some() {
+            return;
+        }
+        let cursor = self.dj.next_page_url.clone();
+        let playback = self.connection.player.clone();
+        self.dj.task = Some(tokio::spawn(async move {
+            let playback = playback.context("Spotify playback is not connected")?;
+            run_with_timeout(60, "Spotify DJ session", dj_stretch_from(&playback, cursor)).await
+        }));
+    }
+
+    /// Takes a fetched stretch: the opening one starts the station, a
+    /// later one extends the queue behind whatever is playing.
+    async fn finish_dj_stretch(&mut self, stretch: Finished<Result<DjStretch>>) {
+        self.dj.task = None;
+        let stretch = match stretch {
+            Some(Ok(Ok(stretch))) => stretch,
+            Some(Ok(Err(error))) => {
+                send_error(&self.events, error);
+                return;
+            }
+            Some(Err(error)) => {
+                send_error(&self.events, error);
+                return;
+            }
+            None => return,
+        };
+        self.dj.next_page_url = stretch.next_page_url.clone();
+        self.dj.lines.extend(stretch.lines.clone());
+        // Fetching a stretch is what moves the session's cursor, so the
+        // one it hands back is what a restart must resume from.
+        let cursor = stretch.next_page_url;
+        let store = self.store.clone();
+        if let Err(error) = store
+            .call(move |store| store.set_dj_cursor(cursor.as_deref()))
+            .await
+        {
+            send_error(&self.events, error);
+        }
+        if stretch.tracks.is_empty() {
+            return;
+        }
+        if self.dj.playing {
+            let Some(index) = self.queue.index else {
+                return;
+            };
+            let known: HashSet<&str> = self
+                .queue
+                .tracks
+                .iter()
+                .map(|track| track.source_id.as_str())
+                .collect();
+            let additions: Vec<Track> = stretch
+                .tracks
+                .iter()
+                .filter(|track| !known.contains(track.source_id.as_str()))
+                .cloned()
+                .collect();
+            if additions.is_empty() {
+                return;
+            }
+            for track in additions {
+                self.queue.tracks.push(track);
+                self.queue.shuffle.push_anchor();
+            }
+            if let Err(error) = self.commit_queue_change(index).await {
+                send_error(&self.events, error);
+            }
+            return;
+        }
+        if let Err(error) = self
+            .play_context(stretch.tracks, 0, false, ContextKind::Collection)
+            .await
+        {
+            send_error(&self.events, error);
+            return;
+        }
+        // `play_context` stands every station down, this one included, so
+        // the flag is raised once the queue is actually the station's.
+        self.dj.playing = true;
+        // A station is a stream the server curates; the shuffle toggle has
+        // nothing to reorder, exactly as with track radio.
+        self.queue.radio = true;
+    }
+
+    /// Drops the station's state: another context has the player, and a
+    /// stale cursor must not extend somebody else's queue, nor a prepared
+    /// line interrupt its music.
+    fn stand_down_dj(&mut self) {
+        abort_task(&mut self.dj.task);
+        abort_task(&mut self.dj.voice);
+        self.dj = Dj::default();
+    }
+
+    /// Hands the sink whatever the DJ prepared for the song at `index`,
+    /// before the song itself is loaded, so the voice is queued ahead of
+    /// the music instead of over it.
+    fn speak_before(&mut self, index: usize) {
+        let after_skip = std::mem::take(&mut self.dj.skipped);
+        if !self.dj.playing {
+            return;
+        }
+        let Some(uri) = self
+            .queue
+            .tracks
+            .get(index)
+            .and_then(|track| track.spotify_uri.as_deref())
+        else {
+            return;
+        };
+        let Some(ready) = self.dj.ready.take().filter(|ready| ready.uri == uri) else {
+            return;
+        };
+        // A skip is answered with the DJ's own "moving on" line where it
+        // prepared one; its introduction still fits when it did not.
+        let clip = if after_skip {
+            ready.jump.or(ready.intro)
+        } else {
+            ready.intro
+        };
+        if let (Some(clip), Ok(player)) = (clip, self.connected_player()) {
+            player.speak(clip);
+        }
+    }
+
+    /// Synthesizes the line for the song after `index` while the current
+    /// one plays. Without this the voice would arrive after the music has
+    /// already started.
+    fn prepare_next_line(&mut self, index: usize) {
+        if !self.dj.playing || self.dj.voice.is_some() {
+            return;
+        }
+        let Some(uri) = self
+            .queue
+            .tracks
+            .get(index + 1)
+            .and_then(|track| track.spotify_uri.clone())
+        else {
+            return;
+        };
+        if self.dj.ready.as_ref().is_some_and(|ready| ready.uri == uri) {
+            return;
+        }
+        // Most songs carry nothing to say; remembering that is what stops
+        // this from asking again at every advance.
+        let Some(prepared) = self.dj.lines.get(&uri).cloned() else {
+            self.dj.ready = Some(ReadyLine {
+                uri,
+                intro: None,
+                jump: None,
+            });
+            return;
+        };
+        let Ok(player) = self.connected_player().cloned() else {
+            return;
+        };
+        self.dj.voice = Some(tokio::spawn(async move {
+            let mut ready = ReadyLine {
+                uri,
+                intro: None,
+                jump: None,
+            };
+            for after_skip in [false, true] {
+                let Some(line) = prepared.line(after_skip) else {
+                    continue;
+                };
+                match player.synthesize(line).await {
+                    // A line that cannot be synthesized costs the voice
+                    // and nothing else; the music still plays.
+                    Err(error) => log::warn!("dj: narration synthesis failed: {error:#}"),
+                    Ok(clip) if after_skip => ready.jump = Some(clip),
+                    Ok(clip) => ready.intro = Some(clip),
+                }
+            }
+            ready
+        }));
+    }
+
+    /// Takes a synthesized line, ready for whenever its song starts.
+    fn finish_voice(&mut self, ready: Finished<ReadyLine>) {
+        self.dj.voice = None;
+        if let Some(Ok(ready)) = ready {
+            self.dj.ready = Some(ready);
+        }
     }
 
     /// Starts a radio prefetch when the playing track is the queue's last,
@@ -2424,6 +2673,88 @@ struct Autoplay {
     fruitless_seed: Option<String>,
 }
 
+/// How many songs ahead of the queue's end the next DJ stretch is
+/// fetched: far enough that the network has time, close enough that a
+/// listener who skips a lot still gets fresh songs.
+const DJ_TOP_UP_LEAD: usize = 3;
+
+/// One stretch of the DJ station, resolved into what the queue plays and
+/// where the stretch after it lives.
+struct DjStretch {
+    tracks: Vec<Track>,
+    next_page_url: Option<String>,
+    /// What the DJ prepared to say, by song uri. Most songs carry
+    /// nothing: only the first of each stretch does.
+    lines: HashMap<String, dj::SessionTrack>,
+}
+
+/// The synthesized speech for one upcoming song, ready to be queued the
+/// moment it starts. Both variants are prepared because whether the
+/// listener skips into the song is not known until they do.
+struct ReadyLine {
+    uri: String,
+    intro: Option<NarrationClip>,
+    jump: Option<NarrationClip>,
+}
+
+/// The DJ station's state, beside the queue the way radio and autoplay
+/// are. The station keeps its own continuation instead of falling back to
+/// autoplay: the session decides what comes next, not a recommendation
+/// seed.
+#[derive(Default)]
+struct Dj {
+    /// Whether the queue is the station. Cleared as soon as any other
+    /// context takes the player.
+    playing: bool,
+    /// The cursor for the stretch after the one queued, when the session
+    /// named one.
+    next_page_url: Option<String>,
+    /// A stretch being fetched: the opening one while `playing` is false,
+    /// a continuation afterwards.
+    task: Option<tokio::task::JoinHandle<Result<DjStretch>>>,
+    /// What the DJ prepared to say, by song uri.
+    lines: HashMap<String, dj::SessionTrack>,
+    /// Speech for the upcoming song, synthesized while the current one
+    /// plays so the voice is ready before the music needs it.
+    ready: Option<ReadyLine>,
+    voice: Option<tokio::task::JoinHandle<ReadyLine>>,
+    /// Whether the listener skipped into the song about to load, which
+    /// decides which of the two prepared lines is spoken.
+    skipped: bool,
+}
+
+/// Resolves one stretch, following `cursor` when there is one. A cursor
+/// that answers with nothing is a session that has ended, and opening a
+/// fresh one is the recovery — nothing else about the station has to
+/// notice.
+async fn dj_stretch_from(playback: &Playback, cursor: Option<String>) -> Result<DjStretch> {
+    if let Some(cursor) = cursor {
+        let stretch = dj_stretch(playback, &cursor).await?;
+        if !stretch.tracks.is_empty() {
+            return Ok(stretch);
+        }
+    }
+    dj_stretch(playback, &dj::session_url()).await
+}
+
+/// Resolves one stretch: the session body names songs by uri only, so
+/// every title, artist, and duration the queue shows comes from the
+/// follow-up metadata lookups.
+async fn dj_stretch(playback: &Playback, url: &str) -> Result<DjStretch> {
+    let page = playback.dj_page(url).await?;
+    let uris: Vec<String> = page.tracks.iter().map(|track| track.uri.clone()).collect();
+    Ok(DjStretch {
+        tracks: ListedTrack::tracks(&playback.tracks_for_uris(&uris).await),
+        next_page_url: page.next_page_url,
+        lines: page
+            .tracks
+            .into_iter()
+            .filter(|track| track.intro.is_some() || track.jump.is_some())
+            .map(|track| (track.uri.clone(), track))
+            .collect(),
+    })
+}
+
 /// Smart Shuffle's recommendation pipeline: one radio fetch in flight,
 /// gated by the Smart toggle itself rather than by any preference, with
 /// fetched-but-unwoven tracks buffered so a refill only hits the network
@@ -2552,6 +2883,25 @@ impl CatalogFetches {
                         playlist: None,
                         tracks,
                     })
+            },
+        );
+    }
+
+    /// Loads the DJ station's upcoming stretch for its page. Nothing that
+    /// already played is fetched, because the session only ever hands out
+    /// what is ahead.
+    fn dj_lineup(&mut self, playback: Option<Playback>, respond: Reply<PlaylistContents>) {
+        Self::start(
+            &mut self.playlist,
+            respond,
+            "Spotify DJ session request",
+            async move {
+                let playback = playback.context("Spotify playback is not connected")?;
+                let tracks = dj_stretch(&playback, &dj::session_url()).await?.tracks;
+                Ok(PlaylistContents::Loaded {
+                    playlist: None,
+                    tracks: tracks.into_iter().map(ListedTrack::undated).collect(),
+                })
             },
         );
     }

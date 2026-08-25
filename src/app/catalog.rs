@@ -191,6 +191,12 @@ impl PlaylistPage {
     /// Starts the page's contents from the top, if there is anything to play.
     /// Plays what the rows show: the list's current sort order.
     pub(super) fn play(&mut self, cx: &mut Context<Self>) {
+        // The station resolves its own songs: what the page lists is only
+        // what is coming up, and the backend decides where to start.
+        if self.open_source_id().is_some_and(dj::matches) {
+            self.player.update(cx, |player, cx| player.play_dj(cx));
+            return;
+        }
         let tracks = self.track_list.read(cx).displayed_tracks();
         if tracks.is_empty() {
             return;

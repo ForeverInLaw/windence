@@ -1,9 +1,12 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
+use async_channel as async_chan;
+use futures::StreamExt as _;
 use keyring::Entry;
 use librespot::{
     core::{SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session},
+    metadata::Metadata,
     oauth::OAuthClientBuilder,
     playback::{
         config::{AudioFormat, PlayerConfig, VolumeCtrl},
@@ -19,10 +22,11 @@ use oauth2::{
 use tokio::net::TcpListener;
 
 use crate::{
-    audio::low_latency_sdl_sink,
-    credential_worker,
+    audio::{NarrationClip, low_latency_sdl_sink},
+    credential_worker, dj, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    proto_convert,
 };
 
 const PLAYBACK_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
@@ -30,6 +34,10 @@ const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const KEYCHAIN_SERVICE: &str = "com.cadence.spotify";
 const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
+/// How many internal-protocol track lookups overlap when resolving a DJ
+/// stretch: a whole stretch resolves well inside the catalog timeout
+/// without bursting one access point.
+const DJ_TRACK_CONCURRENCY: usize = 4;
 
 type PlaybackOAuthClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
@@ -95,6 +103,13 @@ pub struct Playback {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
     session: Session,
+    /// Lines waiting to be spoken. The output device only exists on the
+    /// player's own thread, so everything audible reaches it this way.
+    narration: async_chan::Sender<NarrationClip>,
+    /// Narration synthesis answers with a redirect that must be read, not
+    /// followed, so this client is configured differently from the
+    /// session's own.
+    http: oauth2_reqwest::Client,
 }
 
 struct PlaybackOAuthToken {
@@ -220,13 +235,19 @@ impl Playback {
             position_update_interval: Some(Duration::from_millis(250)),
             ..PlayerConfig::default()
         };
+        let (narration_sender, narration) = async_chan::unbounded();
         let player = Player::new(player_config, session.clone(), volume, move || {
-            low_latency_sdl_sink(None, AudioFormat::default())
+            low_latency_sdl_sink(AudioFormat::default(), narration.clone())
         });
         Ok(Self {
             player,
             mixer,
             session,
+            narration: narration_sender,
+            http: oauth2_reqwest::ClientBuilder::new()
+                .redirect(oauth2_reqwest::redirect::Policy::none())
+                .build()
+                .context("could not configure the narration client")?,
         })
     }
 
@@ -272,6 +293,111 @@ impl Playback {
             .await
             .context("Spotify track radio endpoint failed")?;
         extract_track_uris(&response).context("Spotify track radio returned invalid JSON")
+    }
+
+    /// Fetches one stretch of a DJ session. `url` is either
+    /// [`dj::session_url`], which starts the session, or the cursor a
+    /// previous stretch handed back. Both are internal-protocol urls the
+    /// session client authenticates for us.
+    pub(crate) async fn dj_page(&self, url: &str) -> Result<dj::SessionPage> {
+        let body = self
+            .session
+            .spclient()
+            .get_next_page(url)
+            .await
+            .context("Spotify DJ session endpoint failed")?;
+        let value =
+            serde_json::from_slice(&body).context("Spotify DJ session returned invalid JSON")?;
+        Ok(dj::session_page(&value))
+    }
+
+    /// Synthesizes one of the DJ's lines. The service answers with a
+    /// redirect to a pre-signed CDN url, which is why the redirect is not
+    /// followed automatically and the download carries no credentials.
+    pub(crate) async fn synthesize(&self, line: &dj::Line) -> Result<NarrationClip> {
+        let base_url = self
+            .session
+            .spclient()
+            .base_url()
+            .await
+            .context("no Spotify access point for narration")?;
+        let access_token = self
+            .session
+            .login5()
+            .auth_token()
+            .await
+            .context("no Spotify access token for narration")?
+            .access_token;
+        let client_token = self
+            .session
+            .spclient()
+            .client_token()
+            .await
+            .context("no Spotify client token for narration")?;
+        let response = self
+            .http
+            .post(format!("{base_url}/client-tts/v1/fulfill"))
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Client-Token", client_token)
+            .header("Content-Type", "application/x-protobuf")
+            .body(dj::tts_request(line))
+            .send()
+            .await
+            .context("Spotify narration synthesis failed")?;
+        let audio_url = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .context("Spotify narration synthesis named no audio")?
+            .to_owned();
+        let mp3 = self
+            .http
+            .get(audio_url)
+            .send()
+            .await
+            .context("Spotify narration download failed")?
+            .bytes()
+            .await
+            .context("Spotify narration download was cut short")?;
+        // Decoding is a few tens of milliseconds of pure work; the async
+        // runtime is not the place for it.
+        tokio::task::spawn_blocking(move || narration::decode(mp3.to_vec()))
+            .await
+            .context("narration decoding did not finish")?
+    }
+
+    /// Hands a decoded line to the output device, which speaks it before
+    /// the next song. Nothing waits on it: a line that cannot be queued is
+    /// simply not spoken.
+    pub(crate) fn speak(&self, clip: NarrationClip) {
+        let _ = self.narration.try_send(clip);
+    }
+
+    /// Resolves track uris into the tracks a list can show. DJ sessions
+    /// name songs by uri only, so everything the page and the player bar
+    /// display comes from here.
+    pub(crate) async fn tracks_for_uris(&self, uris: &[String]) -> Vec<model::ListedTrack> {
+        use protobuf::Message as _;
+
+        let fetched = futures::stream::iter(uris.iter().cloned().map(|uri| async move {
+            let result: Result<Option<model::ListedTrack>> = async {
+                let track_uri = SpotifyUri::from_uri(&uri)?;
+                let message = librespot::protocol::metadata::Track::parse_from_bytes(
+                    &librespot::metadata::Track::request(&self.session, &track_uri).await?,
+                )
+                .map_err(anyhow::Error::from)?;
+                Ok(proto_convert::track(&message)
+                    .ok()
+                    .filter(|track| track.is_displayable())
+                    .map(model::ListedTrack::undated))
+            }
+            .await;
+            result
+        }))
+        .buffered(DJ_TRACK_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        fetched.into_iter().flatten().flatten().collect()
     }
 }
 

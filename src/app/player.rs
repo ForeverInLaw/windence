@@ -268,6 +268,20 @@ impl Player {
         started
     }
 
+    /// Starts the DJ station. Cadence resolves the session itself, so no
+    /// tracks travel with the request — the backend decides what plays.
+    pub(super) fn play_dj(&mut self, cx: &mut Context<Self>) -> bool {
+        self.context_kind = ContextKind::Collection;
+        let started = self.send(BackendCommand::PlayDj, cx);
+        if started {
+            self.position_ms = 0;
+            self.playing = false;
+            self.loading = true;
+        }
+        cx.notify();
+        started
+    }
+
     /// Moves the toggle to its next value: Off → Shuffle → Smart → Off,
     /// with Smart skipped where it cannot act. The backend confirms with a
     /// `ShuffleChanged` event; until one arrives the optimistic update
