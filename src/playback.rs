@@ -1082,6 +1082,27 @@ async fn process_dj_transfer(
             page.page_url.is_some()
         );
     }
+    // A re-delivered transfer for the spot we already play must not
+    // restart anything: dedupe on track identity and position, not on the
+    // session id — the sender re-casts with a changed track when the user
+    // skips, and that handover has to be followed.
+    let already_following = active.as_ref().is_some_and(|state| {
+        state.context_uri == dj_context_uri
+            && state.tracks.get(state.track_index).is_some_and(|current| {
+                (!transfer_track_uid.is_empty() && current.uid == transfer_track_uid)
+                    || (!transfer_track_uri.is_empty() && current.uri == transfer_track_uri)
+            })
+            && position_ms.abs_diff(state.live_position_ms()) < 5000
+    });
+    if already_following {
+        log::info!("dj service: transfer re-delivered the playing spot; ignoring");
+        let state = active.as_mut().expect("checked above");
+        state.last_command_sent_by_device_id = request.sent_by_device_id.clone();
+        state.last_command_message_id = request.message_id;
+        publish_active(service, state).await;
+        return Some(());
+    }
+
     // Claim the handover immediately, before any slow resolution: the
     // server only moves the session when the target publishes an active
     // state, and go-librespot claims before touching the network. The
@@ -1314,56 +1335,50 @@ async fn process_dj_transfer(
         .iter()
         .position(|track| track.uri == transfer_track_uri);
 
-    // Reloading on every retry would restart the same track; only start the
-    // context when it is not the one already playing.
-    if active.as_ref().map(|state| state.context_uri.as_str()) != Some(dj_context_uri.as_str()) {
-        let mut started = transfer_state;
-        started.track_index = match start_index {
-            Some(index) => index,
-            // The transferred track is missing from the materialized queue:
-            // play it ahead of the context, like the reference does, rather
-            // than jumping to the queue's first track.
-            None if !transfer_track_uri.is_empty() => {
-                log::info!("dj service: transfer track missing from queue; playing it ahead");
-                started.tracks.insert(
-                    0,
-                    dj::SessionTrack {
-                        uri: transfer_track_uri.clone(),
-                        uid: transfer_track_uid.clone(),
-                        metadata: HashMap::new(),
-                    },
-                );
-                started.positions.insert(0, (0, 0));
-                0
-            }
-            None => 0,
-        };
-        started.position_ms = position_ms;
-        started.position_at = Instant::now();
-        if let Some(uri) = started
-            .tracks
-            .get(started.track_index)
-            .and_then(|track| SpotifyUri::from_uri(&track.uri).ok())
-        {
-            log::info!(
-                "dj service: starting from lineup position {} at {position_ms} ms",
-                started.track_index
+    // The re-delivery guard above already returned for the spot we play;
+    // anything reaching here is a genuine handover to follow.
+    let mut started = transfer_state;
+    started.track_index = match start_index {
+        Some(index) => index,
+        // The transferred track is missing from the materialized queue:
+        // play it ahead of the context, like the reference does, rather
+        // than jumping to the queue's first track.
+        None if !transfer_track_uri.is_empty() => {
+            log::info!("dj service: transfer track missing from queue; playing it ahead");
+            started.tracks.insert(
+                0,
+                dj::SessionTrack {
+                    uri: transfer_track_uri.clone(),
+                    uid: transfer_track_uid.clone(),
+                    metadata: HashMap::new(),
+                },
             );
-            service.player.load(uri, !is_paused, position_ms);
+            started.positions.insert(0, (0, 0));
+            0
         }
-        if let Some(notice) = started.now_playing()
-            && service.notices.send(notice).await.is_err()
-        {
-            log::info!("dj service: nobody is listening for playback notices; stopping");
-            return None;
-        }
-        publish_active(service, &started).await;
-        *active = Some(started);
-    } else if let Some(state) = active {
-        state.last_command_sent_by_device_id = request.sent_by_device_id;
-        state.last_command_message_id = request.message_id;
-        publish_active(service, state).await;
+        None => 0,
+    };
+    started.position_ms = position_ms;
+    started.position_at = Instant::now();
+    if let Some(uri) = started
+        .tracks
+        .get(started.track_index)
+        .and_then(|track| SpotifyUri::from_uri(&track.uri).ok())
+    {
+        log::info!(
+            "dj service: starting from lineup position {} at {position_ms} ms",
+            started.track_index
+        );
+        service.player.load(uri, !is_paused, position_ms);
     }
+    if let Some(notice) = started.now_playing()
+        && service.notices.send(notice).await.is_err()
+    {
+        log::info!("dj service: nobody is listening for playback notices; stopping");
+        return None;
+    }
+    publish_active(service, &started).await;
+    *active = Some(started);
     Some(())
 }
 
