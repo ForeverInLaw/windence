@@ -17,7 +17,7 @@
 
 This repository is the Windows-only Port of
 [infomiho/cadence](https://github.com/infomiho/cadence), a minimal Spotify
-player for macOS. There are no installers yet; you build and run from source.
+player for macOS.
 
 ## Status
 
@@ -69,6 +69,19 @@ Cadence keeps the Client ID and app preferences in its local SQLite database,
 and login and playback tokens in Windows Credential Manager. No secret is
 ever written to a plaintext file.
 
+## Build an Installer
+
+```powershell
+scripts\package-windows.ps1
+```
+
+This builds the release binary and writes both an installer and a plain zip
+to `dist/`. The installer is per-user, so it never asks for an administrator,
+and it uninstalls from Settings like any other app. Inno Setup builds it; the
+zip is written with or without it.
+
+Neither is signed, so Windows shows its "protected your PC" box on first run.
+
 ## Run From Source
 
 ```sh
@@ -88,8 +101,9 @@ The macOS original lives at
 [infomiho/cadence](https://github.com/infomiho/cadence); its README covers
 macOS builds and releases. The macOS sources stay in this repository, but
 compile-time checks exclude them from Windows builds. That keeps merges from
-upstream routine. The packaging scripts under `scripts/` are macOS-only and
-do not run on Windows. The logo attribution is in
+upstream routine. `scripts/package-app.sh` builds the macOS bundle and does
+not run on Windows; `scripts/package-windows.ps1` is its counterpart here.
+The logo attribution is in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## License
