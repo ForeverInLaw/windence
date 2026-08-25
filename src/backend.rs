@@ -2031,18 +2031,34 @@ impl Worker {
                 .filter(|track| !known.contains(track.source_id.as_str()))
                 .cloned()
                 .collect();
+            log::info!(
+                "dj: stretch of {} songs, {} new for the queue",
+                stretch.tracks.len(),
+                additions.len(),
+            );
             if additions.is_empty() {
                 return;
             }
+            let ended = self.queue.ended;
             for track in additions {
                 self.queue.tracks.push(track);
                 self.queue.shuffle.push_anchor();
             }
             if let Err(error) = self.commit_queue_change(index).await {
                 send_error(&self.events, error);
+                return;
+            }
+            if ended {
+                // Skipping outran the fetch and left the player parked on
+                // the last song. The stretch that just landed is what it
+                // was waiting for.
+                if let Err(error) = self.load_queue_track(index + 1, true).await {
+                    send_error(&self.events, error);
+                }
             }
             return;
         }
+        log::info!("dj: station starting with {} songs", stretch.tracks.len());
         // Every later song has the one before it to be prepared during;
         // the opening line has nothing, so it is synthesized here and
         // queued before the first song reaches the device.
@@ -2050,22 +2066,37 @@ impl Worker {
         if let (Some(clip), Ok(player)) = (opening, self.connected_player()) {
             player.speak(clip);
         }
-        if let Err(error) = self
-            .play_context(stretch.tracks, 0, false, ContextKind::Collection)
-            .await
+        // The station takes the queue over the way a track radio does,
+        // rather than through `play_context`: the running order is the
+        // DJ's, so it must not inherit the shuffle toggle the way an
+        // ordinary context does.
+        self.radio.cancel(&self.events);
+        if let Err(error) = load_context_track(
+            &self.connection.player,
+            &ShuffleState::default(),
+            &stretch.tracks,
+            0,
+            true,
+            &self.store,
+            &self.events,
+        )
+        .await
         {
             send_error(&self.events, error);
+            let _ = self.events.send(BackendEvent::PlaybackSettled);
             return;
         }
-        // `play_context` stands every station down, this one included, so
-        // the station is armed once the queue is actually its own.
+        self.queue.tracks = stretch.tracks;
+        // The global mode survives underneath without reordering anything,
+        // so a later context still inherits whatever the listener chose.
+        self.queue.shuffle = ShuffleState::for_context(&self.queue.tracks, self.queue.shuffle.mode);
+        self.queue.radio = true;
+        self.queue.kind = ContextKind::Collection;
+        self.injections.reset();
         self.dj.playing = true;
         self.dj.next_page_url = cursor;
         self.dj.lines = stretch.lines;
-        // A station is a stream the server curates; the shuffle toggle has
-        // nothing to reorder, exactly as with track radio.
-        self.queue.radio = true;
-        self.prepare_next_line(0);
+        self.commit_loaded_queue(0).await;
     }
 
     /// Synthesizes what the DJ opens a starting station with, if anything.
