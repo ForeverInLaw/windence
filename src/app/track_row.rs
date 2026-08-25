@@ -145,15 +145,10 @@ pub(super) fn track_list_header(
                     )),
             )
         })
-        .child(
-            div()
-                .w(px(HEART_COLUMN_WIDTH))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(components::icon("heart", 12., palette.text_muted)),
-        )
+        // The heart has no header: it belongs to the row under the pointer,
+        // not to a column of its own. The width is still held, so the
+        // columns beside it line up with the rows below.
+        .child(div().w(px(HEART_COLUMN_WIDTH)).flex_none())
         .child(
             div()
                 .w(px(TIME_COLUMN_WIDTH))
@@ -393,6 +388,11 @@ impl RenderOnce for TrackRow {
             })
             .child(
                 components::liked_heart(palette, ("spotify-liked", index), self.liked)
+                    // Reachable on the row under the pointer and nowhere
+                    // else: the column keeps its width so the ones beside
+                    // it do not shift, but stays empty until then.
+                    .invisible()
+                    .group_hover(row_group.clone(), |style| style.visible())
                     .hover(|style| style.bg(rgb(palette.control)))
                     .when_some(self.on_liked, |button, handler| {
                         button.on_click(move |event, window, cx| {
