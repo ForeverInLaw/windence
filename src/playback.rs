@@ -877,7 +877,19 @@ async fn process_dj_command(
         transfer_position.max(0) as u32
     };
 
-    log::info!("dj service: accepting a DJ handover");
+    log::info!(
+        "dj service: accepting a DJ handover (pages={}, original_session_id={:?}, transfer_track={:?}, pos={transfer_position} ms)",
+        context.pages.len(),
+        session_state.original_session_id,
+        transfer_track_uri
+    );
+    for (page_index, page) in context.pages.iter().enumerate() {
+        log::info!(
+            "dj service:   page {page_index}: tracks={} page_url={}",
+            page.tracks.len(),
+            page.page_url.is_some()
+        );
+    }
     // Materialize the live queue from the transfer's own context: pages
     // that already carry tracks are used as they are, skeleton pages are
     // fetched from their page_url. The session resolver url returns the
@@ -989,8 +1001,12 @@ async fn process_dj_command(
     // player without it is treated as inactive, so it rides along into
     // every publication. The session id is adopted from the sender — a
     // fresh one makes the server see a rival session, not the continuation
-    // of the DJ one — and the play origin is credited to the sender's
-    // device, like the reference implementation does.
+    // of the DJ one — into the session object itself as well, the way the
+    // reference spirc adopts it on session updates. The play origin is
+    // credited to the sender's device.
+    if let Some(original) = session_state.original_session_id.as_deref() {
+        session.set_session_id(original);
+    }
     let mut play_origin: Option<PlayOrigin> = session_state
         .play_origin
         .clone()
@@ -1050,6 +1066,7 @@ async fn process_dj_command(
             // play it ahead of the context, like the reference does, rather
             // than jumping to the queue's first track.
             None if !transfer_track_uri.is_empty() => {
+                log::info!("dj service: transfer track missing from queue; playing it ahead");
                 let current = playback.current_track.get_or_default();
                 started.tracks.insert(
                     0,
