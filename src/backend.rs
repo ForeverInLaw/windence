@@ -393,6 +393,10 @@ pub enum BackendEvent {
     },
     PlaybackSettled,
     QueueEnded,
+    /// Whether the DJ station is what the player is playing. The station
+    /// page follows the live queue while it is, instead of asking the
+    /// session for a stretch that has already moved on.
+    StationChanged(bool),
     LibraryLoaded {
         generation: u64,
         liked_tracks: Vec<ListedTrack>,
@@ -2100,6 +2104,7 @@ impl Worker {
         self.dj.playing = true;
         self.dj.next_page_url = cursor;
         self.dj.lines = stretch.lines;
+        let _ = self.events.send(BackendEvent::StationChanged(true));
         self.commit_loaded_queue(0).await;
     }
 
@@ -2122,6 +2127,9 @@ impl Worker {
     fn stand_down_dj(&mut self) {
         abort_task(&mut self.dj.task);
         abort_task(&mut self.dj.voice);
+        if self.dj.playing {
+            let _ = self.events.send(BackendEvent::StationChanged(false));
+        }
         self.dj = Dj::default();
     }
 
@@ -2967,11 +2975,10 @@ impl CatalogFetches {
         );
     }
 
-    /// Loads the DJ station's upcoming stretch for its page. It follows
-    /// the same cursor playback does, so the list and the play button
-    /// never disagree about where the station is; nothing that already
-    /// played is fetched, because the session only hands out what is
-    /// ahead.
+    /// Loads the stretch the DJ station would start with, for its page.
+    /// Only ever asked while the station is not playing — once it is, the
+    /// page follows the live queue instead, because the cursor by then
+    /// points past everything already queued.
     fn dj_lineup(
         &mut self,
         playback: Option<Playback>,

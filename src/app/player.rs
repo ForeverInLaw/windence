@@ -23,6 +23,9 @@ pub(super) struct Player {
     /// The kind of context playback started from, kept so re-playing a
     /// queued track hands the backend the same kind again.
     context_kind: ContextKind,
+    /// Whether the DJ station is what is playing. The station page shows
+    /// the live queue while it is.
+    station: bool,
     playing: bool,
     loading: bool,
     /// The shuffle toggle's value and whether it can act: a live,
@@ -52,6 +55,7 @@ impl Player {
             queue: Arc::default(),
             queue_injected: Arc::default(),
             context_kind: ContextKind::default(),
+            station: false,
             playing: false,
             loading: false,
             shuffle_mode: ShuffleMode::Off,
@@ -87,6 +91,11 @@ impl Player {
 
     pub(super) fn queue(&self) -> &Arc<[model::Track]> {
         &self.queue
+    }
+
+    /// Whether the DJ station is what is playing.
+    pub(super) fn station(&self) -> bool {
+        self.station
     }
 
     /// Whether the upcoming track at `index` is a Smart Shuffle injection.
@@ -423,6 +432,7 @@ impl Player {
         self.context = Arc::default();
         self.queue = Arc::default();
         self.queue_injected = Arc::default();
+        self.station = false;
         self.playing = false;
         self.loading = false;
         self.shuffle_mode = ShuffleMode::Off;
@@ -512,6 +522,7 @@ impl Player {
                     }
                 }
             }
+            BackendEvent::StationChanged(station) => self.station = station,
             BackendEvent::EndOfTrack { spotify_uri } => {
                 if self.restore.is_none() && self.live_track_matches(&spotify_uri) {
                     self.playing = false;

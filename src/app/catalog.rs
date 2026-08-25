@@ -141,6 +141,18 @@ impl SearchPage {
     }
 }
 
+/// What the station page lists while the station plays: the song on air
+/// and everything the DJ has lined up behind it.
+fn station_tracks(player: &player::Player) -> Arc<[model::ListedTrack]> {
+    player
+        .now_playing()
+        .into_iter()
+        .chain(player.queue().iter())
+        .cloned()
+        .map(model::ListedTrack::undated)
+        .collect()
+}
+
 /// The tracks of one Spotify playlist.
 pub(super) struct PlaylistPage {
     backend: BackendHandle,
@@ -154,6 +166,12 @@ pub(super) struct PlaylistPage {
     image_cache: Entity<image_cache::BoundedImageCache>,
     track_list: Entity<TrackList>,
     _list_subscription: Subscription,
+    /// The live station queue, rebuilt whenever the player moves. Held as
+    /// one `Arc` so the list is only handed a new one when it really
+    /// changed; a slice rebuilt each render would notify forever.
+    station_tracks: Arc<[model::ListedTrack]>,
+    /// Keeps `station_tracks` in step with what the player is playing.
+    _player_subscription: Subscription,
 }
 
 impl EventEmitter<PageEvent> for PlaylistPage {}
@@ -161,6 +179,11 @@ impl EventEmitter<PageEvent> for PlaylistPage {}
 impl PlaylistPage {
     pub(super) fn new(backend: BackendHandle, cx: &mut Context<Self>) -> Self {
         let track_list = cx.new(|cx| TrackList::new(cx));
+        let player = services::AppServices::player(cx);
+        let player_subscription = cx.observe(&player, |page, player, cx| {
+            page.station_tracks = station_tracks(player.read(cx));
+            cx.notify();
+        });
         Self {
             backend,
             selected: None,
@@ -169,9 +192,11 @@ impl PlaylistPage {
             error: None,
             request: None,
             library: services::AppServices::library(cx),
-            player: services::AppServices::player(cx),
+            player,
             image_cache: services::AppServices::image_cache(cx),
             _list_subscription: page::forward(&track_list, cx),
+            station_tracks: Arc::default(),
+            _player_subscription: player_subscription,
             track_list,
         }
     }
@@ -222,6 +247,14 @@ impl PlaylistPage {
         self.tracks = Arc::default();
         self.loaded = false;
         self.error = None;
+        // A playing station is already showing what is ahead; asking the
+        // session again would answer about a spot it has moved past.
+        if dj::matches(&playlist.source_id) && self.player.read(cx).station() {
+            self.request = None;
+            self.station_tracks = station_tracks(self.player.read(cx));
+            cx.notify();
+            return;
+        }
         let reply = request(&self.backend, |respond| BackendCommand::LoadPlaylist {
             playlist,
             respond,
@@ -726,9 +759,24 @@ impl Render for PlaylistPage {
             .map(|playlist| playlist.source_id.clone())
             .unwrap_or_default();
         let is_dj = dj::matches(&source_id);
+        // While the station plays, its page is a window on the live queue:
+        // asking the session for a stretch would answer with the one after
+        // the songs already queued.
+        let live_station = is_dj && self.player.read(cx).station();
+        let tracks = if live_station {
+            self.station_tracks.clone()
+        } else {
+            tracks
+        };
         let (name, detail) = match self.selected.as_ref() {
             None => ("Playlist".to_owned(), "Spotify playlist".to_owned()),
-            Some(playlist) if is_dj => (playlist.name.clone(), "Spotify station".to_owned()),
+            Some(playlist) if is_dj => (
+                playlist.name.clone(),
+                match live_station {
+                    true => "Spotify station · on air".to_owned(),
+                    false => "Spotify station".to_owned(),
+                },
+            ),
             Some(playlist) => (
                 playlist.name.clone(),
                 format!("Spotify playlist · {} tracks", playlist.track_count),
@@ -758,6 +806,8 @@ impl Render for PlaylistPage {
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
             components::empty_state(palette, "No playlist selected").into_any_element()
+        } else if live_station {
+            components::empty_state(palette, "Waiting for the DJ…").into_any_element()
         } else if loaded {
             components::empty_state(palette, "This playlist is empty").into_any_element()
         } else {

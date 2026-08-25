@@ -66,6 +66,7 @@ impl Workspace {
                 | BackendEvent::PlaybackRestored { .. }
                 | BackendEvent::PlaybackSettled
                 | BackendEvent::QueueEnded
+                | BackendEvent::StationChanged(_)
                 | BackendEvent::Playing { .. }
                 | BackendEvent::Loading { .. }
                 | BackendEvent::Paused { .. }
