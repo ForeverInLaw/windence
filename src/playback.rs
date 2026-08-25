@@ -448,9 +448,9 @@ async fn run_dj_service(
         capabilities: MessageField::some(Capabilities {
             can_be_player: true,
             gaia_eq_connect_id: true,
-            // The reference spirc declares this; without it the server may
-            // treat the device as a lightweight that need not be mirrored.
-            needs_full_player_state: true,
+            // go-librespot, the implementation DJ casts actually finalize
+            // with, declares false here.
+            needs_full_player_state: false,
             is_observable: true,
             is_controllable: true,
             hidden: false,
@@ -472,8 +472,7 @@ async fn run_dj_service(
             connect_disabled: false,
             supports_rename: false,
             supports_external_episodes: false,
-            supports_set_backend_metadata: false,
-            supports_rooms: false,
+            supports_set_backend_metadata: true,
             ..Default::default()
         }),
         metadata_map: std::collections::HashMap::from([("tier1_port".to_owned(), "0".to_owned())]),
@@ -591,6 +590,10 @@ struct DjActive {
     context_metadata: HashMap<String, String>,
     last_command_sent_by_device_id: String,
     last_command_message_id: u32,
+    /// When this handover became active, ms epoch — published as the
+    /// connect-state `started_playing_at`, which the server expects from
+    /// an active device.
+    active_since_ms: u64,
 }
 
 impl DjActive {
@@ -714,6 +717,7 @@ async fn publish_active(service: &DjService<'_>, state: &DjActive) {
         member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
         put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
         is_active: true,
+        started_playing_at: state.active_since_ms,
         last_command_sent_by_device_id: state.last_command_sent_by_device_id.clone(),
         last_command_message_id: state.last_command_message_id,
         device: MessageField::some(Device {
@@ -932,6 +936,73 @@ async fn process_dj_command(
             page.page_url.is_some()
         );
     }
+    // Claim the handover immediately, before any slow resolution: the
+    // server only moves the session when the target publishes an active
+    // state, and go-librespot claims before touching the network. The
+    // claim carries the transfer's own identity — session, context, the
+    // current track as named by the transfer (gid-recovered uri included)
+    // — with buffering flags like the reference implementation.
+    if let Some(original) = session_state.original_session_id.as_deref() {
+        service.session.set_session_id(original);
+    }
+    let active_since_ms = active
+        .as_ref()
+        .map(|state| state.active_since_ms)
+        .unwrap_or_else(now_millis);
+    let mut play_origin: Option<PlayOrigin> = session_state
+        .play_origin
+        .clone()
+        .into_option()
+        .and_then(|origin| convert_proto(&origin));
+    if let Some(origin) = play_origin.as_mut() {
+        origin.device_identifier = request.sent_by_device_id.clone();
+    }
+    let suppressions = session_state
+        .suppressions
+        .clone()
+        .into_option()
+        .and_then(|suppressions| convert_proto(&suppressions));
+    let options = state
+        .options
+        .clone()
+        .into_option()
+        .and_then(|options| convert_proto(&options));
+    let restrictions = context
+        .restrictions
+        .clone()
+        .into_option()
+        .and_then(|restrictions| convert_proto(&restrictions));
+    let claim = DjActive {
+        context_uri: dj_context_uri.clone(),
+        session_id: session_state
+            .original_session_id
+            .clone()
+            .unwrap_or_else(fresh_session_id),
+        context_url: context.url.clone().unwrap_or_default(),
+        playback_id: fresh_playback_id(),
+        tracks: vec![dj::SessionTrack {
+            uri: transfer_track_uri.clone(),
+            uid: transfer_track_uid.clone(),
+            metadata: playback.current_track.get_or_default().metadata.clone(),
+        }],
+        positions: vec![(0, 0)],
+        listed: Vec::new(),
+        track_index: 0,
+        position_ms: transfer_position.max(0) as u32,
+        position_at: Instant::now(),
+        is_playing: true,
+        is_buffering: true,
+        play_origin: play_origin.clone(),
+        suppressions: suppressions.clone(),
+        options: options.clone(),
+        restrictions: restrictions.clone(),
+        context_metadata: context.metadata.clone(),
+        last_command_sent_by_device_id: request.sent_by_device_id.clone(),
+        last_command_message_id: request.message_id,
+        active_since_ms,
+    };
+    publish_active(service, &claim).await;
+
     // Materialize the live queue from the transfer's own context: pages
     // that already carry tracks are used as they are, skeleton pages are
     // fetched from their page_url. The session resolver url returns the
@@ -1055,24 +1126,6 @@ async fn process_dj_command(
         return None;
     }
 
-    // The transfer's own state carries the sender's playback identity; a
-    // player without it is treated as inactive, so it rides along into
-    // every publication. The session id is adopted from the sender — a
-    // fresh one makes the server see a rival session, not the continuation
-    // of the DJ one — into the session object itself as well, the way the
-    // reference spirc adopts it on session updates. The play origin is
-    // credited to the sender's device.
-    if let Some(original) = session_state.original_session_id.as_deref() {
-        service.session.set_session_id(original);
-    }
-    let mut play_origin: Option<PlayOrigin> = session_state
-        .play_origin
-        .clone()
-        .into_option()
-        .and_then(|origin| convert_proto(&origin));
-    if let Some(origin) = play_origin.as_mut() {
-        origin.device_identifier = request.sent_by_device_id.clone();
-    }
     let transfer_state = DjActive {
         context_uri: dj_context_uri.clone(),
         session_id: session_state
@@ -1108,6 +1161,7 @@ async fn process_dj_command(
         position_at: Instant::now(),
         is_playing: !is_paused,
         is_buffering: true,
+        active_since_ms,
     };
     let start_index = transfer_state
         .tracks
@@ -1252,8 +1306,9 @@ fn report_cluster(
         return;
     }
     log::info!(
-        "dj service:   state ctx={:?} playing={} paused={} speed={} pos={}",
+        "dj service:   state ctx={:?} session={:?} playing={} paused={} speed={} pos={}",
         player.context_uri,
+        player.session_id,
         player.is_playing,
         player.is_paused,
         player.playback_speed,
