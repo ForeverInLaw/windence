@@ -11,6 +11,10 @@ const TIME_COLUMN_WIDTH: f32 = 60.;
 const ACTIONS_COLUMN_WIDTH: f32 = 36.;
 /// Wide enough for "Sep 28, 2026"; never squeezed below its content.
 const DATE_ADDED_COLUMN_WIDTH: f32 = 110.;
+/// The corner radius a track list is cut to. The header carries it on its
+/// own top corners as well: clipping is rectangular, so a square header
+/// would paint into the rounded corners it sits inside.
+pub(super) const LIST_CORNER_RADIUS: f32 = 20.;
 
 /// What a header click does. One handler per sortable column; a missing
 /// handler renders the label inert, as lists without sorting do.
@@ -84,6 +88,7 @@ pub(super) fn track_list_header(
         .px(px(12.))
         .flex()
         .items_center()
+        .rounded_t(px(LIST_CORNER_RADIUS))
         .bg(rgb(palette.canvas))
         .text_size(px(11.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
