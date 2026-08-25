@@ -77,7 +77,6 @@ pub(crate) fn session_url() -> String {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Line {
     pub ssml: String,
-    pub sample_rate: u32,
 }
 
 /// One song of a DJ session, with whatever the DJ prepared to say on the
@@ -154,9 +153,6 @@ pub(crate) fn session_page(value: &serde_json::Value) -> SessionPage {
             let ssml = field(&format!("narration.{variant}.ssml"));
             (!ssml.is_empty()).then(|| Line {
                 ssml: ssml.to_owned(),
-                sample_rate: field(&format!("narration.{variant}.sample_rate"))
-                    .parse()
-                    .unwrap_or(NARRATION_SAMPLE_RATE),
             })
         };
         tracks.push(SessionTrack {
@@ -176,16 +172,16 @@ pub(crate) fn session_page(value: &serde_json::Value) -> SessionPage {
     }
 }
 
-/// What the narration service is asked for when a line carries no sample
-/// rate of its own — the rate every recorded session used.
-const NARRATION_SAMPLE_RATE: u32 = 44100;
-
 /// Encodes the synthesis request for one line. The service ships no proto
 /// file with our dependencies and the message is five scalar fields, so
 /// the wire format is written directly. Field numbers and enum values are
 /// recorded from the official desktop client: the ssml as field 2, then
 /// MP3 output, voice one, the fast Sonantic provider, and the rate.
-pub(crate) fn tts_request(line: &Line) -> Vec<u8> {
+///
+/// The rate asked for is playback's own. A line's metadata carries a rate
+/// too, but asking for anything else would only produce audio that has to
+/// be refused for want of a resampler.
+pub(crate) fn tts_request(line: &Line, sample_rate: u32) -> Vec<u8> {
     fn varint(buffer: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
             buffer.push((value as u8) | 0x80);
@@ -198,7 +194,7 @@ pub(crate) fn tts_request(line: &Line) -> Vec<u8> {
     varint(&mut body, line.ssml.len() as u64);
     body.extend_from_slice(line.ssml.as_bytes());
     body.extend_from_slice(&[0x18, 0x05, 0x28, 0x01, 0x30, 0x06, 0x38]);
-    varint(&mut body, u64::from(line.sample_rate));
+    varint(&mut body, u64::from(sample_rate));
     body
 }
 
@@ -280,9 +276,7 @@ mod tests {
                     "uid": "265a42c870f2f46f140b",
                     "metadata": {
                         "narration.intro.ssml": "<speak>Up next</speak>",
-                        "narration.intro.sample_rate": "44100",
-                        "narration.jump.ssml": "<speak>Moving on</speak>",
-                        "narration.jump.sample_rate": "22050"
+                        "narration.jump.ssml": "<speak>Moving on</speak>"
                     }
                 },
                 {"uri": "", "uid": "u2", "metadata": {
@@ -334,9 +328,7 @@ mod tests {
         let body = serde_json::json!({"tracks": [
             {"uri": "spotify:track:2IilktLdCKhha2Mynoibtk", "metadata": {
                 "narration.intro.ssml": "<speak>Up next</speak>",
-                "narration.intro.sample_rate": "44100",
-                "narration.jump.ssml": "<speak>Moving on</speak>",
-                "narration.jump.sample_rate": "22050"
+                "narration.jump.ssml": "<speak>Moving on</speak>"
             }},
             {"uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx"}
         ]});
@@ -345,10 +337,10 @@ mod tests {
         let spoken = |index: usize, after_skip: bool| {
             tracks[index]
                 .line(after_skip)
-                .map(|line| (line.ssml.as_str(), line.sample_rate))
+                .map(|line| line.ssml.as_str())
         };
-        assert_eq!(spoken(0, false), Some(("<speak>Up next</speak>", 44100)));
-        assert_eq!(spoken(0, true), Some(("<speak>Moving on</speak>", 22050)));
+        assert_eq!(spoken(0, false), Some("<speak>Up next</speak>"));
+        assert_eq!(spoken(0, true), Some("<speak>Moving on</speak>"));
         assert_eq!(spoken(1, false), None);
         assert_eq!(spoken(1, true), None);
     }
@@ -357,10 +349,9 @@ mod tests {
     fn a_synthesis_request_matches_the_bytes_the_official_client_sends() {
         let line = super::Line {
             ssml: "<speak>hi</speak>".to_owned(),
-            sample_rate: 44100,
         };
 
-        let encoded = super::tts_request(&line);
+        let encoded = super::tts_request(&line, 44100);
 
         // Recorded from the desktop client: the ssml as field 2, then
         // MP3, VOICE1, SONANTIC_FAST, and the sample rate as a varint.

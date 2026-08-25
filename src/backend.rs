@@ -1086,8 +1086,11 @@ impl Worker {
             }
             BackendCommand::LoadPlaylist { playlist, respond } => {
                 if dj::matches(&playlist.source_id) {
-                    self.catalog
-                        .dj_lineup(self.connection.player.clone(), respond);
+                    self.catalog.dj_lineup(
+                        self.connection.player.clone(),
+                        self.store.clone(),
+                        respond,
+                    );
                 } else {
                     self.catalog
                         .playlist(self.spotify.clone(), playlist, respond);
@@ -1118,10 +1121,7 @@ impl Worker {
                 index,
                 shuffled,
                 kind,
-            } => {
-                self.stand_down_dj();
-                self.play_context(tracks, index, shuffled, kind).await
-            }
+            } => self.play_context(tracks, index, shuffled, kind).await,
             BackendCommand::PlayDj => self.start_dj(),
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
@@ -1355,6 +1355,7 @@ impl Worker {
         shuffled: bool,
         kind: ContextKind,
     ) -> Result<()> {
+        self.stand_down_dj();
         self.radio.cancel(&self.events);
         let spotify_uri = tracks
             .get(index)
@@ -1825,6 +1826,7 @@ impl Worker {
                 .await
                 {
                     Ok(()) => {
+                        self.stand_down_dj();
                         self.queue.tracks = tracks;
                         // A radio ignores shuffle, but the global mode
                         // survives underneath so a later context inherits it.
@@ -1957,13 +1959,11 @@ impl Worker {
     fn start_dj(&mut self) -> Result<()> {
         abort_task(&mut self.dj.task);
         self.dj.playing = false;
-        let playback = self.connection.player.clone();
         let store = self.store.clone();
-        self.dj.task = Some(tokio::spawn(async move {
-            let playback = playback.context("Spotify playback is not connected")?;
-            let cursor = store.call(|store| store.dj_cursor()).await?;
-            run_with_timeout(60, "Spotify DJ session", dj_stretch_from(&playback, cursor)).await
-        }));
+        self.dj.task = Some(fetch_dj_stretch(
+            self.connection.player.clone(),
+            async move { store.call(|store| store.dj_cursor()).await },
+        ));
         Ok(())
     }
 
@@ -1977,18 +1977,17 @@ impl Worker {
             return;
         }
         let cursor = self.dj.next_page_url.clone();
-        let playback = self.connection.player.clone();
-        self.dj.task = Some(tokio::spawn(async move {
-            let playback = playback.context("Spotify playback is not connected")?;
-            run_with_timeout(60, "Spotify DJ session", dj_stretch_from(&playback, cursor)).await
-        }));
+        self.dj.task = Some(fetch_dj_stretch(
+            self.connection.player.clone(),
+            async move { Ok(cursor) },
+        ));
     }
 
     /// Takes a fetched stretch: the opening one starts the station, a
     /// later one extends the queue behind whatever is playing.
     async fn finish_dj_stretch(&mut self, stretch: Finished<Result<DjStretch>>) {
         self.dj.task = None;
-        let stretch = match stretch {
+        let mut stretch = match stretch {
             Some(Ok(Ok(stretch))) => stretch,
             Some(Ok(Err(error))) => {
                 send_error(&self.events, error);
@@ -2000,14 +1999,13 @@ impl Worker {
             }
             None => return,
         };
-        self.dj.next_page_url = stretch.next_page_url.clone();
-        self.dj.lines.extend(stretch.lines.clone());
         // Fetching a stretch is what moves the session's cursor, so the
         // one it hands back is what a restart must resume from.
-        let cursor = stretch.next_page_url;
+        let cursor = stretch.next_page_url.clone();
+        let stored = stretch.next_page_url.take();
         let store = self.store.clone();
         if let Err(error) = store
-            .call(move |store| store.set_dj_cursor(cursor.as_deref()))
+            .call(move |store| store.set_dj_cursor(stored.as_deref()))
             .await
         {
             send_error(&self.events, error);
@@ -2016,6 +2014,8 @@ impl Worker {
             return;
         }
         if self.dj.playing {
+            self.dj.next_page_url = cursor;
+            self.dj.lines.extend(stretch.lines);
             let Some(index) = self.queue.index else {
                 return;
             };
@@ -2043,6 +2043,13 @@ impl Worker {
             }
             return;
         }
+        // Every later song has the one before it to be prepared during;
+        // the opening line has nothing, so it is synthesized here and
+        // queued before the first song reaches the device.
+        let opening = self.opening_line(&stretch).await;
+        if let (Some(clip), Ok(player)) = (opening, self.connected_player()) {
+            player.speak(clip);
+        }
         if let Err(error) = self
             .play_context(stretch.tracks, 0, false, ContextKind::Collection)
             .await
@@ -2051,11 +2058,27 @@ impl Worker {
             return;
         }
         // `play_context` stands every station down, this one included, so
-        // the flag is raised once the queue is actually the station's.
+        // the station is armed once the queue is actually its own.
         self.dj.playing = true;
+        self.dj.next_page_url = cursor;
+        self.dj.lines = stretch.lines;
         // A station is a stream the server curates; the shuffle toggle has
         // nothing to reorder, exactly as with track radio.
         self.queue.radio = true;
+        self.prepare_next_line(0);
+    }
+
+    /// Synthesizes what the DJ opens a starting station with, if anything.
+    async fn opening_line(&self, stretch: &DjStretch) -> Option<NarrationClip> {
+        let uri = stretch.tracks.first()?.spotify_uri.as_deref()?;
+        let line = stretch.lines.get(uri)?.line(false)?;
+        match self.connected_player().ok()?.synthesize(line).await {
+            Ok(clip) => Some(clip),
+            Err(error) => {
+                log::warn!("dj: narration synthesis failed: {error:#}");
+                None
+            }
+        }
     }
 
     /// Drops the station's state: another context has the player, and a
@@ -2723,6 +2746,28 @@ struct Dj {
     skipped: bool,
 }
 
+/// How long a session request may take before it is given up on. A
+/// stretch resolves its songs' metadata too, so it is not one round trip.
+const DJ_FETCH_TIMEOUT_SECONDS: u64 = 60;
+
+/// Spawns the one shape both station fetches share: work out which cursor
+/// to follow, then resolve the stretch it leads to.
+fn fetch_dj_stretch(
+    playback: Option<Playback>,
+    cursor: impl Future<Output = Result<Option<String>>> + Send + 'static,
+) -> tokio::task::JoinHandle<Result<DjStretch>> {
+    tokio::spawn(async move {
+        let playback = playback.context("Spotify playback is not connected")?;
+        let cursor = cursor.await?;
+        run_with_timeout(
+            DJ_FETCH_TIMEOUT_SECONDS,
+            "Spotify DJ session",
+            dj_stretch_from(&playback, cursor),
+        )
+        .await
+    })
+}
+
 /// Resolves one stretch, following `cursor` when there is one. A cursor
 /// that answers with nothing is a session that has ended, and opening a
 /// fresh one is the recovery — nothing else about the station has to
@@ -2887,17 +2932,25 @@ impl CatalogFetches {
         );
     }
 
-    /// Loads the DJ station's upcoming stretch for its page. Nothing that
-    /// already played is fetched, because the session only ever hands out
-    /// what is ahead.
-    fn dj_lineup(&mut self, playback: Option<Playback>, respond: Reply<PlaylistContents>) {
+    /// Loads the DJ station's upcoming stretch for its page. It follows
+    /// the same cursor playback does, so the list and the play button
+    /// never disagree about where the station is; nothing that already
+    /// played is fetched, because the session only hands out what is
+    /// ahead.
+    fn dj_lineup(
+        &mut self,
+        playback: Option<Playback>,
+        store: BlockingStore,
+        respond: Reply<PlaylistContents>,
+    ) {
         Self::start(
             &mut self.playlist,
             respond,
             "Spotify DJ session request",
             async move {
                 let playback = playback.context("Spotify playback is not connected")?;
-                let tracks = dj_stretch(&playback, &dj::session_url()).await?.tracks;
+                let cursor = store.call(|store| store.dj_cursor()).await?;
+                let tracks = dj_stretch_from(&playback, cursor).await?.tracks;
                 Ok(PlaylistContents::Loaded {
                     playlist: None,
                     tracks: tracks.into_iter().map(ListedTrack::undated).collect(),

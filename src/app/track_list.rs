@@ -10,7 +10,7 @@ use page::PageEvent;
 /// `close_menu`, because the menu outlives the page going off screen.
 ///
 /// Lists whose context dates and sorts its tracks (playlists, liked songs)
-/// carry a `sort_key`; clicking their headers cycles Title/Album/Date added
+/// carry a `context_id`; clicking their headers cycles Title/Album/Date added
 /// through A-Z, Z-A, and back to the default order, and the choice survives
 /// restarts. The rows always play in the displayed order.
 pub(super) struct TrackList {
@@ -23,7 +23,7 @@ pub(super) struct TrackList {
     /// Where this list's playback starts from, which gates Smart Shuffle.
     context_kind: ContextKind,
     /// This list's sort persistence key, when its context sorts at all.
-    sort_key: Option<String>,
+    context_id: Option<String>,
     sort: Option<model::ListSort>,
     /// The row whose action menu is open, keyed by source ID and row index so
     /// the same track appearing twice opens only the row that was clicked.
@@ -44,7 +44,7 @@ impl TrackList {
             listed: Arc::default(),
             order: Arc::default(),
             context_kind: ContextKind::default(),
-            sort_key: None,
+            context_id: None,
             sort: None,
             menu_open: None,
             current_album_id: None,
@@ -57,8 +57,10 @@ impl TrackList {
     /// Shows `listed` under `id`, which pages vary per playlist or album so
     /// that opening a different one starts back at the top of the list.
     /// `context_kind` rides along so starting playback from any row carries
-    /// the right Smart Shuffle gate. `sort_key` enables the sortable headers
-    /// and names the row the sort persists under; `None` keeps plain labels.
+    /// the right Smart Shuffle gate. `context_id` names what is being shown —
+    /// a playlist's source id, a library section — which both enables the
+    /// sortable headers, keyed on that name, and decides which contexts let a
+    /// row start playback. `None` keeps plain labels.
     ///
     /// Pages call this from `render`, so the early return below is what keeps
     /// the notify cycle finite: callers must pass a stored `Arc` clone, not a
@@ -67,22 +69,22 @@ impl TrackList {
         &mut self,
         id: impl Into<ElementId>,
         listed: Arc<[model::ListedTrack]>,
-        sort_key: Option<&str>,
+        context_id: Option<&str>,
         context_kind: ContextKind,
         cx: &mut Context<Self>,
     ) {
         let id = Some(id.into());
-        let sort_key = sort_key.map(str::to_owned);
-        if self.id == id && self.sort_key == sort_key && Arc::ptr_eq(&self.listed, &listed) {
+        let context_id = context_id.map(str::to_owned);
+        if self.id == id && self.context_id == context_id && Arc::ptr_eq(&self.listed, &listed) {
             return;
         }
-        if self.sort_key != sort_key {
+        if self.context_id != context_id {
             // A different context took over the list; restore whatever the
             // listener last chose for it. Storage trouble degrades silently
             // to the default order rather than blocking the page.
-            self.sort_key = sort_key;
+            self.context_id = context_id;
             self.sort = self
-                .sort_key
+                .context_id
                 .as_deref()
                 .and_then(|key| services::AppServices::list_sort(key, cx));
         }
@@ -112,7 +114,7 @@ impl TrackList {
 
     /// Moves `column`'s header to its next state and remembers the choice.
     fn toggle_sort(&mut self, column: model::ListSortColumn, cx: &mut Context<Self>) {
-        let Some(key) = self.sort_key.clone() else {
+        let Some(key) = self.context_id.clone() else {
             return;
         };
         self.sort = model::ListSort::cycle(self.sort, column);
@@ -181,7 +183,7 @@ impl TrackList {
             this.menu_open = (!menu_open).then(|| menu_key.clone());
             cx.notify();
         }));
-        if !self.sort_key.as_deref().is_some_and(dj::row_play_hidden) {
+        if !self.context_id.as_deref().is_some_and(dj::row_play_hidden) {
             row = row.on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)));
         }
         if let Some(added_at) = entry.added_at {
@@ -366,8 +368,8 @@ impl Render for TrackList {
         let mut columns = track_table_columns(f32::from(window.viewport_size().width));
         // A context without dates never shows the column, however wide the
         // window: albums and search results have nothing to put in it.
-        columns.date_added &= self.sort_key.is_some();
-        let sortable = self.sort_key.is_some();
+        columns.date_added &= self.context_id.is_some();
+        let sortable = self.context_id.is_some();
         // A list whose context does not sort renders inert labels even if a
         // stale sort survived in memory; the two never combine.
         let active_sort = sortable.then_some(self.sort).flatten();

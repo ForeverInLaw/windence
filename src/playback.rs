@@ -9,6 +9,7 @@ use librespot::{
     metadata::Metadata,
     oauth::OAuthClientBuilder,
     playback::{
+        SAMPLE_RATE,
         config::{AudioFormat, PlayerConfig, VolumeCtrl},
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
@@ -305,7 +306,12 @@ impl Playback {
             .spclient()
             .get_next_page(url)
             .await
-            .context("Spotify DJ session endpoint failed")?;
+            .map_err(|error| match dj::refusal(error.kind) {
+                // Spotify does not offer the station to this account or in
+                // this region — a fact, not a transport failure to retry.
+                true => anyhow!("DJ X is not available on this account"),
+                false => anyhow::Error::new(error).context("Spotify DJ session endpoint failed"),
+            })?;
         let value =
             serde_json::from_slice(&body).context("Spotify DJ session returned invalid JSON")?;
         Ok(dj::session_page(&value))
@@ -340,7 +346,7 @@ impl Playback {
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Client-Token", client_token)
             .header("Content-Type", "application/x-protobuf")
-            .body(dj::tts_request(line))
+            .body(dj::tts_request(line, SAMPLE_RATE))
             .send()
             .await
             .context("Spotify narration synthesis failed")?;

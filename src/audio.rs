@@ -135,41 +135,15 @@ impl Device {
 
 impl Sink for LowLatencySdlSink {
     fn start(&mut self) -> SinkResult<()> {
-        self.device.each(
-            |queue| {
-                queue.clear();
-                queue.resume();
-            },
-            |queue| {
-                queue.clear();
-                queue.resume();
-            },
-            |queue| {
-                queue.clear();
-                queue.resume();
-            },
-        )
+        self.device.restart()
     }
 
     fn stop(&mut self) -> SinkResult<()> {
-        // A skip lands here, and clearing takes the unfinished line with
-        // the unfinished song: nobody wants the DJ talking over the next
-        // choice.
+        // Whatever of a line is still queued goes with the song it
+        // belonged to. A line already handed over but not yet queued is
+        // not withdrawn — it is spoken before the next song instead.
         self.speaking_until = Instant::now();
-        let _ = self.device.each(
-            |queue| {
-                queue.pause();
-                queue.clear();
-            },
-            |queue| {
-                queue.pause();
-                queue.clear();
-            },
-            |queue| {
-                queue.pause();
-                queue.clear();
-            },
-        );
+        self.device.silence();
         Ok(())
     }
 
@@ -226,22 +200,44 @@ impl LowLatencySdlSink {
 }
 
 impl Device {
-    /// Applies whichever of the three sample-type actions fits the open
-    /// device, so callers state the action once per type instead of
-    /// matching the enum themselves.
-    fn each(
-        &self,
-        f32_action: impl FnOnce(&AudioQueue<f32>),
-        s32_action: impl FnOnce(&AudioQueue<i32>),
-        s16_action: impl FnOnce(&AudioQueue<i16>),
-    ) -> SinkResult<()> {
+    /// Empties the device and starts it playing, for a fresh run of audio.
+    fn restart(&self) -> SinkResult<()> {
         match self {
-            Self::F32(queue) => f32_action(queue),
-            Self::S32(queue) => s32_action(queue),
-            Self::S16(queue) => s16_action(queue),
+            Self::F32(queue) => {
+                queue.clear();
+                queue.resume();
+            }
+            Self::S32(queue) => {
+                queue.clear();
+                queue.resume();
+            }
+            Self::S16(queue) => {
+                queue.clear();
+                queue.resume();
+            }
             Self::Failed(error) => return Err(error.sink_error()),
         }
         Ok(())
+    }
+
+    /// Stops the device and drops whatever it had left to play. A device
+    /// that never opened is already silent.
+    fn silence(&self) {
+        match self {
+            Self::F32(queue) => {
+                queue.pause();
+                queue.clear();
+            }
+            Self::S32(queue) => {
+                queue.pause();
+                queue.clear();
+            }
+            Self::S16(queue) => {
+                queue.pause();
+                queue.clear();
+            }
+            Self::Failed(_) => {}
+        }
     }
 }
 
@@ -281,9 +277,6 @@ mod tests {
     fn unsupported_audio_formats_return_sink_errors() {
         let device = Device::open(AudioFormat::F64);
 
-        assert!(matches!(
-            device.each(|_| {}, |_| {}, |_| {}),
-            Err(SinkError::InvalidParams(_))
-        ));
+        assert!(matches!(device.restart(), Err(SinkError::InvalidParams(_))));
     }
 }

@@ -67,7 +67,7 @@ impl LibrarySection {
 
     /// Which lists remember their sort: Spotify's own collections. Local
     /// slices (favorites, history) keep plain headers.
-    fn sort_key(self) -> Option<&'static str> {
+    fn context_id(self) -> Option<&'static str> {
         match self {
             Self::LikedSongs => Some(LIKED_SORT_KEY),
             Self::Favorites | Self::Recent => None,
@@ -151,7 +151,7 @@ impl Render for LibraryTracksPage {
                 list.show(
                     section.list_id(),
                     tracks,
-                    section.sort_key(),
+                    section.context_id(),
                     ContextKind::Collection,
                     cx,
                 )

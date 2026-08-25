@@ -85,12 +85,9 @@ fn to_playback_stereo(samples: &[f32], channels: usize, rate: u32) -> Result<Vec
             .flat_map(|sample| std::iter::repeat_n(f64::from(*sample), wanted))
             .collect()),
         found if found == wanted => Ok(samples.iter().map(|sample| f64::from(*sample)).collect()),
-        // More channels than the device takes: keep the leading ones, in
-        // order, so a stereo pair survives intact.
-        found => Ok(samples
-            .chunks(found)
-            .flat_map(|frame| frame.iter().take(wanted).map(|sample| f64::from(*sample)))
-            .collect()),
+        found => Err(anyhow!(
+            "narration audio has {found} channels, but playback takes {wanted}"
+        )),
     }
 }
 
@@ -112,5 +109,6 @@ mod tests {
         );
         assert!(to_playback_stereo(&[0.25], 1, SAMPLE_RATE / 2).is_err());
         assert!(to_playback_stereo(&[], 0, SAMPLE_RATE).is_err());
+        assert!(to_playback_stereo(&[0.25, -0.5, 0.75], 3, SAMPLE_RATE).is_err());
     }
 }
