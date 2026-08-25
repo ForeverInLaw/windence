@@ -149,7 +149,6 @@ pub(super) struct PlaylistPage {
     loaded: bool,
     /// The DJ lineup is session-bound on Spotify's side and cannot be
     /// fetched (ADR 0004) — its own empty state, not a load error.
-    unavailable: bool,
     error: Option<String>,
     request: Option<gpui::Task<()>>,
     library: Entity<library::Library>,
@@ -157,6 +156,9 @@ pub(super) struct PlaylistPage {
     image_cache: Entity<image_cache::BoundedImageCache>,
     track_list: Entity<TrackList>,
     _list_subscription: Subscription,
+    /// The page mirrors the live DJ queue out of the player entity, so it
+    /// re-renders whenever the player's context moves.
+    _player_subscription: Subscription,
 }
 
 impl EventEmitter<PageEvent> for PlaylistPage {}
@@ -164,18 +166,21 @@ impl EventEmitter<PageEvent> for PlaylistPage {}
 impl PlaylistPage {
     pub(super) fn new(backend: BackendHandle, cx: &mut Context<Self>) -> Self {
         let track_list = cx.new(|cx| TrackList::new(cx));
+        let player = services::AppServices::player(cx);
+        let player_subscription = cx.observe(&player, |_, _, cx| cx.notify());
         Self {
             backend,
             selected: None,
             tracks: Arc::default(),
             loaded: false,
-            unavailable: false,
+
             error: None,
             request: None,
             library: services::AppServices::library(cx),
-            player: services::AppServices::player(cx),
+            player,
             image_cache: services::AppServices::image_cache(cx),
             _list_subscription: page::forward(&track_list, cx),
+            _player_subscription: player_subscription,
             track_list,
         }
     }
@@ -219,8 +224,15 @@ impl PlaylistPage {
         self.selected = Some(playlist.clone());
         self.tracks = Arc::default();
         self.loaded = false;
-        self.unavailable = false;
         self.error = None;
+        // The DJ lineup is not a fetchable playlist: the page shows the
+        // live handover queue while a session plays in Cadence and a
+        // short how-to otherwise (ADR 0004). No request is made.
+        if dj::matches(&playlist.source_id) {
+            self.request = None;
+            cx.notify();
+            return;
+        }
         let reply = request(&self.backend, |respond| BackendCommand::LoadPlaylist {
             playlist,
             respond,
@@ -242,11 +254,6 @@ impl PlaylistPage {
                         page.error = None;
                         cx.emit(PageEvent::Loaded);
                     }
-                    Ok(PlaylistContents::NotOffered) => {
-                        // A Spotify restriction gets its own state and no
-                        // error banner: it is not a failure.
-                        page.unavailable = true;
-                    }
                     Err(error) => {
                         page.error = Some(error.clone());
                         cx.emit(PageEvent::Failed(error));
@@ -263,7 +270,7 @@ impl PlaylistPage {
         self.selected = None;
         self.tracks = Arc::default();
         self.loaded = false;
-        self.unavailable = false;
+
         self.error = None;
         cx.notify();
     }
@@ -730,11 +737,17 @@ impl Render for PlaylistPage {
             .map(|playlist| playlist.source_id.clone())
             .unwrap_or_default();
         let is_dj = dj::matches(&source_id);
+        let live_dj = is_dj && self.player.read(cx).context_source() == Some(dj::SOURCE_ID);
         let (name, detail) = match self.selected.as_ref() {
             None => ("Playlist".to_owned(), "Spotify playlist".to_owned()),
-            Some(playlist) if is_dj && !loaded => {
-                (playlist.name.clone(), "Spotify playlist".to_owned())
-            }
+            Some(playlist) if is_dj => (
+                playlist.name.clone(),
+                if live_dj {
+                    "Spotify live session · on air".to_owned()
+                } else {
+                    "Spotify live session".to_owned()
+                },
+            ),
             Some(playlist) => (
                 playlist.name.clone(),
                 format!("Spotify playlist · {} tracks", playlist.track_count),
@@ -747,11 +760,82 @@ impl Render for PlaylistPage {
         let list = if let Some(error) = self.error.as_deref() {
             components::empty_state(palette, format!("Unable to load playlist: {error}"))
                 .into_any_element()
-        } else if self.unavailable {
+        } else if live_dj {
+            // The live handover queue: what the DJ is playing now and what
+            // it has lined up — the same data the player bar mirrors.
+            let player = self.player.read(cx);
+            let mut live = div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .p(px(24.))
+                .rounded(px(20.))
+                .border_1()
+                .border_color(rgb(palette.border));
+            if let Some(current) = player.now_playing() {
+                live = live
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(palette.text_muted))
+                            .child("On air"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .text_color(rgb(palette.text))
+                                    .child(current.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(palette.text_muted))
+                                    .child(current.artist.clone()),
+                            ),
+                    );
+            }
+            let queue = player.queue();
+            if !queue.is_empty() {
+                let mut rows = div().flex().flex_col().mt(px(8.)).child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.text_muted))
+                        .child("Up next"),
+                );
+                for track in queue.iter() {
+                    rows = rows.child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .py(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .text_color(rgb(palette.text))
+                                    .child(track.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(palette.text_muted))
+                                    .child(track.artist.clone()),
+                            ),
+                    );
+                }
+                live = live.child(rows);
+            }
+            live.into_any_element()
+        } else if is_dj {
             components::empty_state(
                 palette,
-                "DJ X plays only inside Spotify's own live sessions, so there is no \
-                 lineup Cadence can fetch yet",
+                "DJ X plays inside Spotify's own live session, so it cannot be \
+                 started from Cadence. Open Spotify on your phone, start DJ X, \
+                 then connect it to Cadence — the live queue appears here.",
             )
             .into_any_element()
         } else if let Some(playlist) = self.selected.as_ref().filter(|_| !tracks.is_empty()) {
@@ -801,15 +885,24 @@ impl Render for PlaylistPage {
                                     .flex()
                                     .gap(px(8.))
                                     .mt(px(8.))
-                                    .child(
-                                        components::pill(palette, "playlist-play", "Play", true)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.play(cx);
-                                            })),
-                                    )
-                                    // DJ X is curated by Spotify and already
-                                    // has a permanent sidebar row: its page
-                                    // offers no shuffle-play and no pin.
+                                    // DJ X has no play action: the page
+                                    // mirrors a live session, it does not
+                                    // start one.
+                                    .when(!is_dj, |actions| {
+                                        actions.child(
+                                            components::pill(
+                                                palette,
+                                                "playlist-play",
+                                                "Play",
+                                                true,
+                                            )
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.play(cx);
+                                                }),
+                                            ),
+                                        )
+                                    })
                                     .when(!dj::shuffle_hidden(&source_id), |actions| {
                                         actions.child(
                                             components::icon_button(

@@ -126,11 +126,10 @@ pub struct Playback {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
     session: Session,
-    /// Delivers lineups materialized by live DJ sessions (ADR 0004): the
-    /// background service sends one per accepted handover.
-    pub(crate) dj_lineups: async_chan::Receiver<dj::Lineup>,
     /// Delivers what the handover service started playing, so the player
-    /// bar adopts the DJ context like any other play request.
+    /// bar adopts the DJ context like any other play request. The same
+    /// channel is the service's liveness tie: when playback is dropped,
+    /// sends fail and the service stops.
     pub(crate) dj_now_playing: async_chan::Receiver<dj::DjNowPlaying>,
     /// Carries transport commands into the live handover while it owns
     /// the player; ignored by the service otherwise.
@@ -266,14 +265,12 @@ impl Playback {
         let player = Player::new(player_config, session.clone(), volume, move || {
             low_latency_sdl_sink(None, AudioFormat::default())
         });
-        let (dj_sender, dj_lineups) = async_chan::unbounded();
         let (dj_notice_sender, dj_now_playing) = async_chan::unbounded();
         let (dj_control_sender, dj_controls) = async_chan::unbounded();
         let (dj_active_sender, dj_active) = tokio::sync::watch::channel(false);
         tokio::spawn(run_dj_service(
             session.clone(),
             player.clone(),
-            dj_sender,
             dj_notice_sender,
             dj_controls,
             dj_active_sender,
@@ -282,7 +279,6 @@ impl Playback {
             player,
             mixer,
             session,
-            dj_lineups,
             dj_now_playing,
             dj_controls: dj_control_sender,
             dj_active,
@@ -344,17 +340,6 @@ impl Playback {
         extract_track_uris(&response).context("Spotify track radio returned invalid JSON")
     }
 
-    /// Returns the freshest DJ lineup the handover service has received, if
-    /// any. The lineup is materialized by a live session (ADR 0004): until a
-    /// cast happens there is nothing to show, and the honest empty state
-    /// covers that case.
-    pub fn dj_lineup(&self) -> dj::Lineup {
-        match self.dj_lineups.try_recv() {
-            Ok(lineup) => lineup,
-            Err(_) => dj::Lineup::NotOffered,
-        }
-    }
-
     /// Loads a track by uri straight into the player: how the service starts
     /// playback for an accepted DJ handover without round-tripping through
     /// the app layer.
@@ -375,7 +360,6 @@ struct DjService<'a> {
     session: &'a Session,
     player: &'a Arc<Player>,
     device_info: &'a DeviceInfo,
-    events: &'a async_chan::Sender<dj::Lineup>,
     notices: &'a async_chan::Sender<dj::DjNowPlaying>,
 }
 
@@ -383,16 +367,17 @@ const DJ_DEALER_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Registers Cadence as a `CONNECT_STATE` device on the live session and
 /// watches dealer commands for DJ handovers (ADR 0004). A handover carries
-/// the session-bound lexicon url; fetching it yields the materialized lineup,
-/// which is sent to [`Playback::dj_lineup`] consumers while the first track
-/// loads into the player — completing the cast handshake with real audio.
+/// the session-bound lexicon url; fetching it yields the materialized
+/// queue that drives playback, while the first track loads into the
+/// player — completing the cast handshake with real audio. The notice
+/// channel doubles as the service's liveness tie: when the app drops
+/// playback, sends fail and the task stops.
 ///
 /// The task exits when Spotify closes the dealer socket, which happens as
 /// soon as the same device id reconnects elsewhere in the app.
 async fn run_dj_service(
     session: Session,
     player: Arc<Player>,
-    events: async_chan::Sender<dj::Lineup>,
     notices: async_chan::Sender<dj::DjNowPlaying>,
     controls: async_chan::Receiver<dj::DjControl>,
     dj_active: tokio::sync::watch::Sender<bool>,
@@ -533,7 +518,6 @@ async fn run_dj_service(
         session: &session,
         player: &player,
         device_info: &device_info,
-        events: &events,
         notices: &notices,
     };
     let mut state_ticker = tokio::time::interval(Duration::from_secs(5));
@@ -1282,14 +1266,11 @@ async fn process_dj_transfer(
         log::warn!("dj service: none of the {} tracks resolved", uris.len());
         return Some(());
     }
-    let playlist = dj::refreshed_playlist(uris.len() as u32, None);
-    if service
-        .events
-        .send(dj::Lineup::Fresh(playlist, listed.clone()))
-        .await
-        .is_err()
-    {
-        log::info!("dj service: nobody is listening for lineups; stopping");
+    // Liveness tie: the notice channel is the service's connection to the
+    // app. When playback is dropped its receiver goes with it, sends fail,
+    // and the service stops instead of publishing into the void.
+    if service.notices.is_closed() {
+        log::info!("dj service: nobody is listening for playback notices; stopping");
         return None;
     }
 

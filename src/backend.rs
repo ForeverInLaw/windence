@@ -246,22 +246,16 @@ impl BlockingStore {
 /// Where a catalog request sends its answer. Dropping the receiving half
 /// cancels the request: the reply simply goes nowhere.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T>>;
-
-/// What loading a playlist delivered. Transport failures travel as the
-/// reply channel's own error; these variants are the successful and
-/// "Spotify refuses" outcomes.
 #[derive(Debug)]
+/// The payload of a catalog page load.
 pub enum PlaylistContents {
     Loaded {
         /// A refreshed playlist object when the load learned something the
-        /// page could not know up front (DJ X's real count and artwork);
-        /// pages keep their own copy otherwise.
+        /// page could not know up front; pages keep their own copy
+        /// otherwise.
         playlist: Option<Playlist>,
         tracks: Vec<ListedTrack>,
     },
-    /// Spotify keeps this playlist outside every fetchable channel. Only
-    /// the DJ lineup hits this today (see docs/adr/0004).
-    NotOffered,
 }
 
 /// Tracks and playlists, as returned by search.
@@ -435,11 +429,11 @@ pub enum BackendEvent {
         /// Which upcoming tracks are Smart Shuffle injections, aligned with
         /// `next`: the queue UI marks them with a distinct icon.
         injected: Vec<bool>,
+        /// The context's source id when the event knows it. The DJ
+        /// handover service stamps its notices with the DJ playlist id so
+        /// the DJ page can tell a live session from every other context.
+        source: Option<String>,
     },
-    /// The player-bar shuffle toggle's value, whether it can act at all
-    /// (a live, non-radio context), and whether its third state — Smart
-    /// Shuffle — may act on this context. Sent whenever the queue's shuffle
-    /// state changes or a queue is first adopted.
     ShuffleChanged {
         mode: ShuffleMode,
         supported: bool,
@@ -1081,16 +1075,8 @@ impl Worker {
                 Ok(())
             }
             BackendCommand::LoadPlaylist { playlist, respond } => {
-                if dj::matches(&playlist.source_id) {
-                    // The Web API 404s Spotify-owned playlists for
-                    // development-mode apps; the lineup rides the playback
-                    // session's internal protocol instead (ADR 0004).
-                    self.catalog
-                        .dj_lineup(self.connection.player.clone(), respond);
-                } else {
-                    self.catalog
-                        .playlist(self.spotify.clone(), playlist, respond);
-                }
+                self.catalog
+                    .playlist(self.spotify.clone(), playlist, respond);
                 Ok(())
             }
             BackendCommand::LoadArtist { source_id, respond } => {
@@ -2603,26 +2589,6 @@ impl CatalogFetches {
         );
     }
 
-    /// Resolves the DJ lineup through the connected playback session.
-    fn dj_lineup(&mut self, player: Option<Playback>, respond: Reply<PlaylistContents>) {
-        Self::start(
-            &mut self.playlist,
-            respond,
-            "Spotify DJ lineup request",
-            async move {
-                let player =
-                    player.ok_or_else(|| anyhow!("Spotify playback is not connected yet"))?;
-                Ok(match player.dj_lineup() {
-                    dj::Lineup::NotOffered => PlaylistContents::NotOffered,
-                    dj::Lineup::Fresh(playlist, tracks) => PlaylistContents::Loaded {
-                        playlist: Some(playlist),
-                        tracks,
-                    },
-                })
-            },
-        );
-    }
-
     fn artist(&mut self, spotify: Spotify, source_id: String, respond: Reply<ArtistDetails>) {
         Self::start(
             &mut self.artist,
@@ -3086,6 +3052,9 @@ fn observe_playback(
                             current: notice.current,
                             next: notice.next,
                             injected,
+                            // Every notice on this stream is the DJ
+                            // handover service speaking.
+                            source: Some(dj::SOURCE_ID.to_owned()),
                         })
                     }
                     Err(_) => break,
@@ -3264,6 +3233,7 @@ fn send_playback_context(
             current: current.clone(),
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
             injected: injected_flags(shuffle, index, tracks.len()),
+            source: None,
         });
     }
 }

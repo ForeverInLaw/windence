@@ -23,6 +23,10 @@ pub(super) struct Player {
     /// The kind of context playback started from, kept so re-playing a
     /// queued track hands the backend the same kind again.
     context_kind: ContextKind,
+    /// The source id of the adopted context when the backend knows it.
+    /// Only the DJ handover service stamps one, so the DJ page can tell
+    /// its live session from every other context.
+    context_source: Option<String>,
     playing: bool,
     loading: bool,
     /// The shuffle toggle's value and whether it can act: a live,
@@ -52,6 +56,7 @@ impl Player {
             queue: Arc::default(),
             queue_injected: Arc::default(),
             context_kind: ContextKind::default(),
+            context_source: None,
             playing: false,
             loading: false,
             shuffle_mode: ShuffleMode::Off,
@@ -83,6 +88,11 @@ impl Player {
     /// The kind of the context playback started from.
     pub(super) fn context_kind(&self) -> ContextKind {
         self.context_kind
+    }
+
+    /// The source id of the adopted context, when the backend knows one.
+    pub(super) fn context_source(&self) -> Option<&str> {
+        self.context_source.as_deref()
     }
 
     pub(super) fn queue(&self) -> &Arc<[model::Track]> {
@@ -250,6 +260,8 @@ impl Player {
         cx: &mut Context<Self>,
     ) -> bool {
         self.context_kind = kind;
+        // An explicit context is never the DJ handover's live session.
+        self.context_source = None;
         let started = self.send(
             BackendCommand::PlayContext {
                 tracks,
@@ -378,7 +390,6 @@ impl Player {
             spotify_uri,
             position_ms,
         });
-        self.saved_position_ms = position_ms;
     }
 
     fn adopt_context(
@@ -386,7 +397,9 @@ impl Player {
         current: model::Track,
         next: Vec<model::Track>,
         injected: Vec<bool>,
+        source: Option<String>,
     ) {
+        self.context_source = source;
         self.context = std::iter::once(current.clone())
             .chain(next.iter().cloned())
             .collect::<Vec<_>>()
@@ -409,6 +422,7 @@ impl Player {
         self.context = Arc::default();
         self.queue = Arc::default();
         self.queue_injected = Arc::default();
+        self.context_source = None;
         self.playing = false;
         self.loading = false;
         self.shuffle_mode = ShuffleMode::Off;
@@ -520,7 +534,7 @@ impl Player {
                 injected,
                 position_ms,
             } => {
-                self.adopt_context(current, next, injected);
+                self.adopt_context(current, next, injected, None);
                 self.position_ms = position_ms;
                 self.saved_position_ms = position_ms;
                 self.playing = false;
@@ -530,11 +544,12 @@ impl Player {
                 current,
                 next,
                 injected,
+                source,
             } => {
                 let changed = self.now_playing.as_ref().is_none_or(|track| {
                     track.provider != current.provider || track.source_id != current.source_id
                 });
-                self.adopt_context(current, next, injected);
+                self.adopt_context(current, next, injected, source);
                 if changed {
                     self.loading = true;
                     self.position_ms = 0;

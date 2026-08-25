@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use librespot::core::error::ErrorKind;
 
-use crate::model::{ListedTrack, Playlist, Provider, Track};
+use crate::model::{Playlist, Provider, Track};
 
 /// What the handover service tells the app shell about live DJ playback,
 /// so the player bar adopts the context like any other play request.
@@ -35,17 +35,6 @@ pub(crate) enum DjControl {
     /// Regular playback took the player back; the handover state is stale
     /// and must be dropped, not advanced.
     StandDown,
-}
-
-/// What resolving the lineup delivered.
-#[derive(Debug)]
-pub enum Lineup {
-    /// The fresh lineup plus the refreshed entry the page header shows:
-    /// real track count and artwork, still named "DJ X".
-    Fresh(Playlist, Vec<ListedTrack>),
-    /// Spotify serves the lineup only inside its own live Connect sessions,
-    /// so no fetch can return it (see docs/adr/0004).
-    NotOffered,
 }
 
 /// The well-known ID of the Spotify-owned DJ playlist. Stable since 2023:
@@ -73,16 +62,6 @@ pub fn playlist() -> Playlist {
         owner: "Spotify".to_owned(),
         track_count: 0,
         artwork_url: None,
-    }
-}
-
-/// The entry as the page header shows it after a successful fetch: real
-/// track count and artwork, still named "DJ X" whatever the server calls it.
-pub fn refreshed_playlist(track_count: u32, artwork_url: Option<String>) -> Playlist {
-    Playlist {
-        track_count,
-        artwork_url,
-        ..playlist()
     }
 }
 
@@ -182,10 +161,7 @@ pub(crate) fn session_tracks(value: &serde_json::Value) -> Vec<SessionTrack> {
 mod tests {
     use librespot::core::error::ErrorKind;
 
-    use super::{
-        DISPLAY_NAME, SOURCE_ID, matches, pin_hidden, playlist, refreshed_playlist, refusal,
-        shuffle_hidden,
-    };
+    use super::{DISPLAY_NAME, SOURCE_ID, matches, pin_hidden, playlist, refusal, shuffle_hidden};
 
     #[test]
     fn only_the_hardcoded_identity_matches() {
@@ -213,17 +189,6 @@ mod tests {
         assert_eq!(entry.track_count, 0);
         assert_eq!(entry.artwork_url, None);
         assert_eq!(entry.owner, "Spotify");
-    }
-
-    #[test]
-    fn refresh_fills_counts_and_artwork_but_never_the_server_name() {
-        let entry = refreshed_playlist(31, Some("https://i.scdn.co/image/abc".to_owned()));
-        assert_eq!(entry.name, DISPLAY_NAME);
-        assert_eq!(entry.track_count, 31);
-        assert_eq!(
-            entry.artwork_url.as_deref(),
-            Some("https://i.scdn.co/image/abc")
-        );
     }
 
     #[test]
