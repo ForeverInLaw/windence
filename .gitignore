@@ -4,3 +4,6 @@
 log.txt
 dj_app.log
 WATCHDOG.yml
+
+# Local scan session log.
+.aislop/

@@ -2,9 +2,16 @@
 
 ## Status
 
-This replaces the earlier revision of the same ADR, which assumed the DJ X
-lineup was fetchable through the playback session's playlist endpoint. That
-premise is falsified by direct experiment (below).
+Superseded by ADR 0005. Its central conclusion — that only a live Connect
+handover can serve the lineup — is wrong: it was drawn from probes of
+`context-resolve/v1`, and DJ X actually starts through a different service,
+`lexicon-session-provider`. What this ADR does establish stays true, and is
+why it is kept rather than deleted: the playlist endpoints really are empty
+for the DJ id, `context-resolve/v1` really is inert for it, and Connect
+registration really does not change either.
+
+It also replaced an earlier revision of itself, which assumed the lineup was
+fetchable through the playback session's playlist endpoint.
 
 ## Context
 
@@ -18,7 +25,8 @@ not data, it is a server-driven session.
 ## Evidence
 
 Live probes against a valid premium token whose official app plays DJ X fine.
-All runs are reproducible with `cargo run --example dj_probe`.
+The probe that produced these runs has been deleted along with the handover
+service it was written for; the table is its record.
 
 | Channel | Result |
 | --- | --- |
@@ -100,9 +108,8 @@ There is no fetchable DJ X channel, so the sidebar entry cannot open a lineup
 by fetching, and an empty fetch must never render as an account/region
 restriction. Until a live-session channel is proven end-to-end (handover from
 an official client delivering a resolvable context), Cadence does not offer
-DJ X. The spike's registration and resolution plumbing lives in
-`examples/dj_probe.rs` so the next attempt starts from evidence instead of
-repeating this investigation.
+DJ X. The spike's registration and resolution plumbing lived in a probe alongside
+this document, and went with the handover service.
 
 ## Consequences
 
