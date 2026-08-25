@@ -390,6 +390,7 @@ impl Player {
             spotify_uri,
             position_ms,
         });
+        self.saved_position_ms = position_ms;
     }
 
     fn adopt_context(
