@@ -22,6 +22,21 @@ pub(crate) struct DjNowPlaying {
     pub next: Vec<Track>,
 }
 
+/// A playback control routed into the live DJ handover. While a handover
+/// owns the player, the UI's transport commands and the sender's dealer
+/// commands both land here instead of the regular queue.
+#[derive(Debug)]
+pub(crate) enum DjControl {
+    Next,
+    Previous,
+    Pause,
+    Resume,
+    Seek(u32),
+    /// Regular playback took the player back; the handover state is stale
+    /// and must be dropped, not advanced.
+    StandDown,
+}
+
 /// What resolving the lineup delivered.
 #[derive(Debug)]
 pub enum Lineup {

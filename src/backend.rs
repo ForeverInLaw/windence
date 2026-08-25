@@ -1117,7 +1117,14 @@ impl Worker {
                 index,
                 shuffled,
                 kind,
-            } => self.play_context(tracks, index, shuffled, kind).await,
+            } => {
+                // An explicit context takes the player back from any live
+                // DJ handover.
+                if let Some(playback) = self.connection.player.as_ref() {
+                    playback.stand_down_dj();
+                }
+                self.play_context(tracks, index, shuffled, kind).await
+            }
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
@@ -1131,11 +1138,13 @@ impl Worker {
             BackendCommand::SetPlaylistPinned { playlist, pinned } => {
                 self.set_playlist_pinned(playlist, pinned).await
             }
-            BackendCommand::Resume => self.resume().await,
-            BackendCommand::Pause => self.pause().await,
-            BackendCommand::Next => self.next_track(true).await,
-            BackendCommand::Previous => self.previous_track().await,
-            BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
+            BackendCommand::Resume => self.transport(dj::DjControl::Resume).await,
+            BackendCommand::Pause => self.transport(dj::DjControl::Pause).await,
+            BackendCommand::Next => self.transport(dj::DjControl::Next).await,
+            BackendCommand::Previous => self.transport(dj::DjControl::Previous).await,
+            BackendCommand::Seek(position_ms) => {
+                self.transport(dj::DjControl::Seek(position_ms)).await
+            }
             BackendCommand::SavePlaybackPosition {
                 spotify_uri,
                 position_ms,
@@ -1154,6 +1163,25 @@ impl Worker {
             send_error(&self.events, error);
         }
         None
+    }
+
+    /// Routes a transport command: a live DJ handover owns the player, so
+    /// the command drives the handover queue; otherwise the regular one.
+    async fn transport(&mut self, control: dj::DjControl) -> Result<()> {
+        if let Some(playback) = self.connection.player.as_ref()
+            && playback.dj_owns_player()
+        {
+            let _ = playback.dj_controls.try_send(control);
+            return Ok(());
+        }
+        match control {
+            dj::DjControl::Next => self.next_track(true).await,
+            dj::DjControl::Previous => self.previous_track().await,
+            dj::DjControl::Pause => self.pause().await,
+            dj::DjControl::Resume => self.resume().await,
+            dj::DjControl::Seek(position_ms) => self.seek(position_ms).await,
+            dj::DjControl::StandDown => Ok(()),
+        }
     }
 
     async fn reset_spotify_configuration(&mut self, generation: u64) -> Result<()> {
@@ -1176,6 +1204,7 @@ impl Worker {
         }
         self.abort_account_work();
         self.stop_playback_session();
+
         self.playback_credentials_invalidated = true;
         self.configuration = None;
         if let Err(error) = self.spotify.logout().await {

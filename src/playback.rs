@@ -132,6 +132,12 @@ pub struct Playback {
     /// Delivers what the handover service started playing, so the player
     /// bar adopts the DJ context like any other play request.
     pub(crate) dj_now_playing: async_chan::Receiver<dj::DjNowPlaying>,
+    /// Carries transport commands into the live handover while it owns
+    /// the player; ignored by the service otherwise.
+    pub(crate) dj_controls: async_chan::Sender<dj::DjControl>,
+    /// Whether a handover currently owns the player. The backend consults
+    /// this before touching the regular queue.
+    dj_active: tokio::sync::watch::Receiver<bool>,
 }
 
 struct PlaybackOAuthToken {
@@ -262,11 +268,15 @@ impl Playback {
         });
         let (dj_sender, dj_lineups) = async_chan::unbounded();
         let (dj_notice_sender, dj_now_playing) = async_chan::unbounded();
+        let (dj_control_sender, dj_controls) = async_chan::unbounded();
+        let (dj_active_sender, dj_active) = tokio::sync::watch::channel(false);
         tokio::spawn(run_dj_service(
             session.clone(),
             player.clone(),
             dj_sender,
             dj_notice_sender,
+            dj_controls,
+            dj_active_sender,
         ));
         Ok(Self {
             player,
@@ -274,7 +284,20 @@ impl Playback {
             session,
             dj_lineups,
             dj_now_playing,
+            dj_controls: dj_control_sender,
+            dj_active,
         })
+    }
+
+    /// Whether a DJ handover currently owns the player.
+    pub(crate) fn dj_owns_player(&self) -> bool {
+        *self.dj_active.borrow()
+    }
+
+    /// Tells the handover service to drop its state: regular playback is
+    /// taking the player back.
+    pub(crate) fn stand_down_dj(&self) {
+        let _ = self.dj_controls.try_send(dj::DjControl::StandDown);
     }
 
     pub fn load(&self, spotify_uri: SpotifyUri, playing: bool, position_ms: u32) {
@@ -371,6 +394,8 @@ async fn run_dj_service(
     player: Arc<Player>,
     events: async_chan::Sender<dj::Lineup>,
     notices: async_chan::Sender<dj::DjNowPlaying>,
+    controls: async_chan::Receiver<dj::DjControl>,
+    dj_active: tokio::sync::watch::Sender<bool>,
 ) {
     // Subscriptions must exist before the socket comes up, or early messages
     // race them.
@@ -522,6 +547,7 @@ async fn run_dj_service(
                 // Ack before anything else so the sending client stops
                 // waiting in "connecting".
                 let _ = sender.send(Reply::Success);
+                let was_active = active.is_some();
                 if process_dj_command(
                     &service,
                     last_cluster_playback.as_ref(),
@@ -533,12 +559,27 @@ async fn run_dj_service(
                 {
                     break;
                 }
+                if !was_active && active.is_some() {
+                    let _ = dj_active.send(true);
+                }
+            }
+            Ok(control) = controls.recv() => {
+                let was_active = active.is_some();
+                let stood_down = matches!(control, dj::DjControl::StandDown);
+                process_dj_control(&service, &mut active, control).await;
+                if stood_down || (was_active && active.is_none()) {
+                    let _ = dj_active.send(false);
+                }
             }
             Some(Ok(bytes)) = clusters.next() => {
                 report_cluster(&bytes, &mut reported_devices, &mut last_cluster_playback);
             }
             Some(event) = player_events.recv() => {
+                let was_active = active.is_some();
                 handle_player_event(&service, &mut active, event).await;
+                if was_active && active.is_none() {
+                    let _ = dj_active.send(false);
+                }
             }
             // A real player's state keeps moving; a frozen one makes the
             // sending client reclaim the cast.
@@ -552,6 +593,7 @@ async fn run_dj_service(
             else => break,
         }
     }
+    let _ = dj_active.send(false);
     log::info!("dj service: stopped");
 }
 
@@ -850,6 +892,110 @@ async fn advance_dj_track(service: &DjService<'_>, active: &mut Option<DjActive>
 /// track the sender was on. Returns None when the service must stop
 /// (nobody consumes lineups anymore).
 async fn process_dj_command(
+    service: &DjService<'_>,
+    last_cluster: Option<&LastClusterPlayback>,
+    active: &mut Option<DjActive>,
+    request: Request,
+) -> Option<()> {
+    // Transport commands from the sender's device drive the handover the
+    // same way the UI's do; anything else only concerns the transfer path.
+    match request.command {
+        Command::Transfer(_) => process_dj_transfer(service, last_cluster, active, request).await,
+        Command::SkipNext(_) => {
+            process_dj_control(service, active, dj::DjControl::Next).await;
+            Some(())
+        }
+        Command::SkipPrev(_) => {
+            process_dj_control(service, active, dj::DjControl::Previous).await;
+            Some(())
+        }
+        Command::Pause(_) => {
+            process_dj_control(service, active, dj::DjControl::Pause).await;
+            Some(())
+        }
+        Command::Resume(_) | Command::Play(_) => {
+            process_dj_control(service, active, dj::DjControl::Resume).await;
+            Some(())
+        }
+        Command::SeekTo(seek) => {
+            process_dj_control(service, active, dj::DjControl::Seek(seek.position)).await;
+            Some(())
+        }
+        _ => Some(()),
+    }
+}
+
+/// Applies one transport control to the live handover; a no-op when no
+/// handover owns the player.
+async fn process_dj_control(
+    service: &DjService<'_>,
+    active: &mut Option<DjActive>,
+    control: dj::DjControl,
+) {
+    let Some(state) = active.as_mut() else {
+        return;
+    };
+    match control {
+        dj::DjControl::Next => {
+            advance_dj_track(service, active).await;
+            return;
+        }
+        dj::DjControl::Previous => {
+            // Like the reference spirc: a few seconds in, restart the
+            // track; otherwise step back through the queue.
+            if state.live_position_ms() > 3000 {
+                state.position_ms = 0;
+                state.position_at = Instant::now();
+                service.player.seek(0);
+            } else if state.track_index > 0 {
+                state.track_index -= 1;
+                let uri = state.tracks[state.track_index].uri.clone();
+                let Ok(uri) = SpotifyUri::from_uri(&uri) else {
+                    return;
+                };
+                service.player.load(uri, true, 0);
+                state.is_playing = true;
+                state.is_buffering = true;
+                state.position_ms = 0;
+                state.position_at = Instant::now();
+            } else {
+                state.position_ms = 0;
+                state.position_at = Instant::now();
+                service.player.seek(0);
+            }
+        }
+        dj::DjControl::Pause => {
+            // Capture the live position while still playing: after the
+            // flag flips, elapsed time stops accumulating.
+            let position_ms = state.live_position_ms();
+            service.player.pause();
+            state.is_playing = false;
+            state.is_buffering = false;
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+        }
+        dj::DjControl::Resume => {
+            service.player.play();
+            state.is_playing = true;
+            state.position_at = Instant::now();
+        }
+        dj::DjControl::Seek(position_ms) => {
+            service.player.seek(position_ms);
+            state.position_ms = position_ms;
+            state.position_at = Instant::now();
+        }
+        dj::DjControl::StandDown => {
+            *active = None;
+            return;
+        }
+    }
+    publish_active(service, state).await;
+}
+
+/// Resolves a DJ handover into a lineup and starts playback from the
+/// track the sender was on. Returns None when the service must stop
+/// (nobody consumes lineups anymore).
+async fn process_dj_transfer(
     service: &DjService<'_>,
     last_cluster: Option<&LastClusterPlayback>,
     active: &mut Option<DjActive>,
