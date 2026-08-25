@@ -11,6 +11,7 @@ use librespot::playback::{
     config::AudioFormat,
     convert::Converter,
     decoder::AudioPacket,
+    mixer::VolumeGetter,
 };
 use sdl2::audio::{AudioFormatNum, AudioQueue, AudioSpecDesired, AudioStatus};
 
@@ -35,13 +36,19 @@ impl NarrationClip {
 /// thread and its device handles cross none, so this is the one place
 /// audio leaves the process — spoken lines included, which is why the
 /// sink takes their inbox.
+///
+/// Song samples arrive already turned down by the player's own mixer.
+/// Spoken lines do not pass through it, so `song_volume` is that same
+/// mixer's getter and the sink applies it to them itself.
 pub fn low_latency_sdl_sink(
     format: AudioFormat,
     narration: async_chan::Receiver<NarrationClip>,
+    song_volume: Box<dyn VolumeGetter + Send>,
 ) -> Box<dyn Sink> {
     Box::new(LowLatencySdlSink {
         device: Device::open(format),
         narration,
+        song_volume,
         speaking_until: Instant::now(),
     })
 }
@@ -49,6 +56,9 @@ pub fn low_latency_sdl_sink(
 struct LowLatencySdlSink {
     device: Device,
     narration: async_chan::Receiver<NarrationClip>,
+    /// Reads the volume songs are already playing at. Asked per clip, not
+    /// once, so the voice follows the slider rather than the startup value.
+    song_volume: Box<dyn VolumeGetter + Send>,
     /// When the queued line finishes. Until then the device queue is
     /// allowed to run that much longer than usual, so song audio lines up
     /// behind the voice instead of the writer stalling on it.
@@ -150,8 +160,12 @@ impl Sink for LowLatencySdlSink {
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         // Anything the DJ has to say goes in first, so the song queues up
         // behind the voice and follows it without a gap.
-        while let Ok(clip) = self.narration.try_recv() {
+        while let Ok(mut clip) = self.narration.try_recv() {
             let spoken = clip.duration();
+            let attenuation = self.song_volume.attenuation_factor();
+            for sample in &mut clip.samples {
+                *sample *= attenuation;
+            }
             self.enqueue(&clip.samples, converter, Duration::ZERO)?;
             self.speaking_until = self.speaking_until.max(Instant::now()) + spoken;
         }

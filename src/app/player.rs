@@ -46,7 +46,9 @@ pub(super) struct Player {
 }
 
 impl Player {
-    pub(super) fn new(backend: BackendHandle) -> Self {
+    /// `volume` is what the listener last chose, so playback starts where
+    /// they left it rather than at the default.
+    pub(super) fn new(backend: BackendHandle, volume: f32) -> Self {
         Self {
             backend,
             now_playing: None,
@@ -64,8 +66,8 @@ impl Player {
             restore: None,
             position_ms: 0,
             saved_position_ms: 0,
-            volume: 0.72,
-            volume_before_mute: 0.72,
+            volume,
+            volume_before_mute: volume,
             volume_dragging: false,
             error: None,
         }
@@ -336,6 +338,7 @@ impl Player {
             self.volume = self.volume_before_mute.max(0.2);
         }
         self.deliver(BackendCommand::SetVolume(self.volume), cx);
+        self.save_volume(cx);
         cx.notify();
     }
 
@@ -367,8 +370,16 @@ impl Player {
     pub(super) fn end_volume_drag(&mut self, cx: &mut Context<Self>) {
         if self.volume_dragging {
             self.volume_dragging = false;
+            // The end of the drag is the choice; the pixels along the way
+            // are not worth a disk write each.
+            self.save_volume(cx);
             cx.notify();
         }
+    }
+
+    /// Remembers the volume for the next launch.
+    fn save_volume(&self, cx: &mut Context<Self>) {
+        services::AppServices::set_volume(self.volume, cx);
     }
 
     /// Writes the live position back so a restart resumes where the listener left off.

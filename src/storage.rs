@@ -27,11 +27,16 @@ pub enum ThemePreference {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The volume a listener who has never touched the slider gets.
+pub const DEFAULT_VOLUME: f32 = 0.72;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppPreferences {
     pub sidebar_collapsed: bool,
     pub theme: ThemePreference,
     pub autoplay: bool,
+    /// Playback volume, 0.0 to 1.0.
+    pub volume: f32,
 }
 
 impl Default for AppPreferences {
@@ -41,6 +46,7 @@ impl Default for AppPreferences {
             theme: ThemePreference::default(),
             // Autoplay is on unless the listener turned it off.
             autoplay: true,
+            volume: DEFAULT_VOLUME,
         }
     }
 }
@@ -335,11 +341,25 @@ impl Store {
             _ => ThemePreference::System,
         };
         let autoplay = self.preference("autoplay")?.as_deref() != Some("false");
+        // A value that is missing, unparsable or out of range is not
+        // trusted: the slider only ever spans 0.0 to 1.0.
+        let volume = self
+            .preference("volume")?
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|volume| volume.is_finite())
+            .map_or(DEFAULT_VOLUME, |volume| volume.clamp(0., 1.));
         Ok(AppPreferences {
             sidebar_collapsed,
             theme,
             autoplay,
+            volume,
         })
+    }
+
+    /// Remembers the volume across launches. Written when the listener
+    /// settles on one, not on every step of a drag.
+    pub fn set_volume(&mut self, volume: f32) -> Result<()> {
+        self.set_preference("volume", &volume.clamp(0., 1.).to_string())
     }
 
     pub fn set_autoplay(&mut self, autoplay: bool) -> Result<()> {
@@ -975,7 +995,7 @@ fn relocate_legacy_windows_database(data_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppPreferences, LibraryFingerprint, Store, ThemePreference,
+        AppPreferences, DEFAULT_VOLUME, LibraryFingerprint, Store, ThemePreference,
         relocate_legacy_windows_database,
     };
     use crate::model::{Playlist, Provider, QueueItem, Track};
@@ -1108,14 +1128,31 @@ mod tests {
         store.set_sidebar_collapsed(true).unwrap();
         store.set_theme_preference(ThemePreference::Dark).unwrap();
         store.set_autoplay(false).unwrap();
+        store.set_volume(0.4).unwrap();
         assert_eq!(
             store.preferences().unwrap(),
             AppPreferences {
                 sidebar_collapsed: true,
                 theme: ThemePreference::Dark,
                 autoplay: false,
+                volume: 0.4,
             }
         );
+    }
+
+    #[test]
+    fn stored_volume_is_clamped_and_falls_back_to_the_default() {
+        let mut store = Store::in_memory().unwrap();
+        assert_eq!(store.preferences().unwrap().volume, DEFAULT_VOLUME);
+
+        store.set_volume(1.8).unwrap();
+        assert_eq!(store.preferences().unwrap().volume, 1.);
+
+        store.set_preference("volume", "loud").unwrap();
+        assert_eq!(store.preferences().unwrap().volume, DEFAULT_VOLUME);
+
+        store.set_preference("volume", "-3").unwrap();
+        assert_eq!(store.preferences().unwrap().volume, 0.);
     }
 
     #[test]

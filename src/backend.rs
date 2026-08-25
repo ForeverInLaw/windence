@@ -2060,6 +2060,9 @@ impl Worker {
                     send_error(&self.events, error);
                 }
             }
+            // One stretch may not be the whole runway. Asking again now
+            // that this fetch has landed keeps to one request at a time.
+            self.maybe_extend_dj();
             return;
         }
         log::info!(
@@ -2739,10 +2742,13 @@ struct Autoplay {
     fruitless_seed: Option<String>,
 }
 
-/// How many songs ahead of the queue's end the next DJ stretch is
-/// fetched: far enough that the network has time, close enough that a
-/// listener who skips a lot still gets fresh songs.
-const DJ_TOP_UP_LEAD: usize = 3;
+/// How much runway the DJ station keeps: the next stretch is fetched once
+/// the queue runs to this many tracks or fewer. Tied to the size of a
+/// stretch, which the station decides and which runs to about five tracks
+/// — a lead shorter than that drains the queue to a handful before it
+/// jumps back up, which the station page shows as a list that shrinks and
+/// leaps. Retune the two together.
+const DJ_TOP_UP_LEAD: usize = 6;
 
 /// One stretch of the DJ station, resolved into what the queue plays and
 /// where the stretch after it lives.

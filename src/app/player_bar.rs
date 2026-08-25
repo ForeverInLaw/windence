@@ -7,6 +7,7 @@ use super::*;
 /// has no dispatch node, so it cannot mark this view dirty on its own.
 pub(super) struct PlayerBar {
     player: Entity<player::Player>,
+    library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     queue_open: bool,
 }
@@ -20,6 +21,7 @@ impl PlayerBar {
     pub(super) fn new(cx: &mut App) -> Self {
         Self {
             player: services::AppServices::player(cx),
+            library: services::AppServices::library(cx),
             image_cache: services::AppServices::image_cache(cx),
             queue_open: false,
         }
@@ -140,7 +142,8 @@ impl PlayerBar {
                                     .text_color(rgb(palette.text_muted))
                                     .child(artist),
                             ),
-                    ),
+                    )
+                    .child(self.favorite_toggle(palette, now_playing, cx)),
             )
             .child(
                 div()
@@ -346,6 +349,30 @@ impl PlayerBar {
                         )
                     }),
             )
+    }
+
+    /// The star for whatever is playing: the same control the track rows
+    /// carry, so the two read as one action. Inert with nothing playing.
+    fn favorite_toggle(
+        &self,
+        palette: CadencePalette,
+        track: Option<model::Track>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let favorite = track
+            .as_ref()
+            .is_some_and(|track| self.library.read(cx).is_favorite(track));
+        components::favorite_star(palette, "player-favorite", favorite)
+            .when(track.is_none(), |button| button.opacity(0.5))
+            .when_some(track, |button, track| {
+                button
+                    .hover(|style| style.bg(rgb(palette.control)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.library.update(cx, |library, cx| {
+                            library.set_favorite(track.clone(), !favorite, cx)
+                        });
+                    }))
+            })
     }
 }
 

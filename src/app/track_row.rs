@@ -6,7 +6,7 @@ use gpui::ClickEvent;
 const COLUMN_GUTTER: f32 = 16.;
 /// The fixed columns; Title and Album flex to share whatever remains.
 const INDEX_COLUMN_WIDTH: f32 = 44.;
-const STAR_COLUMN_WIDTH: f32 = 36.;
+const STAR_COLUMN_WIDTH: f32 = components::FAVORITE_STAR_SIZE;
 const TIME_COLUMN_WIDTH: f32 = 60.;
 const ACTIONS_COLUMN_WIDTH: f32 = 36.;
 /// Wide enough for "Sep 28, 2026"; never squeezed below its content.
@@ -15,6 +15,18 @@ const DATE_ADDED_COLUMN_WIDTH: f32 = 110.;
 /// own top corners as well: clipping is rectangular, so a square header
 /// would paint into the rounded corners it sits inside.
 pub(super) const LIST_CORNER_RADIUS: f32 = 20.;
+/// What a track list is built from, top to bottom: its frame's border,
+/// the column header, and one row per track.
+const LIST_BORDER_WIDTH: f32 = 1.;
+const HEADER_HEIGHT: f32 = 40.;
+const ROW_HEIGHT: f32 = 64.;
+
+/// How tall a track list is with `rows` rows in it. A list caps its height
+/// here, so a short one ends where its last row does instead of drawing
+/// its bottom border under a stretch of empty space.
+pub(super) fn list_height(rows: usize) -> f32 {
+    2. * LIST_BORDER_WIDTH + HEADER_HEIGHT + rows as f32 * ROW_HEIGHT
+}
 
 /// What a header click does. One handler per sortable column; a missing
 /// handler renders the label inert, as lists without sorting do.
@@ -83,7 +95,7 @@ pub(super) fn track_list_header(
             .map(|sort| sort.direction)
     };
     div()
-        .h(px(40.))
+        .h(px(HEADER_HEIGHT))
         .flex_none()
         .px(px(12.))
         .flex()
@@ -299,7 +311,7 @@ impl RenderOnce for TrackRow {
         components::button(palette, ("spotify-track", index))
             .group(row_group.clone())
             .w_full()
-            .h(px(64.))
+            .h(px(ROW_HEIGHT))
             .px(px(12.))
             .rounded(px(0.))
             .justify_start()
@@ -380,20 +392,8 @@ impl RenderOnce for TrackRow {
                 })
             })
             .child(
-                components::button(palette, ("spotify-favorite", index))
-                    .size(px(STAR_COLUMN_WIDTH))
-                    .flex_none()
-                    .rounded(px(18.))
+                components::favorite_star(palette, ("spotify-favorite", index), self.favorite)
                     .hover(|style| style.bg(rgb(palette.control)))
-                    .child(components::icon(
-                        if self.favorite { "star-fill" } else { "star" },
-                        15.,
-                        if self.favorite {
-                            palette.text_primary
-                        } else {
-                            palette.text
-                        },
-                    ))
                     .when_some(self.on_favorite, |button, handler| {
                         button.on_click(move |event, window, cx| {
                             cx.stop_propagation();
@@ -539,7 +539,7 @@ impl RenderOnce for PlaylistRow {
 
 #[cfg(test)]
 mod tests {
-    use super::format_added_at;
+    use super::{format_added_at, list_height};
     use chrono::{TimeZone, Utc};
 
     fn at(seconds: i64) -> chrono::DateTime<Utc> {
@@ -577,5 +577,11 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 8, 23, 12, 0, 0).unwrap();
         let added = Utc.with_ymd_and_hms(2026, 7, 18, 12, 0, 0).unwrap();
         assert_eq!(format_added_at(now, added), "Jul 18, 2026");
+    }
+
+    #[test]
+    fn list_height_covers_the_header_the_rows_and_the_frame() {
+        assert_eq!(list_height(0), 42.);
+        assert_eq!(list_height(3), 234.);
     }
 }

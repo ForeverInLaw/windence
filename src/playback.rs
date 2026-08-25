@@ -237,8 +237,13 @@ impl Playback {
             ..PlayerConfig::default()
         };
         let (narration_sender, narration) = async_chan::unbounded();
+        let sink_mixer = mixer.clone();
         let player = Player::new(player_config, session.clone(), volume, move || {
-            low_latency_sdl_sink(AudioFormat::default(), narration.clone())
+            low_latency_sdl_sink(
+                AudioFormat::default(),
+                narration.clone(),
+                sink_mixer.get_soft_volume(),
+            )
         });
         Ok(Self {
             player,

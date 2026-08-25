@@ -394,6 +394,9 @@ impl Render for TrackList {
             .id("track-list")
             .flex_1()
             .min_h_0()
+            // Grow to the rows, not past them: `flex_1` fills the space a
+            // long list needs, and this cap ends a short one at its last row.
+            .max_h(px(track_row::list_height(self.listed.len())))
             .flex()
             .flex_col()
             .rounded(px(track_row::LIST_CORNER_RADIUS))

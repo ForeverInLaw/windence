@@ -52,7 +52,7 @@ impl AppServices {
     ) -> BackendHandle {
         let (backend, events) = Backend::start();
         let handle = backend.handle();
-        let player = cx.new(|_| player::Player::new(handle.clone()));
+        let player = cx.new(|_| player::Player::new(handle.clone(), preferences.volume));
         let session = cx.new(|_| session::Session::new(handle.clone()));
         let library = cx.new(|_| library::Library::new(handle.clone()));
         let image_cache = image_cache::BoundedImageCache::new(cx);
@@ -200,6 +200,20 @@ impl AppServices {
             .store
             .as_mut()
             .map(|store| store.set_sidebar_collapsed(collapsed))
+    }
+
+    /// Persists the volume the listener settled on. Failures log and keep
+    /// playing at it: the memory is a convenience, not the volume itself.
+    pub(super) fn set_volume(volume: f32, cx: &mut App) {
+        let services = cx.global_mut::<Self>();
+        services.preferences.volume = volume;
+        if let Some(Err(error)) = services
+            .store
+            .as_mut()
+            .map(|store| store.set_volume(volume))
+        {
+            log::error!("could not save the volume: {error}");
+        }
     }
 
     pub(super) fn set_autoplay(autoplay: bool, cx: &mut App) -> Option<anyhow::Result<()>> {
