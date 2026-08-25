@@ -1,6 +1,10 @@
 use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use async_channel as async_chan;
@@ -17,6 +21,11 @@ use sdl2::audio::{AudioFormatNum, AudioQueue, AudioSpecDesired, AudioStatus};
 
 const QUEUE_TARGET: Duration = Duration::from_millis(150);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+/// How much of a spoken line is handed to the device at a time. Short
+/// enough that moving the volume slider is heard almost at once, because
+/// each piece is turned down as it goes; long enough that the device does
+/// not run dry between pieces.
+const NARRATION_CHUNK: Duration = Duration::from_millis(120);
 
 /// Something to say before the next song: already decoded, interleaved,
 /// and at the playback sample rate, because the audio thread must not be
@@ -25,11 +34,10 @@ pub struct NarrationClip {
     pub samples: Vec<f64>,
 }
 
-impl NarrationClip {
-    fn duration(&self) -> Duration {
-        let frames = self.samples.len() / usize::from(NUM_CHANNELS);
-        Duration::from_secs_f64(frames as f64 / f64::from(SAMPLE_RATE))
-    }
+/// How many samples of interleaved audio `span` covers.
+fn samples_in(span: Duration) -> usize {
+    let frames = span.as_secs_f64() * f64::from(SAMPLE_RATE);
+    (frames as usize).max(1) * usize::from(NUM_CHANNELS)
 }
 
 /// Opens the output device. SDL refuses to initialize from a second
@@ -39,30 +47,32 @@ impl NarrationClip {
 ///
 /// Song samples arrive already turned down by the player's own mixer.
 /// Spoken lines do not pass through it, so `song_volume` is that same
-/// mixer's getter and the sink applies it to them itself.
+/// mixer's getter and the sink applies it to them itself. `interrupted`
+/// is how the listener cuts a line short.
 pub fn low_latency_sdl_sink(
     format: AudioFormat,
     narration: async_chan::Receiver<NarrationClip>,
     song_volume: Box<dyn VolumeGetter + Send>,
+    interrupted: Arc<AtomicBool>,
 ) -> Box<dyn Sink> {
     Box::new(LowLatencySdlSink {
         device: Device::open(format),
         narration,
         song_volume,
-        speaking_until: Instant::now(),
+        interrupted,
     })
 }
 
 struct LowLatencySdlSink {
     device: Device,
     narration: async_chan::Receiver<NarrationClip>,
-    /// Reads the volume songs are already playing at. Asked per clip, not
-    /// once, so the voice follows the slider rather than the startup value.
+    /// Reads the volume songs are already playing at. Asked once per piece
+    /// of a line, so the voice follows the slider while it is speaking.
     song_volume: Box<dyn VolumeGetter + Send>,
-    /// When the queued line finishes. Until then the device queue is
-    /// allowed to run that much longer than usual, so song audio lines up
-    /// behind the voice instead of the writer stalling on it.
-    speaking_until: Instant,
+    /// Set when the listener skips, pauses or stops. A line is queued a
+    /// piece at a time, so this is what lets the rest of it be dropped
+    /// instead of played out first.
+    interrupted: Arc<AtomicBool>,
 }
 
 enum Device {
@@ -152,7 +162,6 @@ impl Sink for LowLatencySdlSink {
         // Whatever of a line is still queued goes with the song it
         // belonged to. A line already handed over but not yet queued is
         // not withdrawn — it is spoken before the next song instead.
-        self.speaking_until = Instant::now();
         self.device.silence();
         Ok(())
     }
@@ -160,50 +169,54 @@ impl Sink for LowLatencySdlSink {
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         // Anything the DJ has to say goes in first, so the song queues up
         // behind the voice and follows it without a gap.
-        while let Ok(mut clip) = self.narration.try_recv() {
-            let spoken = clip.duration();
-            let attenuation = self.song_volume.attenuation_factor();
-            for sample in &mut clip.samples {
-                *sample *= attenuation;
-            }
-            self.enqueue(&clip.samples, converter, Duration::ZERO)?;
-            self.speaking_until = self.speaking_until.max(Instant::now()) + spoken;
+        while let Ok(clip) = self.narration.try_recv() {
+            self.speak(&clip, converter)?;
         }
         let samples = packet
             .samples()
             .map_err(|error| SinkError::OnWrite(error.to_string()))?;
-        let spoken_left = self
-            .speaking_until
-            .saturating_duration_since(Instant::now());
-        self.enqueue(samples, converter, spoken_left)
+        self.enqueue(samples, converter)
     }
 }
 
 impl LowLatencySdlSink {
+    /// Speaks a line a piece at a time, and does not return until the line
+    /// is done, so the writer cannot slip song audio in front of the voice.
+    ///
+    /// Each piece is turned down by the volume as it stands right then,
+    /// which is what lets the slider reach a line already speaking. The
+    /// device holds only a piece or two, so a line the listener interrupts
+    /// stops being heard almost at once instead of playing itself out.
+    fn speak(&mut self, clip: &NarrationClip, converter: &mut Converter) -> SinkResult<()> {
+        for piece in clip.samples.chunks(samples_in(NARRATION_CHUNK)) {
+            if self.interrupted.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let attenuation = self.song_volume.attenuation_factor();
+            let turned_down: Vec<f64> = piece.iter().map(|sample| sample * attenuation).collect();
+            self.enqueue(&turned_down, converter)?;
+        }
+        Ok(())
+    }
+
     /// Queues samples for the device, first waiting for the queue to run
-    /// down to the usual few frames — plus however much of a spoken line
-    /// is still ahead of them, which is not a backlog to wait out.
-    fn enqueue(
-        &mut self,
-        samples: &[f64],
-        converter: &mut Converter,
-        allowance: Duration,
-    ) -> SinkResult<()> {
+    /// down to the usual few frames.
+    fn enqueue(&mut self, samples: &[f64], converter: &mut Converter) -> SinkResult<()> {
         match &self.device {
             Device::F32(queue) => {
-                drain_queue(queue, size_of::<f32>(), allowance)?;
+                drain_queue(queue, size_of::<f32>())?;
                 queue
                     .queue_audio(&converter.f64_to_f32(samples))
                     .map_err(SinkError::OnWrite)
             }
             Device::S32(queue) => {
-                drain_queue(queue, size_of::<i32>(), allowance)?;
+                drain_queue(queue, size_of::<i32>())?;
                 queue
                     .queue_audio(&converter.f64_to_s32(samples))
                     .map_err(SinkError::OnWrite)
             }
             Device::S16(queue) => {
-                drain_queue(queue, size_of::<i16>(), allowance)?;
+                drain_queue(queue, size_of::<i16>())?;
                 queue
                     .queue_audio(&converter.f64_to_s16(samples))
                     .map_err(SinkError::OnWrite)
@@ -255,15 +268,11 @@ impl Device {
     }
 }
 
-fn drain_queue<T: AudioFormatNum>(
-    queue: &AudioQueue<T>,
-    sample_size: usize,
-    allowance: Duration,
-) -> SinkResult<()> {
+fn drain_queue<T: AudioFormatNum>(queue: &AudioQueue<T>, sample_size: usize) -> SinkResult<()> {
     let target_bytes = u128::from(SAMPLE_RATE)
         * u128::from(NUM_CHANNELS)
         * sample_size as u128
-        * (QUEUE_TARGET + allowance).as_millis()
+        * QUEUE_TARGET.as_millis()
         / 1000;
     let target_bytes = u32::try_from(target_bytes).unwrap_or(u32::MAX);
     let deadline = std::time::Instant::now() + DRAIN_TIMEOUT;
@@ -292,5 +301,16 @@ mod tests {
         let device = Device::open(AudioFormat::F64);
 
         assert!(matches!(device.restart(), Err(SinkError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn a_piece_of_a_line_covers_its_span_on_every_channel() {
+        let channels = usize::from(NUM_CHANNELS);
+        let a_second = SAMPLE_RATE as usize * channels;
+
+        assert_eq!(samples_in(Duration::from_secs(1)), a_second);
+        assert_eq!(samples_in(Duration::from_millis(500)), a_second / 2);
+        // Never zero: chunking a line by nothing would not terminate.
+        assert_eq!(samples_in(Duration::ZERO), channels);
     }
 }

@@ -1121,9 +1121,13 @@ impl Worker {
             BackendCommand::Pause => self.pause().await,
             BackendCommand::Next => {
                 self.dj.skipped = true;
+                self.silence_narration();
                 self.next_track(true).await
             }
-            BackendCommand::Previous => self.previous_track().await,
+            BackendCommand::Previous => {
+                self.silence_narration();
+                self.previous_track().await
+            }
             BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
             BackendCommand::SavePlaybackPosition {
                 spotify_uri,
@@ -1587,6 +1591,15 @@ impl Worker {
     /// Moves to the next queue entry; `record_history` gates whether the
     /// entry being left counts as heard. Auto-advance paths pass `false`
     /// so tracks that never played a second are not logged as listened.
+    /// Cuts short whatever the DJ is saying. Skipping moves the player
+    /// without pausing or stopping it, so the voice would otherwise finish
+    /// the line over the song the listener asked for.
+    fn silence_narration(&self) {
+        if let Ok(player) = self.connected_player() {
+            player.silence_narration();
+        }
+    }
+
     async fn next_track(&mut self, record_history: bool) -> Result<()> {
         self.radio.cancel(&self.events);
         let Some(current) = self.queue.index else {

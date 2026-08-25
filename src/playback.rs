@@ -1,4 +1,11 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel as async_chan;
@@ -107,6 +114,10 @@ pub struct Playback {
     /// Lines waiting to be spoken. The output device only exists on the
     /// player's own thread, so everything audible reaches it this way.
     narration: async_chan::Sender<NarrationClip>,
+    /// Raised when the listener interrupts, so a line still being handed
+    /// to the device is dropped rather than played out first. Cleared by
+    /// the next line, which is a fresh intent to speak.
+    narration_interrupted: Arc<AtomicBool>,
     /// Narration synthesis answers with a redirect that must be read, not
     /// followed, so this client is configured differently from the
     /// session's own.
@@ -238,11 +249,14 @@ impl Playback {
         };
         let (narration_sender, narration) = async_chan::unbounded();
         let sink_mixer = mixer.clone();
+        let narration_interrupted = Arc::new(AtomicBool::new(false));
+        let sink_interrupted = narration_interrupted.clone();
         let player = Player::new(player_config, session.clone(), volume, move || {
             low_latency_sdl_sink(
                 AudioFormat::default(),
                 narration.clone(),
                 sink_mixer.get_soft_volume(),
+                sink_interrupted.clone(),
             )
         });
         Ok(Self {
@@ -250,6 +264,7 @@ impl Playback {
             mixer,
             session,
             narration: narration_sender,
+            narration_interrupted,
             http: oauth2_reqwest::ClientBuilder::new()
                 .redirect(oauth2_reqwest::redirect::Policy::none())
                 .build()
@@ -262,14 +277,19 @@ impl Playback {
     }
 
     pub fn play(&self) {
+        // Carrying on lifts the silence a pause put on the DJ, so a line
+        // queued just before it is still spoken.
+        self.narration_interrupted.store(false, Ordering::Relaxed);
         self.player.play();
     }
 
     pub fn pause(&self) {
+        self.silence_narration();
         self.player.pause();
     }
 
     pub fn seek(&self, position_ms: u32) {
+        self.silence_narration();
         self.player.seek(position_ms);
     }
 
@@ -279,6 +299,7 @@ impl Playback {
     }
 
     pub fn stop(&self) {
+        self.silence_narration();
         self.player.stop();
     }
 
@@ -381,7 +402,17 @@ impl Playback {
     /// the next song. Nothing waits on it: a line that cannot be queued is
     /// simply not spoken.
     pub(crate) fn speak(&self, clip: NarrationClip) {
+        // A line to say clears whatever interrupted the one before it.
+        self.narration_interrupted.store(false, Ordering::Relaxed);
         let _ = self.narration.try_send(clip);
+    }
+
+    /// Cuts a line short. The device is only ever a fraction of a second
+    /// ahead while speaking, so the voice stops about as fast as the music
+    /// does. Skipping is the caller that needs this: it moves the player
+    /// without pausing or stopping it.
+    pub(crate) fn silence_narration(&self) {
+        self.narration_interrupted.store(true, Ordering::Relaxed);
     }
 
     /// Resolves track uris into the tracks a list can show. DJ sessions
