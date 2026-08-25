@@ -168,7 +168,6 @@ impl Workspace {
     /// screen, so they have to come down with it or they reappear on return.
     pub(super) fn close_track_menus(&mut self, cx: &mut Context<Self>) {
         self.liked_songs.update(cx, |page, cx| page.close_menus(cx));
-        self.favorites.update(cx, |page, cx| page.close_menus(cx));
         self.recent.update(cx, |page, cx| page.close_menus(cx));
         self.search.update(cx, |page, cx| page.close_menus(cx));
         self.playlist.update(cx, |page, cx| page.close_menus(cx));

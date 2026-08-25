@@ -142,11 +142,11 @@ mod tests {
     fn reopening_settings_does_not_make_settings_its_own_way_back() {
         let mut router = Router::new();
 
-        router.navigate(Route::Favorites);
+        router.navigate(Route::LikedSongs);
         router.open_settings();
         router.open_settings();
 
-        assert_eq!(router.back_target(), Some(Route::Favorites));
+        assert_eq!(router.back_target(), Some(Route::LikedSongs));
     }
 
     #[test]

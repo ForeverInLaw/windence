@@ -6,7 +6,7 @@ use gpui::ClickEvent;
 const COLUMN_GUTTER: f32 = 16.;
 /// The fixed columns; Title and Album flex to share whatever remains.
 const INDEX_COLUMN_WIDTH: f32 = 44.;
-const STAR_COLUMN_WIDTH: f32 = components::FAVORITE_STAR_SIZE;
+const HEART_COLUMN_WIDTH: f32 = components::LIKED_HEART_SIZE;
 const TIME_COLUMN_WIDTH: f32 = 60.;
 const ACTIONS_COLUMN_WIDTH: f32 = 36.;
 /// Wide enough for "Sep 28, 2026"; never squeezed below its content.
@@ -147,12 +147,12 @@ pub(super) fn track_list_header(
         })
         .child(
             div()
-                .w(px(STAR_COLUMN_WIDTH))
+                .w(px(HEART_COLUMN_WIDTH))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(components::icon("star", 12., palette.text_muted)),
+                .child(components::icon("heart", 12., palette.text_muted)),
         )
         .child(
             div()
@@ -202,7 +202,7 @@ pub(super) type RowCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + '
 
 /// One track in a list.
 ///
-/// Stateless: the list that shows it decides whether it is current, favorited
+/// Stateless: the list that shows it decides whether it is current, liked
 /// or has its menu open, and supplies the behaviour as callbacks. The row never
 /// reaches for the player or the library itself.
 #[derive(IntoElement)]
@@ -218,12 +218,12 @@ pub(super) struct TrackRow {
     /// The preformatted "3 weeks ago" label, when the context dates tracks.
     added_label: Option<SharedString>,
     current: bool,
-    favorite: bool,
+    liked: bool,
     menu_open: bool,
     /// Rendered beside the actions button while the menu is open.
     menu: Option<AnyElement>,
     on_play: Option<RowCallback>,
-    on_favorite: Option<RowCallback>,
+    on_liked: Option<RowCallback>,
     on_toggle_menu: Option<RowCallback>,
 }
 
@@ -245,11 +245,11 @@ impl TrackRow {
             columns,
             added_label: None,
             current: false,
-            favorite: false,
+            liked: false,
             menu_open: false,
             menu: None,
             on_play: None,
-            on_favorite: None,
+            on_liked: None,
             on_toggle_menu: None,
         }
     }
@@ -266,8 +266,8 @@ impl TrackRow {
         self
     }
 
-    pub(super) fn favorite(mut self, favorite: bool) -> Self {
-        self.favorite = favorite;
+    pub(super) fn liked(mut self, liked: bool) -> Self {
+        self.liked = liked;
         self
     }
 
@@ -285,11 +285,11 @@ impl TrackRow {
         self
     }
 
-    pub(super) fn on_favorite(
+    pub(super) fn on_liked(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_favorite = Some(Box::new(handler));
+        self.on_liked = Some(Box::new(handler));
         self
     }
 
@@ -392,9 +392,9 @@ impl RenderOnce for TrackRow {
                 })
             })
             .child(
-                components::favorite_star(palette, ("spotify-favorite", index), self.favorite)
+                components::liked_heart(palette, ("spotify-liked", index), self.liked)
                     .hover(|style| style.bg(rgb(palette.control)))
-                    .when_some(self.on_favorite, |button, handler| {
+                    .when_some(self.on_liked, |button, handler| {
                         button.on_click(move |event, window, cx| {
                             cx.stop_propagation();
                             handler(event, window, cx);

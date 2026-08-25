@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     ops::Range,
     rc::Rc,
     sync::Arc,
@@ -173,7 +173,7 @@ const COMPACT_BREAKPOINT: f32 = 960.;
 const COMPACT_PLAYER_BREAKPOINT: f32 = 1136.;
 /// Track-table breakpoints. Below the first the date-added column folds
 /// away; below the second the album column follows, leaving `#`, title,
-/// and time. The star and row actions survive every width.
+/// and time. The heart and row actions survive every width.
 const TRACK_DATE_ADDED_BREAKPOINT: f32 = 1100.;
 const TRACK_ALBUM_BREAKPOINT: f32 = 880.;
 
@@ -298,7 +298,6 @@ fn uses_compact_player_layout(window_width: f32) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
     LikedSongs,
-    Favorites,
     Recent,
     Search,
     Playlists,
@@ -368,17 +367,6 @@ fn catalog_data_is_fresh(loaded_at: Option<SystemTime>) -> bool {
     })
 }
 
-fn index_favorites(favorites: &[model::Track]) -> HashMap<model::Provider, HashSet<String>> {
-    let mut index: HashMap<model::Provider, HashSet<String>> = HashMap::new();
-    for track in favorites {
-        index
-            .entry(track.provider)
-            .or_default()
-            .insert(track.source_id.clone());
-    }
-    index
-}
-
 async fn receive_backend_event_batch(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<BackendEvent>,
 ) -> Option<Vec<BackendEvent>> {
@@ -421,26 +409,10 @@ mod workspace;
 #[cfg(test)]
 mod event_bridge_tests {
     use super::{
-        BackendEvent, CATALOG_STALE_TIME, catalog_data_is_fresh, index_favorites, model,
-        next_request_id, receive_backend_event_batch,
+        BackendEvent, CATALOG_STALE_TIME, catalog_data_is_fresh, next_request_id,
+        receive_backend_event_batch,
     };
     use std::time::{Duration, SystemTime};
-
-    fn track(provider: model::Provider, source_id: &str) -> model::Track {
-        model::Track {
-            provider,
-            source_id: source_id.to_owned(),
-            spotify_uri: None,
-            isrc: None,
-            title: source_id.to_owned(),
-            artist: "Artist".to_owned(),
-            artists: Vec::new(),
-            album: "Album".to_owned(),
-            album_ref: None,
-            duration_ms: 1,
-            artwork_url: None,
-        }
-    }
 
     #[tokio::test]
     async fn batches_events_that_are_already_queued() {
@@ -482,18 +454,6 @@ mod event_bridge_tests {
         assert!(!catalog_data_is_fresh(Some(
             SystemTime::now() - CATALOG_STALE_TIME - Duration::from_secs(1)
         )));
-    }
-
-    #[test]
-    fn favorite_index_separates_providers_and_deduplicates_tracks() {
-        let spotify = track(model::Provider::Spotify, "same-id");
-        let tidal = track(model::Provider::Tidal, "same-id");
-
-        let index = index_favorites(&[spotify.clone(), spotify, tidal]);
-
-        assert_eq!(index[&model::Provider::Spotify].len(), 1);
-        assert!(index[&model::Provider::Spotify].contains("same-id"));
-        assert!(index[&model::Provider::Tidal].contains("same-id"));
     }
 }
 
@@ -575,7 +535,7 @@ mod tests {
         // Then the album column.
         let no_album = track_table_columns(879.);
         assert!(!no_album.album && !no_album.date_added);
-        // The minimal table keeps `#`, title, and time; star and actions
+        // The minimal table keeps `#`, title, and time; heart and actions
         // survive every width, so nothing further folds.
         assert_eq!(track_table_columns(500.), no_album);
     }
@@ -689,8 +649,6 @@ mod icon_tests {
         "skip-back",
         "skip-forward",
         "sparkles",
-        "star",
-        "star-fill",
         "sun",
         "sun-moon",
         "moon",

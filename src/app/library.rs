@@ -13,10 +13,11 @@ const REVALIDATION_DEBOUNCE: Duration = Duration::from_secs(30);
 pub(super) struct Library {
     backend: BackendHandle,
     liked_tracks: Arc<[model::ListedTrack]>,
+    /// The source ids in `liked_tracks`, so a row can ask whether its track
+    /// is liked without walking the collection.
+    liked_keys: HashSet<String>,
     playlists: Arc<[model::Playlist]>,
     loaded: bool,
-    favorites: Arc<[model::ListedTrack]>,
-    favorite_keys: HashMap<model::Provider, HashSet<String>>,
     pinned_playlists: Arc<[model::Playlist]>,
     recently_played: Arc<[model::ListedTrack]>,
     local_loaded: bool,
@@ -36,10 +37,9 @@ impl Library {
         Self {
             backend,
             liked_tracks: Arc::default(),
+            liked_keys: HashSet::new(),
             playlists: Arc::default(),
             loaded: false,
-            favorites: Arc::default(),
-            favorite_keys: HashMap::new(),
             pinned_playlists: Arc::default(),
             recently_played: Arc::default(),
             local_loaded: false,
@@ -75,7 +75,7 @@ impl Library {
                 library.reload = None;
                 match contents {
                     Ok(Ok(LibraryReload::Fresh((liked_tracks, playlists)))) => {
-                        library.liked_tracks = liked_tracks.into();
+                        library.set_liked_tracks(liked_tracks);
                         library.playlists = playlists.into();
                         library.loaded = true;
                         library.refreshed_at = Some(SystemTime::now());
@@ -114,10 +114,6 @@ impl Library {
         self.loaded
     }
 
-    pub(super) fn favorites(&self) -> &Arc<[model::ListedTrack]> {
-        &self.favorites
-    }
-
     pub(super) fn pinned_playlists(&self) -> &Arc<[model::Playlist]> {
         &self.pinned_playlists
     }
@@ -130,10 +126,21 @@ impl Library {
         self.local_loaded
     }
 
-    pub(super) fn is_favorite(&self, track: &model::Track) -> bool {
-        self.favorite_keys
-            .get(&track.provider)
-            .is_some_and(|ids| ids.contains(&track.source_id))
+    /// Whether the track is in the account's Spotify Liked Songs.
+    pub(super) fn is_liked(&self, track: &model::Track) -> bool {
+        track.provider == model::Provider::Spotify && self.liked_keys.contains(&track.source_id)
+    }
+
+    /// Takes a fresh Liked Songs collection, rebuilding the lookup with it.
+    /// Every path that replaces the collection goes through here, so the two
+    /// cannot disagree — including an optimistic change Spotify later
+    /// contradicts, which the next refresh simply overwrites.
+    fn set_liked_tracks(&mut self, tracks: Vec<model::ListedTrack>) {
+        self.liked_keys = tracks
+            .iter()
+            .map(|listed| listed.track.source_id.clone())
+            .collect();
+        self.liked_tracks = tracks.into();
     }
 
     pub(super) fn is_playlist_pinned(&self, playlist: &model::Playlist) -> bool {
@@ -148,15 +155,30 @@ impl Library {
         cx.notify();
     }
 
-    pub(super) fn set_favorite(
+    /// Likes or unlikes a track on Spotify. The collection here moves at
+    /// once so the heart answers the click; Spotify is told after, and the
+    /// next refresh is what settles any disagreement.
+    pub(super) fn set_liked(
         &mut self,
         track: model::Track,
-        favorite: bool,
+        liked: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        let mut tracks = self.liked_tracks.to_vec();
+        tracks.retain(|listed| listed.track.source_id != track.source_id);
+        if liked {
+            // Spotify lists the collection newest first, and this is the newest.
+            tracks.insert(
+                0,
+                model::ListedTrack {
+                    track: track.clone(),
+                    added_at: Some(chrono::Utc::now()),
+                },
+            );
+        }
+        self.set_liked_tracks(tracks);
         cx.notify();
-        self.backend
-            .send(BackendCommand::SetFavorite { track, favorite })
+        self.backend.send(BackendCommand::SetLiked { track, liked })
     }
 
     pub(super) fn set_playlist_pinned(
@@ -175,7 +197,7 @@ impl Library {
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.reload = None;
         self.refreshed_at = None;
-        self.liked_tracks = Arc::default();
+        self.set_liked_tracks(Vec::new());
         self.playlists = Arc::default();
         self.loaded = false;
         cx.notify();
@@ -196,7 +218,7 @@ impl Library {
                 playlists,
             } => {
                 if loaded_generation == generation {
-                    self.liked_tracks = liked_tracks.into();
+                    self.set_liked_tracks(liked_tracks);
                     self.playlists = playlists.into();
                     self.loaded = true;
                     self.refreshed_at = Some(SystemTime::now());
@@ -208,19 +230,13 @@ impl Library {
                 tracks,
             } => {
                 if cached_generation == generation {
-                    self.liked_tracks = tracks.into();
+                    self.set_liked_tracks(tracks);
                 }
             }
             BackendEvent::LocalStateLoaded {
-                favorites,
                 pinned_playlists,
                 recently_played,
             } => {
-                self.favorite_keys = index_favorites(&favorites);
-                self.favorites = favorites
-                    .into_iter()
-                    .map(model::ListedTrack::undated)
-                    .collect();
                 self.pinned_playlists = pinned_playlists.into();
                 self.recently_played = recently_played
                     .into_iter()

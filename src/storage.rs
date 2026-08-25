@@ -17,7 +17,7 @@ use crate::shuffle::{ContextKind, Origin, ShuffleMode, ShuffleState};
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -176,14 +176,6 @@ impl Store {
             self.connection.execute_batch(
                 "BEGIN IMMEDIATE;
 
-             CREATE TABLE IF NOT EXISTS favorites (
-                 provider TEXT NOT NULL,
-                 source_id TEXT NOT NULL,
-                 track_json TEXT NOT NULL,
-                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                 PRIMARY KEY (provider, source_id)
-             );
-
              CREATE TABLE IF NOT EXISTS pinned_playlists (
                  provider TEXT NOT NULL,
                  source_id TEXT NOT NULL,
@@ -325,6 +317,16 @@ impl Store {
                      sort_direction TEXT NOT NULL
                  );
                  PRAGMA user_version = 8;
+                 COMMIT;",
+            )?;
+        }
+        if version < 9 {
+            // Cadence's own favorites are gone: the heart writes to
+            // Spotify's Liked Songs, which is the only collection now.
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 DROP TABLE IF EXISTS favorites;
+                 PRAGMA user_version = 9;
                  COMMIT;",
             )?;
         }
@@ -496,35 +498,6 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    pub fn set_favorite(&mut self, track: &Track, favorite: bool) -> Result<()> {
-        if favorite {
-            self.connection.execute(
-                "INSERT INTO favorites (provider, source_id, track_json)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT (provider, source_id) DO UPDATE SET track_json = excluded.track_json",
-                params![
-                    track.provider.as_str(),
-                    track.source_id,
-                    serde_json::to_string(track)?
-                ],
-            )?;
-        } else {
-            self.connection.execute(
-                "DELETE FROM favorites WHERE provider = ?1 AND source_id = ?2",
-                params![track.provider.as_str(), track.source_id],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn favorites(&self) -> Result<Vec<Track>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT track_json FROM favorites ORDER BY created_at DESC")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     pub fn set_playlist_pinned(&mut self, playlist: &Playlist, pinned: bool) -> Result<()> {
@@ -1106,18 +1079,6 @@ mod tests {
             store.list_sort("focus").unwrap().is_some(),
             "resetting liked must not clear focus"
         );
-    }
-
-    #[test]
-    fn favorites_can_be_added_and_removed() {
-        let mut store = Store::in_memory().unwrap();
-        let track = track("one");
-
-        store.set_favorite(&track, true).unwrap();
-        assert_eq!(store.favorites().unwrap(), vec![track.clone()]);
-
-        store.set_favorite(&track, false).unwrap();
-        assert!(store.favorites().unwrap().is_empty());
     }
 
     #[test]

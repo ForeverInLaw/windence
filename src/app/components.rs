@@ -5,8 +5,8 @@ use super::*;
 /// These are free functions rather than methods so that every view entity can
 /// reach them, and they take the palette by value so a view always draws with
 /// the appearance resolved for the frame it is rendering.
-/// The star's hit area, which the track list also sizes its column to.
-pub(super) const FAVORITE_STAR_SIZE: f32 = 36.;
+/// The heart's hit area, which the track list also sizes its column to.
+pub(super) const LIKED_HEART_SIZE: f32 = 36.;
 
 pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Stateful<Div> {
     div()
@@ -122,26 +122,23 @@ pub(super) fn icon_button_with(
         .child(icon(name, size, palette.text_primary))
 }
 
-/// The star that keeps a track. The player bar and the track rows both
-/// show one, and they are the same action, so they are the same control.
-/// The caller supplies the click; without one the star is inert.
-pub(super) fn favorite_star(
+/// The heart that adds a track to Spotify's Liked Songs. The player bar
+/// and the track rows both show one, and they are the same action, so they
+/// are the same control. The caller supplies the click; without one the
+/// heart is inert.
+pub(super) fn liked_heart(
     palette: CadencePalette,
     id: impl Into<ElementId>,
-    favorite: bool,
+    liked: bool,
 ) -> Stateful<Div> {
     button(palette, id)
-        .size(px(FAVORITE_STAR_SIZE))
+        .size(px(LIKED_HEART_SIZE))
         .flex_none()
-        .rounded(px(FAVORITE_STAR_SIZE / 2.))
+        .rounded(px(LIKED_HEART_SIZE / 2.))
         .child(icon(
-            if favorite { "star-fill" } else { "star" },
+            if liked { "heart-fill" } else { "heart" },
             15.,
-            if favorite {
-                palette.text_primary
-            } else {
-                palette.text
-            },
+            if liked { palette.link } else { palette.text },
         ))
 }
 

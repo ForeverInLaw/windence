@@ -4,12 +4,11 @@ use page::PageEvent;
 
 /// One of the track collections the library keeps for the signed-in account.
 ///
-/// The three read different slices of `Library` and word themselves
+/// The two read different slices of `Library` and word themselves
 /// differently, but the page around them is the same, so they share one entity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum LibrarySection {
     LikedSongs,
-    Favorites,
     Recent,
 }
 
@@ -20,7 +19,6 @@ impl LibrarySection {
     fn page_id(self) -> &'static str {
         match self {
             Self::LikedSongs => "liked-songs-page",
-            Self::Favorites => "favorites-page",
             Self::Recent => "recent-page",
         }
     }
@@ -28,7 +26,6 @@ impl LibrarySection {
     fn list_id(self) -> &'static str {
         match self {
             Self::LikedSongs => "liked-tracks",
-            Self::Favorites => "favorite-tracks",
             Self::Recent => "recent-tracks",
         }
     }
@@ -36,7 +33,6 @@ impl LibrarySection {
     fn title(self) -> &'static str {
         match self {
             Self::LikedSongs => "Liked Songs",
-            Self::Favorites => "Favorites",
             Self::Recent => "Recently played",
         }
     }
@@ -44,7 +40,6 @@ impl LibrarySection {
     fn empty_message(self) -> &'static str {
         match self {
             Self::LikedSongs => "No liked songs",
-            Self::Favorites => "No favorites yet",
             Self::Recent => "No listening history yet",
         }
     }
@@ -52,7 +47,6 @@ impl LibrarySection {
     fn loading_message(self) -> &'static str {
         match self {
             Self::LikedSongs => "Loading liked songs…",
-            Self::Favorites => "Loading favorites…",
             Self::Recent => "Loading listening history…",
         }
     }
@@ -60,26 +54,25 @@ impl LibrarySection {
     fn tracks(self, library: &library::Library) -> Arc<[model::ListedTrack]> {
         match self {
             Self::LikedSongs => library.liked_tracks().clone(),
-            Self::Favorites => library.favorites().clone(),
             Self::Recent => library.recently_played().clone(),
         }
     }
 
-    /// Which lists remember their sort: Spotify's own collections. Local
-    /// slices (favorites, history) keep plain headers.
+    /// Which lists remember their sort: Spotify's own collections. The local
+    /// history keeps plain headers.
     fn context_id(self) -> Option<&'static str> {
         match self {
             Self::LikedSongs => Some(LIKED_SORT_KEY),
-            Self::Favorites | Self::Recent => None,
+            Self::Recent => None,
         }
     }
 
     /// Whether an empty collection means "nothing here" rather than "not yet".
-    /// Liked songs come from Spotify; the other two are local state.
+    /// Liked songs come from Spotify; the history is local state.
     fn loaded(self, library: &library::Library) -> bool {
         match self {
             Self::LikedSongs => library.loaded(),
-            Self::Favorites | Self::Recent => library.local_loaded(),
+            Self::Recent => library.local_loaded(),
         }
     }
 
@@ -93,7 +86,6 @@ impl LibrarySection {
                 },
                 library.reloading(),
             ),
-            Self::Favorites => "Starred in Cadence".to_owned(),
             Self::Recent => "Listening history".to_owned(),
         }
     }

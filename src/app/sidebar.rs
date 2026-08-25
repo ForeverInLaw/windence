@@ -380,15 +380,6 @@ impl Sidebar {
                                 cx,
                             ))
                             .child(nav_item(
-                                "nav-favorites",
-                                "nav-favorites-fill",
-                                "Favorites",
-                                "star",
-                                "star-fill",
-                                NavTarget::Route(Route::Favorites),
-                                cx,
-                            ))
-                            .child(nav_item(
                                 "nav-playlist",
                                 "nav-playlist-fill",
                                 "Playlists",

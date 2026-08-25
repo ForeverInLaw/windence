@@ -143,7 +143,7 @@ impl PlayerBar {
                                     .child(artist),
                             ),
                     )
-                    .child(self.favorite_toggle(palette, now_playing, cx)),
+                    .child(self.liked_toggle(palette, now_playing, cx)),
             )
             .child(
                 div()
@@ -351,25 +351,25 @@ impl PlayerBar {
             )
     }
 
-    /// The star for whatever is playing: the same control the track rows
+    /// The heart for whatever is playing: the same control the track rows
     /// carry, so the two read as one action. Inert with nothing playing.
-    fn favorite_toggle(
+    fn liked_toggle(
         &self,
         palette: CadencePalette,
         track: Option<model::Track>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let favorite = track
+        let liked = track
             .as_ref()
-            .is_some_and(|track| self.library.read(cx).is_favorite(track));
-        components::favorite_star(palette, "player-favorite", favorite)
+            .is_some_and(|track| self.library.read(cx).is_liked(track));
+        components::liked_heart(palette, "player-liked", liked)
             .when(track.is_none(), |button| button.opacity(0.5))
             .when_some(track, |button, track| {
                 button
                     .hover(|style| style.bg(rgb(palette.control)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.library.update(cx, |library, cx| {
-                            library.set_favorite(track.clone(), !favorite, cx)
+                            library.set_liked(track.clone(), !liked, cx)
                         });
                     }))
             })

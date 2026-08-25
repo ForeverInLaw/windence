@@ -114,15 +114,9 @@ impl BlockingStore {
         self.call(|store| store.playback_state()).await
     }
 
-    async fn local_state(&self) -> Result<(Vec<Track>, Vec<Playlist>, Vec<Track>)> {
-        self.call(|store| {
-            Ok((
-                store.favorites()?,
-                store.pinned_playlists()?,
-                store.recent_tracks(100)?,
-            ))
-        })
-        .await
+    async fn local_state(&self) -> Result<(Vec<Playlist>, Vec<Track>)> {
+        self.call(|store| Ok((store.pinned_playlists()?, store.recent_tracks(100)?)))
+            .await
     }
 
     async fn liked_tracks(&self) -> Result<Vec<ListedTrack>> {
@@ -138,10 +132,6 @@ impl BlockingStore {
 
     async fn saved_library_fingerprint(&self) -> Result<Option<LibraryFingerprint>> {
         self.call(|store| store.saved_library_fingerprint()).await
-    }
-
-    async fn favorites(&self) -> Result<Vec<Track>> {
-        self.call(|store| store.favorites()).await
     }
 
     async fn remove_spotify_client_id(&self) -> Result<()> {
@@ -213,11 +203,6 @@ impl BlockingStore {
 
     async fn update_playback_position(&self, position_ms: u32) -> Result<()> {
         self.call(move |store| store.update_playback_position(position_ms))
-            .await
-    }
-
-    async fn set_favorite(&self, track: Track, favorite: bool) -> Result<()> {
-        self.call(move |store| store.set_favorite(&track, favorite))
             .await
     }
 
@@ -343,9 +328,10 @@ pub enum BackendCommand {
         position_ms: u32,
         playing: bool,
     },
-    SetFavorite {
+    /// Adds or removes a track in the account's Spotify Liked Songs.
+    SetLiked {
         track: Track,
-        favorite: bool,
+        liked: bool,
     },
     SetPlaylistPinned {
         playlist: Playlist,
@@ -411,7 +397,6 @@ pub enum BackendEvent {
         tracks: Vec<ListedTrack>,
     },
     LocalStateLoaded {
-        favorites: Vec<Track>,
         pinned_playlists: Vec<Playlist>,
         recently_played: Vec<Track>,
     },
@@ -895,10 +880,6 @@ async fn run(
                 worker.finish_connect(connected).await;
                 continue;
             }
-            refreshed = finished(&mut worker.favorites.task) => {
-                worker.finish_favorite_refresh(refreshed).await;
-                continue;
-            }
             extended = finished(&mut worker.autoplay.task) => {
                 worker.finish_autoplay(extended).await;
                 continue;
@@ -961,7 +942,6 @@ struct Worker {
     queue: PlayQueue,
     connection: PlaybackConnection,
     catalog: CatalogFetches,
-    favorites: FavoriteRefresh,
     radio: Radio,
     autoplay: Autoplay,
     dj: Dj,
@@ -990,7 +970,6 @@ impl Worker {
             queue: PlayQueue::from_snapshot(startup.playback_snapshot),
             connection: PlaybackConnection::default(),
             catalog: CatalogFetches::default(),
-            favorites: FavoriteRefresh::default(),
             radio: Radio::default(),
             autoplay: Autoplay::default(),
             dj: Dj::default(),
@@ -1134,9 +1113,7 @@ impl Worker {
                 position_ms,
                 playing,
             } => self.restore_playback(position_ms, playing).await,
-            BackendCommand::SetFavorite { track, favorite } => {
-                self.set_favorite(track, favorite).await
-            }
+            BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
             BackendCommand::SetPlaylistPinned { playlist, pinned } => {
                 self.set_playlist_pinned(playlist, pinned).await
             }
@@ -1537,10 +1514,11 @@ impl Worker {
         result
     }
 
-    async fn set_favorite(&mut self, track: Track, favorite: bool) -> Result<()> {
-        self.store.set_favorite(track, favorite).await?;
-        send_local_state(&self.store, &self.events).await;
-        Ok(())
+    /// Likes or unlikes a track on Spotify, which owns the collection. The
+    /// window has already moved its heart, so a failure here surfaces as an
+    /// error and the next library refresh puts the heart back.
+    async fn set_liked(&mut self, track: &Track, liked: bool) -> Result<()> {
+        self.spotify.set_liked(&track.source_id, liked).await
     }
 
     async fn set_playlist_pinned(&mut self, playlist: Playlist, pinned: bool) -> Result<()> {
@@ -1790,27 +1768,6 @@ impl Worker {
         self.connection.connect_restoring = false;
     }
 
-    async fn finish_favorite_refresh(&mut self, refreshed: Finished<Result<Vec<Track>>>) {
-        self.favorites.task = None;
-        match refreshed {
-            Some(Ok(Ok(tracks))) => {
-                let mut changed = false;
-                for track in tracks {
-                    match self.store.set_favorite(track, true).await {
-                        Ok(()) => changed = true,
-                        Err(error) => send_error(&self.events, error),
-                    }
-                }
-                if changed {
-                    send_local_state(&self.store, &self.events).await;
-                }
-            }
-            Some(Ok(Err(error))) => send_error(&self.events, error),
-            Some(Err(error)) => send_error(&self.events, error),
-            None => {}
-        }
-    }
-
     async fn finish_radio(&mut self, radio: Finished<(u64, Result<Vec<Track>>)>) {
         self.radio.task = None;
         self.radio.request_id = None;
@@ -1904,7 +1861,7 @@ impl Worker {
         }
     }
 
-    /// Starts the library load and favorite refresh for the signed-in account.
+    /// Starts the library load for the signed-in account.
     async fn start_account_loads(&mut self) {
         self.catalog.load_library(
             self.spotify.clone(),
@@ -1913,16 +1870,11 @@ impl Worker {
             self.catalog_generation.clone(),
             self.events.clone(),
         );
-        self.favorites
-            .start(&self.store, self.spotify.clone(), &self.events)
-            .await;
     }
 
-    /// Stops every task tied to the signed-in account: catalog loads, the
-    /// favorite refresh, and radio.
+    /// Stops every task tied to the signed-in account: catalog loads and radio.
     fn abort_account_work(&mut self) {
         self.catalog.abort_all();
-        self.favorites.abort();
         self.radio.cancel(&self.events);
         abort_task(&mut self.autoplay.task);
         self.injections.reset();
@@ -2672,52 +2624,6 @@ impl SessionTasks {
         if let Some(task) = self.logout.take() {
             let _ = task.await;
         }
-    }
-}
-
-/// Favorites saved before tracks carried full catalog references get their
-/// missing artist and album ids re-resolved once per sign-in.
-#[derive(Default)]
-struct FavoriteRefresh {
-    task: Option<tokio::task::JoinHandle<Result<Vec<Track>>>>,
-}
-
-impl FavoriteRefresh {
-    async fn start(
-        &mut self,
-        store: &BlockingStore,
-        spotify: Spotify,
-        events: &UnboundedSender<BackendEvent>,
-    ) {
-        self.abort();
-        let favorites = match store.favorites().await {
-            Ok(favorites) => favorites,
-            Err(error) => {
-                send_error(events, error);
-                return;
-            }
-        };
-        let uris = favorites
-            .into_iter()
-            .filter(favorite_needs_catalog_refresh)
-            .map(|track| {
-                track
-                    .spotify_uri
-                    .unwrap_or_else(|| format!("spotify:track:{}", track.source_id))
-            })
-            .collect::<Vec<_>>();
-        if uris.is_empty() {
-            return;
-        }
-        self.task = Some(tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(60), spotify.resolve_track_uris(&uris))
-                .await
-                .context("Spotify favorite refresh timed out")?
-        }));
-    }
-
-    fn abort(&mut self) {
-        abort_task(&mut self.task);
     }
 }
 
@@ -3647,19 +3553,6 @@ fn send_fatal_error(events: &UnboundedSender<BackendEvent>, error: impl std::fmt
     let _ = events.send(BackendEvent::FatalError(error.to_string()));
 }
 
-fn favorite_needs_catalog_refresh(track: &Track) -> bool {
-    track.provider == crate::model::Provider::Spotify
-        && (!track
-            .artists
-            .iter()
-            .any(|artist| artist.source_id.is_some())
-            || track
-                .album_ref
-                .as_ref()
-                .and_then(|album| album.source_id.as_ref())
-                .is_none())
-}
-
 /// Picks which track seeds the next Smart Shuffle fetch: walk back through
 /// the tracks already heard this session, newest first, skipping the seed
 /// the previous fetch used, so consecutive batches come from different
@@ -3708,9 +3601,8 @@ fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<T
 
 async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<BackendEvent>) {
     match store.local_state().await {
-        Ok((favorites, pinned_playlists, recently_played)) => {
+        Ok((pinned_playlists, recently_played)) => {
             let _ = events.send(BackendEvent::LocalStateLoaded {
-                favorites,
                 pinned_playlists,
                 recently_played,
             });
@@ -3723,13 +3615,13 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 mod tests {
     use super::{
         BackendCommand, BlockingStore, PlayQueue, ShuffleState, build_radio_context,
-        favorite_needs_catalog_refresh, injected_flags, next_injection_seed, send_command,
+        injected_flags, next_injection_seed, send_command,
     };
-    use crate::model::{AlbumRef, ArtistRef, Provider, Track};
+    use crate::model::{Provider, Track};
     use crate::shuffle::Origin;
     use crate::storage::Store;
 
-    fn favorite() -> Track {
+    fn track() -> Track {
         Track {
             provider: Provider::Spotify,
             source_id: "track-id".to_owned(),
@@ -3833,33 +3725,9 @@ mod tests {
     }
 
     #[test]
-    fn only_incomplete_spotify_favorites_need_catalog_refresh() {
-        let legacy = favorite();
-        assert!(favorite_needs_catalog_refresh(&legacy));
-
-        let mut complete = legacy.clone();
-        complete.artists.push(ArtistRef {
-            name: "Artist".to_owned(),
-            source_id: Some("artist-id".to_owned()),
-            spotify_uri: Some("spotify:artist:artist-id".to_owned()),
-        });
-        complete.album_ref = Some(AlbumRef {
-            name: "Album".to_owned(),
-            source_id: Some("album-id".to_owned()),
-            spotify_uri: Some("spotify:album:album-id".to_owned()),
-            artwork_url: None,
-        });
-        assert!(!favorite_needs_catalog_refresh(&complete));
-
-        let mut non_spotify = legacy;
-        non_spotify.provider = Provider::Tidal;
-        assert!(!favorite_needs_catalog_refresh(&non_spotify));
-    }
-
-    #[test]
     fn radio_context_starts_with_seed_and_deduplicates_recommendations() {
-        let seed = favorite();
-        let mut recommendation = favorite();
+        let seed = track();
+        let mut recommendation = track();
         recommendation.source_id = "recommendation".to_owned();
         recommendation.spotify_uri = Some("spotify:track:recommendation".to_owned());
         recommendation.title = "Recommendation".to_owned();
@@ -3875,7 +3743,7 @@ mod tests {
 
     #[test]
     fn radio_context_rejects_an_empty_recommendation_set() {
-        let seed = favorite();
+        let seed = track();
 
         assert!(build_radio_context(seed.clone(), vec![seed]).is_err());
     }
@@ -3883,11 +3751,11 @@ mod tests {
     #[test]
     fn unavailable_track_autoskips_only_a_playing_load_of_the_current_entry() {
         fn queue_on_first_track() -> PlayQueue {
-            let mut next = favorite();
+            let mut next = track();
             next.source_id = "next".to_owned();
             next.spotify_uri = Some("spotify:track:next".to_owned());
             PlayQueue {
-                tracks: vec![favorite(), next],
+                tracks: vec![track(), next],
                 index: Some(0),
                 ..PlayQueue::default()
             }
@@ -3919,11 +3787,11 @@ mod tests {
     #[test]
     fn paused_restore_notes_a_dead_current_track_for_resume() {
         let mut queue = {
-            let mut next = favorite();
+            let mut next = track();
             next.source_id = "next".to_owned();
             next.spotify_uri = Some("spotify:track:next".to_owned());
             PlayQueue {
-                tracks: vec![favorite(), next],
+                tracks: vec![track(), next],
                 index: Some(0),
                 ..PlayQueue::default()
             }
@@ -3978,14 +3846,14 @@ mod tests {
     #[test]
     fn injection_seed_rotates_through_heard_tracks_and_skips_the_previous_one() {
         let heard = [
-            favorite(),
+            track(),
             {
-                let mut previous = favorite();
+                let mut previous = track();
                 previous.source_id = "previous".to_owned();
                 previous
             },
             {
-                let mut current = favorite();
+                let mut current = track();
                 current.source_id = "current".to_owned();
                 current
             },

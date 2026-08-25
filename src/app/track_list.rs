@@ -156,13 +156,13 @@ impl TrackList {
         };
         let palette = appearance::Appearance::palette(cx);
         let is_current_track = self.player.read(cx).is_current_track(&entry.track);
-        let favorite = self.library.read(cx).is_favorite(&entry.track);
+        let liked = self.library.read(cx).is_liked(&entry.track);
         let menu_key = format!("{}:{index}", entry.track.source_id);
         let menu_open = self.menu_open.as_deref() == Some(menu_key.as_str());
         let menu = menu_open
-            .then(|| self.action_menu(&entry.track, index, favorite, is_current_track, cx))
+            .then(|| self.action_menu(&entry.track, index, is_current_track, cx))
             .map(IntoElement::into_any_element);
-        let favorite_track = entry.track.clone();
+        let liked_track = entry.track.clone();
         let mut row = track_row::TrackRow::new(
             index,
             default_index + 1,
@@ -172,11 +172,11 @@ impl TrackList {
             columns,
         )
         .current(is_current_track)
-        .favorite(favorite)
+        .liked(liked)
         .menu(menu_open, menu)
-        .on_favorite(cx.listener(move |this, _, _, cx| {
+        .on_liked(cx.listener(move |this, _, _, cx| {
             this.library.update(cx, |library, cx| {
-                library.set_favorite(favorite_track.clone(), !favorite, cx)
+                library.set_liked(liked_track.clone(), !liked, cx)
             });
         }))
         .on_toggle_menu(cx.listener(move |this, _, _, cx| {
@@ -206,7 +206,6 @@ impl TrackList {
         &self,
         track: &model::Track,
         index: usize,
-        favorite: bool,
         is_current_track: bool,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -215,7 +214,6 @@ impl TrackList {
         let next_track = track.clone();
         let queue_track = track.clone();
         let radio_track = track.clone();
-        let favorite_track = track.clone();
         let artist = track
             .artists
             .iter()
@@ -298,26 +296,6 @@ impl TrackList {
                     cx.stop_propagation();
                     this.menu_open = None;
                     cx.emit(PageEvent::StartRadio(radio_track.clone()));
-                    cx.notify();
-                })),
-            )
-            .child(separator())
-            .child(
-                components::text_menu_item(
-                    palette,
-                    ("track-menu-favorite", index),
-                    if favorite {
-                        "Remove from favorites"
-                    } else {
-                        "Add to favorites"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.menu_open = None;
-                    this.library.update(cx, |library, cx| {
-                        library.set_favorite(favorite_track.clone(), !favorite, cx)
-                    });
                     cx.notify();
                 })),
             )

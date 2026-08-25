@@ -6,9 +6,9 @@ use keyring::Entry;
 use rspotify::{
     AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     model::{
-        AlbumId, AlbumType, ArtistId, FullAlbum, FullArtist, FullTrack, Id, Image, PlayableItem,
-        PlaylistId, SavedTrack, SearchResult, SearchType, SimplifiedAlbum, SimplifiedArtist,
-        SimplifiedPlaylist, SimplifiedTrack, TrackId,
+        AlbumId, AlbumType, ArtistId, FullAlbum, FullArtist, FullTrack, Id, Image, LibraryId,
+        PlayableItem, PlaylistId, SavedTrack, SearchResult, SearchType, SimplifiedAlbum,
+        SimplifiedArtist, SimplifiedPlaylist, SimplifiedTrack, TrackId,
     },
     prelude::{BaseClient, OAuthClient},
     scopes,
@@ -276,6 +276,7 @@ impl Spotify {
             scopes: scopes!(
                 "streaming",
                 "user-library-read",
+                "user-library-modify",
                 "playlist-read-private",
                 "playlist-read-collaborative",
                 "user-read-private"
@@ -429,6 +430,24 @@ impl Spotify {
                 .try_filter_map(|listed| async move { Ok(listed) })
                 .try_collect()
                 .await
+        })
+        .await
+    }
+
+    /// Adds or removes one track in the listener's Liked Songs. Spotify is
+    /// the only record of what is liked, so this is the write the heart
+    /// makes; the local cache follows on the next reload.
+    pub async fn set_liked(&self, track_id: &str, liked: bool) -> Result<()> {
+        self.gated(async {
+            let id = LibraryId::Track(
+                TrackId::from_id(track_id).context("track cannot be liked on Spotify")?,
+            );
+            if liked {
+                self.client.library_add([id]).await?;
+            } else {
+                self.client.library_remove([id]).await?;
+            }
+            Ok(())
         })
         .await
     }
@@ -609,9 +628,8 @@ impl Spotify {
     /// Resolves URIs one track at a time; Spotify removed the batch tracks
     /// endpoint in March 2026. Lookups overlap a few at a time and a missing
     /// or blocked track is skipped. A 429 trips the gate and returns what
-    /// resolved so far: a radio that starts with 29 of 30 tracks beats none,
-    /// and the favorites repair keeps its partial progress. Auth failure is
-    /// fatal: nothing later can succeed.
+    /// resolved so far: a radio that starts with 29 of 30 tracks beats none.
+    /// Auth failure is fatal: nothing later can succeed.
     pub async fn resolve_track_uris(&self, uris: &[String]) -> Result<Vec<Track>> {
         self.gated(async {
             let ids: Vec<TrackId<'static>> = uris
