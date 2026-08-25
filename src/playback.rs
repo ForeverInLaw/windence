@@ -545,6 +545,10 @@ async fn run_dj_service(
 /// treated as inactive.
 struct DjActive {
     context_uri: String,
+    /// The playback session this handover continues: adopted from the
+    /// sender, since a fresh id makes the server see a rival session
+    /// rather than the continuation of the DJ one.
+    session_id: String,
     /// The context url exactly as the sender carried it: official clients
     /// publish the resolver url here, not a `context://` reconstruction.
     context_url: String,
@@ -609,6 +613,17 @@ impl DjActive {
     }
 }
 
+/// A fresh connect-state session id: sixteen random bytes, base64 — the
+/// fallback when a transfer carries no original session id.
+fn fresh_session_id() -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use rand::RngCore as _;
+
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    STANDARD.encode(bytes)
+}
+
 /// A fresh connect-state playback id: sixteen random bytes, hex, like the
 /// official clients generate.
 fn fresh_playback_id() -> String {
@@ -640,7 +655,7 @@ async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjA
         .copied()
         .unwrap_or((0, index as u32));
     let player_state = PlayerState {
-        session_id: session.session_id(),
+        session_id: state.session_id.clone(),
         context_uri: state.context_uri.clone(),
         context_url: if state.context_url.is_empty() {
             format!("context://{}", state.context_uri)
@@ -651,7 +666,8 @@ async fn publish_active(session: &Session, device_info: &DeviceInfo, state: &DjA
         timestamp: now_millis() as i64,
         position_as_of_timestamp: position_ms as i64,
         duration: state.duration_of_current() as i64,
-        playback_speed: 1.,
+        // Not progressing while buffering, like the reference implementation.
+        playback_speed: if state.is_buffering { 0. } else { 1. },
         is_playing: state.is_playing,
         is_paused: !state.is_playing && !state.is_buffering,
         is_buffering: state.is_buffering,
@@ -971,18 +987,29 @@ async fn process_dj_command(
 
     // The transfer's own state carries the sender's playback identity; a
     // player without it is treated as inactive, so it rides along into
-    // every publication.
+    // every publication. The session id is adopted from the sender — a
+    // fresh one makes the server see a rival session, not the continuation
+    // of the DJ one — and the play origin is credited to the sender's
+    // device, like the reference implementation does.
+    let mut play_origin: Option<PlayOrigin> = session_state
+        .play_origin
+        .clone()
+        .into_option()
+        .and_then(|origin| convert_proto(&origin));
+    if let Some(origin) = play_origin.as_mut() {
+        origin.device_identifier = request.sent_by_device_id.clone();
+    }
     let transfer_state = DjActive {
         context_uri: dj_context_uri.clone(),
+        session_id: session_state
+            .original_session_id
+            .clone()
+            .unwrap_or_else(fresh_session_id),
         context_url: context.url.clone().unwrap_or_default(),
         playback_id: fresh_playback_id(),
         positions,
         listed,
-        play_origin: session_state
-            .play_origin
-            .clone()
-            .into_option()
-            .and_then(|origin| convert_proto(&origin)),
+        play_origin,
         suppressions: session_state
             .suppressions
             .clone()
@@ -1017,7 +1044,26 @@ async fn process_dj_command(
     // context when it is not the one already playing.
     if active.as_ref().map(|state| state.context_uri.as_str()) != Some(dj_context_uri.as_str()) {
         let mut started = transfer_state;
-        started.track_index = start_index.unwrap_or(0);
+        started.track_index = match start_index {
+            Some(index) => index,
+            // The transferred track is missing from the materialized queue:
+            // play it ahead of the context, like the reference does, rather
+            // than jumping to the queue's first track.
+            None if !transfer_track_uri.is_empty() => {
+                let current = playback.current_track.get_or_default();
+                started.tracks.insert(
+                    0,
+                    dj::SessionTrack {
+                        uri: transfer_track_uri.clone(),
+                        uid: current.uid.clone().unwrap_or_default(),
+                        metadata: current.metadata.clone(),
+                    },
+                );
+                started.positions.insert(0, (0, 0));
+                0
+            }
+            None => 0,
+        };
         started.position_ms = position_ms;
         started.position_at = Instant::now();
         if let Some(uri) = started
