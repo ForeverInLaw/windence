@@ -14,7 +14,6 @@ use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::{
-    dj,
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
@@ -429,10 +428,6 @@ pub enum BackendEvent {
         /// Which upcoming tracks are Smart Shuffle injections, aligned with
         /// `next`: the queue UI marks them with a distinct icon.
         injected: Vec<bool>,
-        /// The context's source id when the event knows it. The DJ
-        /// handover service stamps its notices with the DJ playlist id so
-        /// the DJ page can tell a live session from every other context.
-        source: Option<String>,
     },
     ShuffleChanged {
         mode: ShuffleMode,
@@ -1103,14 +1098,7 @@ impl Worker {
                 index,
                 shuffled,
                 kind,
-            } => {
-                // An explicit context takes the player back from any live
-                // DJ handover.
-                if let Some(playback) = self.connection.player.as_ref() {
-                    playback.stand_down_dj();
-                }
-                self.play_context(tracks, index, shuffled, kind).await
-            }
+            } => self.play_context(tracks, index, shuffled, kind).await,
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
@@ -1124,13 +1112,11 @@ impl Worker {
             BackendCommand::SetPlaylistPinned { playlist, pinned } => {
                 self.set_playlist_pinned(playlist, pinned).await
             }
-            BackendCommand::Resume => self.transport(dj::DjControl::Resume).await,
-            BackendCommand::Pause => self.transport(dj::DjControl::Pause).await,
-            BackendCommand::Next => self.transport(dj::DjControl::Next).await,
-            BackendCommand::Previous => self.transport(dj::DjControl::Previous).await,
-            BackendCommand::Seek(position_ms) => {
-                self.transport(dj::DjControl::Seek(position_ms)).await
-            }
+            BackendCommand::Resume => self.resume().await,
+            BackendCommand::Pause => self.pause().await,
+            BackendCommand::Next => self.next_track(true).await,
+            BackendCommand::Previous => self.previous_track().await,
+            BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
             BackendCommand::SavePlaybackPosition {
                 spotify_uri,
                 position_ms,
@@ -1149,25 +1135,6 @@ impl Worker {
             send_error(&self.events, error);
         }
         None
-    }
-
-    /// Routes a transport command: a live DJ handover owns the player, so
-    /// the command drives the handover queue; otherwise the regular one.
-    async fn transport(&mut self, control: dj::DjControl) -> Result<()> {
-        if let Some(playback) = self.connection.player.as_ref()
-            && playback.dj_owns_player()
-        {
-            let _ = playback.dj_controls.try_send(control);
-            return Ok(());
-        }
-        match control {
-            dj::DjControl::Next => self.next_track(true).await,
-            dj::DjControl::Previous => self.previous_track().await,
-            dj::DjControl::Pause => self.pause().await,
-            dj::DjControl::Resume => self.resume().await,
-            dj::DjControl::Seek(position_ms) => self.seek(position_ms).await,
-            dj::DjControl::StandDown => Ok(()),
-        }
     }
 
     async fn reset_spotify_configuration(&mut self, generation: u64) -> Result<()> {
@@ -3031,36 +2998,10 @@ fn observe_playback(
     unavailable: UnboundedSender<String>,
 ) -> tokio::task::JoinHandle<()> {
     let mut player_events = player.events();
-    let dj_notices = player.dj_now_playings();
     let event_sender = events.clone();
     tokio::spawn(async move {
-        loop {
-            let event = tokio::select! {
-                event = player_events.recv() => match event {
-                    Some(event) => map_player_event(event, &event_sender, &unavailable),
-                    None => break,
-                },
-                notice = dj_notices.recv() => match notice {
-                    // The handover service started playing: adopt the DJ
-                    // context like any other play request so the player bar
-                    // follows along.
-                    Ok(notice) => {
-                        let injected = std::iter::once(false)
-                            .chain(notice.next.iter().map(|_| false))
-                            .collect();
-                        Some(BackendEvent::PlaybackContext {
-                            current: notice.current,
-                            next: notice.next,
-                            injected,
-                            // Every notice on this stream is the DJ
-                            // handover service speaking.
-                            source: Some(dj::SOURCE_ID.to_owned()),
-                        })
-                    }
-                    Err(_) => break,
-                },
-            };
-            if let Some(event) = event {
+        while let Some(event) = player_events.recv().await {
+            if let Some(event) = map_player_event(event, &event_sender, &unavailable) {
                 let _ = event_sender.send(event);
             }
         }
@@ -3233,7 +3174,6 @@ fn send_playback_context(
             current: current.clone(),
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
             injected: injected_flags(shuffle, index, tracks.len()),
-            source: None,
         });
     }
 }

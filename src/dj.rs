@@ -8,34 +8,9 @@
 //! playback session (see [`crate::playback`]); the Web API never serves this
 //! playlist to development-mode apps.
 
-use std::collections::HashMap;
-
 use librespot::core::error::ErrorKind;
 
-use crate::model::{Playlist, Provider, Track};
-
-/// What the handover service tells the app shell about live DJ playback,
-/// so the player bar adopts the context like any other play request.
-#[derive(Debug, Clone)]
-pub(crate) struct DjNowPlaying {
-    pub current: Track,
-    pub next: Vec<Track>,
-}
-
-/// A playback control routed into the live DJ handover. While a handover
-/// owns the player, the UI's transport commands and the sender's dealer
-/// commands both land here instead of the regular queue.
-#[derive(Debug)]
-pub(crate) enum DjControl {
-    Next,
-    Previous,
-    Pause,
-    Resume,
-    Seek(u32),
-    /// Regular playback took the player back; the handover state is stale
-    /// and must be dropped, not advanced.
-    StandDown,
-}
+use crate::model::{Playlist, Provider};
 
 /// The well-known ID of the Spotify-owned DJ playlist. Stable since 2023:
 /// no following, no discovery, no configuration.
@@ -86,75 +61,6 @@ pub fn shuffle_hidden(source_id: &str) -> bool {
 pub fn refusal(error_kind: ErrorKind) -> bool {
     use ErrorKind::*;
     matches!(error_kind, NotFound | PermissionDenied)
-}
-
-/// One materialized track from a lexicon session body, carrying what a
-/// connect-state publication needs beyond the uri: the server-assigned uid
-/// and the metadata map the official client mirrors into its player state.
-#[derive(Debug, Clone)]
-pub(crate) struct SessionTrack {
-    pub uri: String,
-    pub uid: String,
-    pub metadata: HashMap<String, String>,
-}
-
-/// Extracts the ordered tracks from a DJ context body: either a whole
-/// session body with `pages`, or one materialized context page (the JSON a
-/// skeleton page's `page_url` resolves to) with `tracks` at the top level.
-/// Track entries carry their uri either directly or only as
-/// `canonical_track_uri` metadata; non-track entries are skipped.
-pub(crate) fn session_tracks(value: &serde_json::Value) -> Vec<SessionTrack> {
-    fn push_entries(entries: &[serde_json::Value], tracks: &mut Vec<SessionTrack>) {
-        for entry in entries {
-            let direct_uri = entry.get("uri").and_then(|uri| uri.as_str()).unwrap_or("");
-            let chosen = match entry
-                .get("metadata")
-                .and_then(|metadata| metadata.get("canonical_track_uri"))
-                .and_then(|uri| uri.as_str())
-            {
-                Some(canonical) if !canonical.is_empty() => canonical,
-                _ if direct_uri.starts_with("spotify:track:") => direct_uri,
-                _ => continue,
-            };
-            if !chosen.starts_with("spotify:track:")
-                || tracks.iter().any(|track| track.uri == chosen)
-            {
-                continue;
-            }
-            let metadata = entry
-                .get("metadata")
-                .and_then(|metadata| metadata.as_object())
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_owned()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            tracks.push(SessionTrack {
-                uri: chosen.to_owned(),
-                uid: entry
-                    .get("uid")
-                    .and_then(|uid| uid.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                metadata,
-            });
-        }
-    }
-
-    let mut tracks: Vec<SessionTrack> = Vec::new();
-    if let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) {
-        for page in pages {
-            if let Some(entries) = page.get("tracks").and_then(|tracks| tracks.as_array()) {
-                push_entries(entries, &mut tracks);
-            }
-        }
-    } else if let Some(entries) = value.get("tracks").and_then(|tracks| tracks.as_array()) {
-        push_entries(entries, &mut tracks);
-    }
-    tracks
 }
 
 #[cfg(test)]
@@ -214,41 +120,5 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(kind, expected)| assert_eq!(refusal(kind), expected, "{kind:?}"));
-    }
-
-    #[test]
-    fn session_body_yields_ordered_tracks_with_state_fields() {
-        let body = serde_json::json!({
-            "uri": format!("spotify:playlist:{SOURCE_ID}"),
-            "pages": [
-                {"tracks": [
-                    {
-                        "uri": "",
-                        "uid": "a6c4340d312da2fb9bc8",
-                        "metadata": {
-                            "canonical_track_uri": "spotify:track:4v5ElcHnmIUim0ezLQOyAx",
-                            "title": "Lost Mercer"
-                        }
-                    },
-                    {"uri": "spotify:track:17Hwn1YgUxBVQuMxDXEdNI", "uid": "u2"},
-                    {"uri": "spotify:album:1234567890123456789012"}
-                ]},
-                {"tracks": []}
-            ]
-        });
-        let tracks = super::session_tracks(&body);
-        assert_eq!(
-            tracks.iter().map(|t| t.uri.as_str()).collect::<Vec<_>>(),
-            [
-                "spotify:track:4v5ElcHnmIUim0ezLQOyAx",
-                "spotify:track:17Hwn1YgUxBVQuMxDXEdNI",
-            ]
-        );
-        assert_eq!(tracks[0].uid, "a6c4340d312da2fb9bc8");
-        assert_eq!(
-            tracks[0].metadata.get("title").map(String::as_str),
-            Some("Lost Mercer")
-        );
-        assert_eq!(tracks[1].metadata.get("title"), None);
     }
 }
