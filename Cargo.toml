@@ -45,6 +45,7 @@ tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread", "syn
 url = "2.5"
 souvlaki = { version = "0.8.3", default-features = false }
 log = "0.4.33"
+file-rotate = "0.8.0"
 
 # The GPUI platform crate's extra features are per-OS: font-kit is a macOS
 # need, wayland/x11 are Linux needs; Windows ships Win32 + DirectWrite as

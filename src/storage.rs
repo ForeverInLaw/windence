@@ -140,19 +140,20 @@ impl Store {
         Ok(store)
     }
 
-    /// Per-user application data directory. On Windows that is Roaming
+    /// Per-user application data directory, which the log is written to as
+    /// well. On Windows that is Roaming
     /// AppData plus the app name; `directories` instead mirrors XDG there
     /// (`...\AppData\Roaming\Cadence\Cadence\data`), so the path is resolved
     /// by hand. Other platforms keep the upstream mapping.
     #[cfg(target_os = "windows")]
-    fn data_dir() -> Result<PathBuf> {
+    pub fn data_dir() -> Result<PathBuf> {
         let base = directories::BaseDirs::new()
             .context("could not resolve the per-user data directory")?;
         Ok(base.data_dir().join("Cadence"))
     }
 
     #[cfg(not(target_os = "windows"))]
-    fn data_dir() -> Result<PathBuf> {
+    pub fn data_dir() -> Result<PathBuf> {
         let project = ProjectDirs::from("com", "Cadence", "Cadence")
             .context("could not resolve the Cadence data directory")?;
         Ok(project.data_dir().to_owned())
