@@ -118,11 +118,12 @@ pub(crate) struct SessionPage {
 /// `pages`) or a single stretch (songs at the top level). Entries that
 /// name no song are skipped, and a song already listed is not repeated.
 pub(crate) fn session_page(value: &serde_json::Value) -> SessionPage {
-    let entries = value
+    let pages = value
         .get("pages")
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let entries = pages
         .iter()
         .chain(std::iter::once(value))
         .filter_map(|page| page.get("tracks").and_then(serde_json::Value::as_array))
@@ -162,13 +163,18 @@ pub(crate) fn session_page(value: &serde_json::Value) -> SessionPage {
         });
     }
 
-    SessionPage {
-        tracks,
-        next_page_url: value
+    // A single stretch names its cursor at the top; a whole session names
+    // one per page, and the last of those is where the session has got to.
+    let cursor = |value: &serde_json::Value| {
+        value
             .get("next_page_url")
             .and_then(serde_json::Value::as_str)
             .filter(|url| url.starts_with("hm://"))
-            .map(str::to_owned),
+            .map(str::to_owned)
+    };
+    SessionPage {
+        tracks,
+        next_page_url: cursor(value).or_else(|| pages.iter().rev().find_map(cursor)),
     }
 }
 
@@ -270,7 +276,9 @@ mod tests {
     fn a_session_body_yields_its_songs_and_its_cursor() {
         let body = serde_json::json!({
             "uri": format!("spotify:playlist:{SOURCE_ID}"),
-            "pages": [{"tracks": [
+            "pages": [{
+                "next_page_url": "hm://lexicon-session-provider/context-resolve/v2/session/0?x=1",
+                "tracks": [
                 {
                     "uri": "spotify:track:2IilktLdCKhha2Mynoibtk",
                     "uid": "265a42c870f2f46f140b",
@@ -284,8 +292,7 @@ mod tests {
                 }},
                 {"uri": "spotify:album:1234567890123456789012", "uid": "u3"},
                 {"uri": "spotify:track:2IilktLdCKhha2Mynoibtk", "uid": "dupe"}
-            ]}],
-            "next_page_url": "hm://lexicon-session-provider/context-resolve/v2/session/0?x=1"
+            ]}]
         });
 
         let page = super::session_page(&body);

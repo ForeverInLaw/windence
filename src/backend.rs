@@ -2058,7 +2058,11 @@ impl Worker {
             }
             return;
         }
-        log::info!("dj: station starting with {} songs", stretch.tracks.len());
+        log::info!(
+            "dj: station starting with {} songs, cursor {:?}",
+            stretch.tracks.len(),
+            cursor,
+        );
         // Every later song has the one before it to be prepared during;
         // the opening line has nothing, so it is synthesized here and
         // queued before the first song reaches the device.
