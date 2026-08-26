@@ -3551,11 +3551,11 @@ async fn receive_shutdown_acknowledgment(
     None
 }
 
-/// How long a fetched order counts as fresh. The library behind it is
-/// revalidated as often as every half minute when windows are switched.
-/// Refetching the order that often would ask a lot of two endpoints Spotify
-/// makes no promises about, for an order that rarely moves in half a minute.
-const ORDER_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How long a fetched order counts as fresh. It matches the library's own
+/// revalidation window, so coming back to Cadence after playing something
+/// on another device shows that play at the top: an order held longer than
+/// the library it orders is an order that looks stale for no reason.
+const ORDER_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How many rootlist items one page asks for: the page size the official
 /// desktop client uses.

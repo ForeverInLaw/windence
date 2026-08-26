@@ -52,6 +52,11 @@ const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
 /// The collection set Spotify keeps the account's pins in.
 const PIN_SET: &str = "ylpin";
+/// The content type the collection service speaks, on the way in and on the
+/// way back. It is the only one it takes: a plain protobuf type is answered
+/// with 400, which is why these requests are built here rather than through
+/// librespot's protobuf helper, which sets its own.
+const COLLECTION_CONTENT_TYPE: &str = "application/vnd.collection-v2.spotify.proto";
 /// Where Spotify announces the id of the socket this session is on, and the
 /// header that announcement carries it in.
 const CONNECTION_ID_TOPIC: &str = "hm://pusher/v1/connections/";
@@ -137,8 +142,11 @@ pub struct Playback {
     /// session's own.
     http: oauth2_reqwest::Client,
     /// Whether the dealer socket has been opened on this session. It takes
-    /// one start, and a second one fails whatever the first one did.
-    dealer_started: Arc<AtomicBool>,
+    /// one start, and a second one fails whatever the first one did. A lock
+    /// rather than a flag because a subscription made while a start is in
+    /// flight is refused: librespot has handed the builder to the start and
+    /// has no socket to put it on yet.
+    dealer_started: Arc<tokio::sync::Mutex<bool>>,
 }
 
 struct PlaybackOAuthToken {
@@ -286,7 +294,7 @@ impl Playback {
                 .redirect(oauth2_reqwest::redirect::Policy::none())
                 .build()
                 .context("could not configure the narration client")?,
-            dealer_started: Arc::new(AtomicBool::new(false)),
+            dealer_started: Arc::new(tokio::sync::Mutex::new(false)),
         })
     }
 
@@ -420,9 +428,7 @@ impl Playback {
             client_update_id: format!("{:016x}", rand::random::<u64>()),
             ..Default::default()
         };
-        self.session
-            .spclient()
-            .request_with_protobuf(&http::Method::POST, "/collection/v2/write", None, &request)
+        self.collection_post("/collection/v2/write", &request)
             .await
             .context("Spotify refused the pin change")?;
         Ok(())
@@ -434,16 +440,32 @@ impl Playback {
         request: &Request,
     ) -> Result<Response>
     where
-        Request: protobuf::Message + protobuf::MessageFull,
+        Request: protobuf::Message,
         Response: protobuf::Message,
     {
-        let body = self
-            .session
-            .spclient()
-            .request_with_protobuf(&http::Method::POST, endpoint, None, request)
-            .await?;
+        let body = self.collection_post(endpoint, request).await?;
         Response::parse_from_bytes(&body)
             .with_context(|| format!("Spotify {endpoint} returned an undecodable message"))
+    }
+
+    /// Posts one protobuf to the collection service and hands back the body
+    /// it answered with, which for a write is empty.
+    async fn collection_post<Request: protobuf::Message>(
+        &self,
+        endpoint: &str,
+        request: &Request,
+    ) -> Result<Vec<u8>> {
+        let content_type = http::HeaderValue::from_static(COLLECTION_CONTENT_TYPE);
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::CONTENT_TYPE, content_type.clone());
+        headers.insert(http::header::ACCEPT, content_type);
+        let body = request.write_to_bytes()?;
+        let response = self
+            .session
+            .spclient()
+            .request(&http::Method::POST, endpoint, Some(headers), Some(&body))
+            .await?;
+        Ok(response.to_vec())
     }
 
     /// Tells Spotify what Cadence is playing, so the play reaches the
@@ -482,13 +504,9 @@ impl Playback {
     /// is re-issued whenever the socket reconnects, so this is a stream and
     /// not a one-off: [`Self::apply_connection_id`] stores each one.
     pub(crate) async fn watch_connection_id(&self) -> Result<Subscription> {
-        let subscription = self
-            .session
-            .dealer()
-            .add_listen_for(CONNECTION_ID_TOPIC)
-            .context("could not follow the Spotify connection id")?;
-        self.start_dealer().await?;
-        Ok(subscription)
+        self.subscribe(CONNECTION_ID_TOPIC.to_owned())
+            .await
+            .context("could not follow the Spotify connection id")
     }
 
     /// Stores the connection id a dealer message carried, and says whether
@@ -509,27 +527,32 @@ impl Playback {
     /// with an increment against the stored sync token. It also never
     /// carries the set itself, which is why the full read comes first.
     pub(crate) async fn subscribe_pins(&self) -> Result<Subscription> {
-        let dealer = self.session.dealer();
-        let subscription = dealer.add_listen_for(format!(
+        self.subscribe(format!(
             "hm://collection/{PIN_SET}/{}",
             self.session.username()
-        ))?;
-        self.start_dealer().await?;
-        Ok(subscription)
+        ))
+        .await
     }
 
-    /// Opens the dealer socket, once per session: starting it a second
-    /// time fails for a reason that says nothing about the first. Nothing
-    /// else in Cadence opens it, so every subscription comes through here.
-    async fn start_dealer(&self) -> Result<()> {
-        if !self.dealer_started.swap(true, Ordering::SeqCst) {
+    /// Subscribes to one dealer topic, opening the socket the first time.
+    ///
+    /// Both halves happen under the same lock. The socket takes one start —
+    /// a second one fails whatever the first one did — and a subscription
+    /// made while a start is in flight is refused, so two callers arriving
+    /// at once have to take their turn rather than overlap. Nothing else in
+    /// Cadence opens the socket, so every subscription comes through here.
+    async fn subscribe(&self, topic: String) -> Result<Subscription> {
+        let mut started = self.dealer_started.lock().await;
+        let subscription = self.session.dealer().add_listen_for(topic)?;
+        if !*started {
             self.session
                 .dealer()
                 .start()
                 .await
                 .context("could not open the Spotify dealer socket")?;
+            *started = true;
         }
-        Ok(())
+        Ok(subscription)
     }
 
     pub async fn radio_track_uris(&self, seed_uri: &str) -> Result<Vec<String>> {
