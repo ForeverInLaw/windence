@@ -350,10 +350,13 @@ pub fn recently_played_withheld(message: &RecentlyPlayed) -> Option<u32> {
 /// drawn cannot disagree about what is pinned.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LibraryRows {
-    /// The pinned items alone, for the sidebar's own section.
+    /// The pinned items alone, for the sidebar's own section, with the
+    /// folders that section has open.
     pub pinned: Vec<LibraryRow>,
     /// The whole list: the pinned items first, in the order Spotify holds
-    /// them, then everything else in the order the sort puts it.
+    /// them, then everything else in the order the sort puts it. The pins
+    /// here are the list's own copy, so they open with the list's folders
+    /// rather than the sidebar's.
     pub all: Vec<LibraryRow>,
 }
 
@@ -368,10 +371,11 @@ pub struct LibraryRows {
 /// `sort` orders what an opened folder holds, pinned folders included. The
 /// pins themselves are hand-ordered and no mode moves them.
 ///
-/// The two lists open their folders separately. The same folder is drawn
-/// twice — once in the pinned section, once in the tree — and opening one
-/// is no reason for the other to open, so `expanded` says which folders the
-/// tree has open and `expanded_pins` says the same for the pinned section.
+/// The two lists open their folders separately. A pinned folder is drawn in
+/// both — the sidebar's own section and the top of the playlist list — and
+/// opening it in one is no reason for the other to open. So `expanded` is
+/// the playlist list's record, covering the pins it draws as well as the
+/// tree below them, and `expanded_pins` is the sidebar section's.
 pub fn rows(
     index: &LibraryIndex,
     playlists: &[Playlist],
@@ -382,10 +386,12 @@ pub fn rows(
 ) -> LibraryRows {
     let entries = with_unplaced(index, playlists);
     let ordering = Ordering::new(&entries, playlists, pins, sort);
-    let pinned = ordering.pinned(expanded_pins);
-    let mut all = pinned.clone();
+    let mut all = ordering.pinned(expanded);
     all.extend(ordering.level(None, 0, expanded));
-    LibraryRows { pinned, all }
+    LibraryRows {
+        pinned: ordering.pinned(expanded_pins),
+        all,
+    }
 }
 
 /// The index plus one top-level entry per playlist it has not placed. With
