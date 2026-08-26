@@ -464,7 +464,12 @@ fn row_indent(depth: usize) -> f32 {
 
 /// The shell both playlist-list rows share: one tall clickable band, ruled
 /// off from the row above and indented by the folders it sits inside.
-fn library_row(palette: CadencePalette, id: impl Into<ElementId>, depth: usize) -> Stateful<Div> {
+fn library_row(
+    palette: CadencePalette,
+    id: impl Into<ElementId>,
+    depth: usize,
+    first: bool,
+) -> Stateful<Div> {
     components::button(palette, id)
         .w_full()
         .h(px(76.))
@@ -473,9 +478,24 @@ fn library_row(palette: CadencePalette, id: impl Into<ElementId>, depth: usize) 
         .justify_start()
         .gap(px(14.))
         .rounded(px(0.))
-        .border_t_1()
-        .border_color(rgb(palette.border))
+        // The top row sits in the frame's rounded corners, and clipping is
+        // rectangular: without the radius its hover fill paints into them.
+        // It also needs no rule above it — the frame's own border is there.
+        .when(first, |row| row.rounded_t(px(LIST_CORNER_RADIUS)))
+        .when(!first, |row| {
+            row.border_t_1().border_color(rgb(palette.border))
+        })
         .hover(|style| style.bg(rgb(palette.surface_hover)))
+}
+
+/// The mark a row carries when the account has it pinned, so the list says
+/// what the sidebar's own section already shows.
+fn pin_marker(palette: CadencePalette, pinned: bool) -> Option<Div> {
+    pinned.then(|| {
+        div()
+            .flex_none()
+            .child(components::icon("pin-fill", 15., palette.text_muted))
+    })
 }
 
 /// One playlist in a list. Stateless, like `TrackRow`.
@@ -534,38 +554,48 @@ impl RenderOnce for PlaylistRow {
             "{} tracks · {}",
             self.playlist.track_count, self.playlist.owner
         );
-        library_row(palette, ("spotify-playlist", self.index), self.depth)
-            .child(components::artwork(
-                palette,
-                &self.image_cache,
-                self.playlist.artwork_url.as_deref(),
-                48.,
-                10.,
-                "list-music",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(rgb(palette.text_primary))
-                            .child(self.playlist.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(palette.text_muted))
-                            .child(detail),
-                    ),
-            )
-            .when_some(self.on_open, |row, handler| row.on_click(handler))
-            .when_some(self.drag, |row, drag| {
-                components::draggable_pin(row, palette, drag)
-            })
+        // A pin is the only thing that makes a row draggable, so it is also
+        // what says the row is pinned.
+        let pinned = self.drag.is_some();
+        library_row(
+            palette,
+            ("spotify-playlist", self.index),
+            self.depth,
+            self.index == 0,
+        )
+        .child(components::artwork(
+            palette,
+            &self.image_cache,
+            self.playlist.artwork_url.as_deref(),
+            48.,
+            10.,
+            "list-music",
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(palette.text_primary))
+                        .child(self.playlist.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.text_muted))
+                        .child(detail),
+                ),
+        )
+        .child(div().flex_1())
+        .children(pin_marker(palette, pinned))
+        .when_some(self.on_open, |row, handler| row.on_click(handler))
+        .when_some(self.drag, |row, drag| {
+            components::draggable_pin(row, palette, drag)
+        })
     }
 }
 
@@ -629,56 +659,66 @@ impl RenderOnce for FolderRow {
             1 => "1 item".to_owned(),
             children => format!("{children} items"),
         };
-        library_row(palette, ("playlist-folder", self.index), self.depth)
-            .child(
-                div()
-                    .size(px(48.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(10.))
-                    .bg(rgb(palette.control))
-                    .child(components::icon(
-                        if self.expanded {
-                            "folder-open"
-                        } else {
-                            "folder"
-                        },
-                        22.,
-                        palette.text_muted,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(rgb(palette.text_primary))
-                            .child(self.name),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(palette.text_muted))
-                            .child(detail),
-                    ),
-            )
-            .child(div().flex_1())
-            .child(components::icon(
-                if self.expanded {
-                    "chevron-down"
-                } else {
-                    "chevron-right"
-                },
-                17.,
-                palette.text_muted,
-            ))
-            .when_some(self.on_toggle, |row, handler| row.on_click(handler))
+        let pinned = self.drag.is_some();
+        library_row(
+            palette,
+            ("playlist-folder", self.index),
+            self.depth,
+            self.index == 0,
+        )
+        .child(
+            div()
+                .size(px(48.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.))
+                .bg(rgb(palette.control))
+                .child(components::icon(
+                    if self.expanded {
+                        "folder-open"
+                    } else {
+                        "folder"
+                    },
+                    22.,
+                    palette.text_muted,
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(palette.text_primary))
+                        .child(self.name),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.text_muted))
+                        .child(detail),
+                ),
+        )
+        .child(div().flex_1())
+        .children(pin_marker(palette, pinned))
+        .child(components::icon(
+            if self.expanded {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            },
+            17.,
+            palette.text_muted,
+        ))
+        .when_some(self.on_toggle, |row, handler| row.on_click(handler))
+        .when_some(self.drag, |row, drag| {
+            components::draggable_pin(row, palette, drag)
+        })
     }
 }
 
