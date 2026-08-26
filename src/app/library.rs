@@ -18,6 +18,16 @@ pub(super) struct Library {
     liked_keys: HashSet<String>,
     playlists: Arc<[model::Playlist]>,
     loaded: bool,
+    /// Where Spotify puts each playlist and folder, and when each was last
+    /// played. Stored on disk, so it is there before the network answers.
+    index: library_index::LibraryIndex,
+    /// The order the listener chose, remembered between launches.
+    sort: library_index::PlaylistSort,
+    /// The folders they left open, likewise.
+    expanded_folders: HashSet<String>,
+    /// The rows the playlist list draws, rebuilt whenever anything above
+    /// changes so a render never has to sort.
+    rows: Arc<[library_index::LibraryRow]>,
     pinned_playlists: Arc<[model::Playlist]>,
     recently_played: Arc<[model::ListedTrack]>,
     local_loaded: bool,
@@ -33,13 +43,17 @@ pub(super) struct LibraryLoaded;
 impl EventEmitter<LibraryLoaded> for Library {}
 
 impl Library {
-    pub(super) fn new(backend: BackendHandle) -> Self {
+    pub(super) fn new(backend: BackendHandle, cx: &App) -> Self {
         Self {
             backend,
             liked_tracks: Arc::default(),
             liked_keys: HashSet::new(),
             playlists: Arc::default(),
             loaded: false,
+            index: library_index::LibraryIndex::default(),
+            sort: services::AppServices::playlist_sort(cx),
+            expanded_folders: services::AppServices::expanded_folders(cx),
+            rows: Arc::default(),
             pinned_playlists: Arc::default(),
             recently_played: Arc::default(),
             local_loaded: false,
@@ -76,7 +90,7 @@ impl Library {
                 match contents {
                     Ok(Ok(LibraryReload::Fresh((liked_tracks, playlists)))) => {
                         library.set_liked_tracks(liked_tracks);
-                        library.playlists = playlists.into();
+                        library.set_playlists(playlists, cx);
                         library.loaded = true;
                         library.refreshed_at = Some(SystemTime::now());
                         cx.emit(LibraryLoaded);
@@ -106,8 +120,66 @@ impl Library {
         &self.liked_tracks
     }
 
-    pub(super) fn playlists(&self) -> &Arc<[model::Playlist]> {
-        &self.playlists
+    /// The playlist list as it is drawn: playlists and folders, in the order
+    /// the chosen mode puts them, with closed folders hiding what they hold.
+    pub(super) fn playlist_rows(&self) -> &Arc<[library_index::LibraryRow]> {
+        &self.rows
+    }
+
+    pub(super) fn playlist_sort(&self) -> library_index::PlaylistSort {
+        self.sort
+    }
+
+    /// The modes the menu may offer. With no index behind it — no Premium,
+    /// offline, connection not up, or the first load still running — only
+    /// the two that read the Web API's own fields can work, so the other two
+    /// are hidden. The mode in force is always listed, so the menu never
+    /// omits what the control itself is showing.
+    pub(super) fn available_sorts(&self) -> Vec<library_index::PlaylistSort> {
+        library_index::PlaylistSort::ALL
+            .into_iter()
+            .filter(|mode| {
+                *mode == self.sort || !self.index.is_empty() || mode.works_without_index()
+            })
+            .collect()
+    }
+
+    pub(super) fn set_playlist_sort(
+        &mut self,
+        sort: library_index::PlaylistSort,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sort == sort {
+            return;
+        }
+        self.sort = sort;
+        services::AppServices::set_playlist_sort(sort, cx);
+        self.refresh_rows(cx);
+    }
+
+    /// Opens or closes a folder in place, and remembers which it is.
+    pub(super) fn toggle_folder(&mut self, uri: &str, cx: &mut Context<Self>) {
+        if !self.expanded_folders.remove(uri) {
+            self.expanded_folders.insert(uri.to_owned());
+        }
+        let mut folders: Vec<String> = self.expanded_folders.iter().cloned().collect();
+        folders.sort();
+        services::AppServices::set_expanded_folders(&folders, cx);
+        self.refresh_rows(cx);
+    }
+
+    /// Rebuilds the drawn order. Every path that changes the index, the
+    /// playlists, the sort or the open folders ends here, so the rows and
+    /// what they came from cannot disagree.
+    fn refresh_rows(&mut self, cx: &mut Context<Self>) {
+        self.rows = library_index::rows(
+            &self.index,
+            &self.playlists,
+            self.sort,
+            &self.expanded_folders,
+        )
+        .into();
+        cx.notify();
     }
 
     pub(super) fn loaded(&self) -> bool {
@@ -141,6 +213,14 @@ impl Library {
             .map(|listed| listed.track.source_id.clone())
             .collect();
         self.liked_tracks = tracks.into();
+    }
+
+    /// Takes a fresh playlist set and redraws the list with it. Every path
+    /// that replaces the playlists goes through here, so the rows can never
+    /// describe a set that is no longer on screen.
+    fn set_playlists(&mut self, playlists: Vec<model::Playlist>, cx: &mut Context<Self>) {
+        self.playlists = playlists.into();
+        self.refresh_rows(cx);
     }
 
     pub(super) fn is_playlist_pinned(&self, playlist: &model::Playlist) -> bool {
@@ -198,9 +278,9 @@ impl Library {
         self.reload = None;
         self.refreshed_at = None;
         self.set_liked_tracks(Vec::new());
-        self.playlists = Arc::default();
+        self.index = library_index::LibraryIndex::default();
+        self.set_playlists(Vec::new(), cx);
         self.loaded = false;
-        cx.notify();
     }
 
     /// Applies the library half of a backend event, returning the event when the
@@ -219,7 +299,7 @@ impl Library {
             } => {
                 if loaded_generation == generation {
                     self.set_liked_tracks(liked_tracks);
-                    self.playlists = playlists.into();
+                    self.set_playlists(playlists, cx);
                     self.loaded = true;
                     self.refreshed_at = Some(SystemTime::now());
                     cx.emit(LibraryLoaded);
@@ -236,6 +316,7 @@ impl Library {
             BackendEvent::LocalStateLoaded {
                 pinned_playlists,
                 recently_played,
+                library_index,
             } => {
                 self.pinned_playlists = pinned_playlists.into();
                 self.recently_played = recently_played
@@ -243,7 +324,22 @@ impl Library {
                     .map(model::ListedTrack::undated)
                     .collect();
                 self.local_loaded = true;
+                self.index = library_index;
+                self.refresh_rows(cx);
                 cx.emit(LibraryLoaded);
+            }
+            BackendEvent::LibraryOrderLoaded {
+                generation: order_generation,
+                index,
+            } => {
+                if order_generation == generation {
+                    self.index = index;
+                    self.refresh_rows(cx);
+                }
+            }
+            BackendEvent::ContextPlayed { uri, played_at_ms } => {
+                self.index.mark_played(&uri, played_at_ms);
+                self.refresh_rows(cx);
             }
             event => return Some(event),
         }

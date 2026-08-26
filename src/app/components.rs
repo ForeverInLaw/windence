@@ -69,6 +69,10 @@ pub(super) fn icon(name: &'static str, size: f32, color: u32) -> gpui_component:
         .text_color(rgb(color))
 }
 
+/// The height of a pill, which is how far anything anchored under one has
+/// to drop to clear it.
+pub(super) const PILL_HEIGHT: f32 = 40.;
+
 pub(super) fn pill(
     palette: CadencePalette,
     id: impl Into<ElementId>,
@@ -81,7 +85,7 @@ pub(super) fn pill(
         (rgb(palette.control), rgb(palette.text_primary))
     };
     button(palette, id)
-        .h(px(40.))
+        .h(px(PILL_HEIGHT))
         .px(px(16.))
         .rounded(px(40.))
         .bg(background)

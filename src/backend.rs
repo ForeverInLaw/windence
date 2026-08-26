@@ -16,6 +16,7 @@ use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use crate::{
     audio::NarrationClip,
     dj,
+    library_index::{self, LibraryIndex, RootlistScan},
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
@@ -114,8 +115,46 @@ impl BlockingStore {
         self.call(|store| store.playback_state()).await
     }
 
-    async fn local_state(&self) -> Result<(Vec<Playlist>, Vec<Track>)> {
-        self.call(|store| Ok((store.pinned_playlists()?, store.recent_tracks(100)?)))
+    async fn local_state(&self) -> Result<(Vec<Playlist>, Vec<Track>, LibraryIndex)> {
+        self.call(|store| {
+            Ok((
+                store.pinned_playlists()?,
+                store.recent_tracks(100)?,
+                store.library_index()?,
+            ))
+        })
+        .await
+    }
+
+    async fn library_index(&self) -> Result<LibraryIndex> {
+        self.call(|store| store.library_index()).await
+    }
+
+    async fn rootlist_revision(&self) -> Result<Option<String>> {
+        self.call(|store| store.rootlist_revision()).await
+    }
+
+    async fn replace_rootlist(
+        &self,
+        entries: Vec<library_index::IndexEntry>,
+        revision: Option<String>,
+        complete: bool,
+    ) -> Result<()> {
+        self.call(move |store| store.replace_rootlist(&entries, revision.as_deref(), complete))
+            .await
+    }
+
+    async fn recently_played_watermark(&self) -> Result<Option<i64>> {
+        self.call(|store| store.recently_played_watermark()).await
+    }
+
+    async fn apply_recently_played(&self, plays: Vec<(String, i64)>) -> Result<()> {
+        self.call(move |store| store.apply_recently_played(&plays))
+            .await
+    }
+
+    async fn set_last_played(&self, uri: String, played_at_ms: i64) -> Result<()> {
+        self.call(move |store| store.set_last_played(&uri, played_at_ms))
             .await
     }
 
@@ -317,6 +356,9 @@ pub enum BackendCommand {
         shuffled: bool,
         /// Where this context was started from, which gates Smart Shuffle.
         kind: ContextKind,
+        /// The Spotify uri of what was started, when it has one. Naming it
+        /// moves the playlist to the top of the library list at once.
+        context_uri: Option<String>,
     },
     /// Starts the DJ station: Cadence resolves the session itself, so the
     /// caller hands over no tracks.
@@ -399,6 +441,20 @@ pub enum BackendEvent {
     LocalStateLoaded {
         pinned_playlists: Vec<Playlist>,
         recently_played: Vec<Track>,
+        /// The stored playlist order, so the list paints from what Cadence
+        /// already knows instead of waiting on the network.
+        library_index: LibraryIndex,
+    },
+    /// A refreshed playlist order from the internal protocol.
+    LibraryOrderLoaded {
+        generation: u64,
+        index: LibraryIndex,
+    },
+    /// Playback started from a context that names itself, so the list can
+    /// move it to the top before the next refresh confirms it.
+    ContextPlayed {
+        uri: String,
+        played_at_ms: i64,
     },
     Playing {
         spotify_uri: String,
@@ -949,6 +1005,9 @@ struct Worker {
     /// Track ids Smart Shuffle has ever offered, persisted across restarts
     /// and toggle cycles; an offered track is never repeated within this set.
     smart_shuffle_seen: HashSet<String>,
+    /// When the playlist order was last fetched, so switching windows every
+    /// half minute does not turn into a rootlist walk every half minute.
+    order_refreshed_at: Option<Instant>,
     session: SessionTasks,
 }
 
@@ -975,6 +1034,7 @@ impl Worker {
             dj: Dj::default(),
             injections: Injections::default(),
             smart_shuffle_seen: HashSet::new(),
+            order_refreshed_at: None,
             session: SessionTasks::default(),
         }
     }
@@ -1061,6 +1121,7 @@ impl Worker {
             }
             BackendCommand::ReloadLibrary { respond } => {
                 self.reload_library(respond);
+                self.refresh_library_order(false);
                 Ok(())
             }
             BackendCommand::SearchCatalog { query, respond } => {
@@ -1104,7 +1165,13 @@ impl Worker {
                 index,
                 shuffled,
                 kind,
-            } => self.play_context(tracks, index, shuffled, kind).await,
+                context_uri,
+            } => {
+                if let Some(uri) = context_uri {
+                    self.note_context_played(uri).await;
+                }
+                self.play_context(tracks, index, shuffled, kind).await
+            }
             BackendCommand::PlayDj => self.start_dj(),
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
@@ -1276,6 +1343,69 @@ impl Worker {
         self.playback_credentials_invalidated = true;
         self.session
             .begin_logout(self.store.clone(), self.spotify.clone());
+    }
+
+    /// Refetches the playlist order over the playback session. Without one
+    /// there is nothing to fetch with: the stored order stays on screen,
+    /// which is the documented fallback for an account that cannot stream.
+    ///
+    /// `force` skips the freshness gate, for a session that has only just
+    /// come up and so has never fetched an order at all.
+    fn refresh_library_order(&mut self, force: bool) {
+        let Some(playback) = self.connection.player.clone() else {
+            return;
+        };
+        if self
+            .catalog
+            .order
+            .as_ref()
+            .is_some_and(|running| !running.is_finished())
+        {
+            return;
+        }
+        let fresh = self
+            .order_refreshed_at
+            .is_some_and(|refreshed| refreshed.elapsed() < ORDER_REFRESH_INTERVAL);
+        if fresh && !force {
+            return;
+        }
+        self.order_refreshed_at = Some(Instant::now());
+        let store = self.store.clone();
+        let events = self.events.clone();
+        let generation = self.account_generation;
+        let current_generation = self.catalog_generation.clone();
+        self.catalog.order = Some(tokio::spawn(async move {
+            let refreshed = run_with_timeout(
+                LIBRARY_TIMEOUT_SECONDS,
+                "Spotify library order request",
+                refresh_library_order(&playback, &store),
+            )
+            .await;
+            if current_generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+            match refreshed {
+                // Every source is behind a fallback: a failure here leaves
+                // the stored order on screen rather than emptying the list.
+                Ok(index) => {
+                    let _ = events.send(BackendEvent::LibraryOrderLoaded { generation, index });
+                }
+                Err(error) => log::warn!("library order: refresh failed: {error:#}"),
+            }
+        }));
+    }
+
+    /// Records that Cadence started a context, in the index and on screen.
+    /// The event goes out whether or not the write landed, so the row moves
+    /// even when storage is failing; the next refresh settles the rest.
+    async fn note_context_played(&mut self, uri: String) {
+        let played_at_ms = chrono::Utc::now().timestamp_millis();
+        if let Err(error) = self.store.set_last_played(uri.clone(), played_at_ms).await {
+            log::warn!("library order: could not record the play: {error:#}");
+        }
+        let _ = self
+            .events
+            .send(BackendEvent::ContextPlayed { uri, played_at_ms });
     }
 
     fn reload_library(&mut self, respond: Reply<LibraryReload>) {
@@ -1757,6 +1887,9 @@ impl Worker {
                     send_error(&self.events, error);
                 }
                 let _ = self.events.send(BackendEvent::PlaybackReady);
+                // The order needs this session: it is the only thing that can
+                // read the rootlist and the play history.
+                self.refresh_library_order(true);
                 if self.connection.connect_restoring {
                     let _ = self.events.send(BackendEvent::PlaybackReconnected);
                 } else if let Err(error) = restore_saved_playback(
@@ -1891,6 +2024,8 @@ impl Worker {
         self.radio.cancel(&self.events);
         abort_task(&mut self.autoplay.task);
         self.injections.reset();
+        // The next account's order has not been fetched at all.
+        self.order_refreshed_at = None;
     }
 
     /// Drops the live playback session and forgets the queue.
@@ -2844,6 +2979,9 @@ async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
 struct CatalogFetches {
     library: Option<tokio::task::JoinHandle<()>>,
     reload: Option<tokio::task::JoinHandle<()>>,
+    /// The playlist-order refresh, which runs off the playback session
+    /// rather than the Web API.
+    order: Option<tokio::task::JoinHandle<()>>,
     search: Option<tokio::task::JoinHandle<()>>,
     playlist: Option<tokio::task::JoinHandle<()>>,
     artist: Option<tokio::task::JoinHandle<()>>,
@@ -2960,6 +3098,7 @@ impl CatalogFetches {
     fn abort_all(&mut self) {
         abort_task(&mut self.library);
         abort_task(&mut self.reload);
+        abort_task(&mut self.order);
         abort_task(&mut self.search);
         abort_task(&mut self.playlist);
         abort_task(&mut self.artist);
@@ -3106,6 +3245,112 @@ async fn receive_shutdown_acknowledgment(
         }
     }
     None
+}
+
+/// How long a fetched order counts as fresh. The library behind it is
+/// revalidated as often as every half minute when windows are switched.
+/// Refetching the order that often would ask a lot of two endpoints Spotify
+/// makes no promises about, for an order that rarely moves in half a minute.
+const ORDER_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// How many rootlist items one page asks for: the page size the official
+/// desktop client uses.
+const ROOTLIST_PAGE: usize = 120;
+
+/// How many plays the recently-played endpoint is asked for at once. Above
+/// the official client's default of 50, so one request normally covers a
+/// whole history.
+const RECENTLY_PLAYED_LIMIT: usize = 1000;
+
+/// A ceiling on how many pages one refresh follows. Both endpoints report
+/// their own totals, so this only ever stops a server that keeps saying
+/// there is more without sending any.
+const MAX_ORDER_PAGES: usize = 64;
+
+/// Refetches the playlist order and hands back the index as stored.
+///
+/// The two sources apply independently: a rootlist that failed half way
+/// leaves what did arrive, and the play times are fetched either way. Both
+/// are reverse-engineered endpoints, so neither failing is allowed to stop
+/// the other or to empty what is already stored.
+async fn refresh_library_order(playback: &Playback, store: &BlockingStore) -> Result<LibraryIndex> {
+    if let Err(error) = refresh_rootlist(playback, store).await {
+        log::warn!("library order: rootlist refresh failed: {error:#}");
+    }
+    if let Err(error) = refresh_recently_played(playback, store).await {
+        log::warn!("library order: recently-played refresh failed: {error:#}");
+    }
+    store.library_index().await
+}
+
+/// Walks the rootlist into the index: the playlist set, the folder tree and
+/// every Date Added.
+///
+/// The first page carries the list's revision. When it matches the one the
+/// stored index was built from, the list has not changed and the remaining
+/// pages are never asked for. A walk that stops early stores what it read
+/// but no revision, so the next refresh does not skip the pages it missed.
+async fn refresh_rootlist(playback: &Playback, store: &BlockingStore) -> Result<()> {
+    let stored = store.rootlist_revision().await?;
+    let mut scan = RootlistScan::default();
+    scan.read(&playback.rootlist_page(0, ROOTLIST_PAGE).await?);
+    if stored.is_some() && scan.revision() == stored.as_deref() {
+        return Ok(());
+    }
+    let mut failure = None;
+    for _ in 1..MAX_ORDER_PAGES {
+        if !scan.has_more() {
+            break;
+        }
+        let from = scan.read_so_far();
+        match playback.rootlist_page(from as usize, ROOTLIST_PAGE).await {
+            Ok(page) => scan.read(&page),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+        // A page that moved nothing forward would loop forever; the server
+        // has said all it is going to say.
+        if scan.read_so_far() == from {
+            break;
+        }
+    }
+    let complete = failure.is_none() && !scan.has_more();
+    let revision = complete
+        .then(|| scan.revision().map(str::to_owned))
+        .flatten();
+    store
+        .replace_rootlist(scan.into_entries(), revision, complete)
+        .await?;
+    failure.map_or(Ok(()), Err)
+}
+
+/// Reads when each context was last played into the index.
+///
+/// The endpoint answers newest first, so a first page holding nothing newer
+/// than the stored watermark means the rest is what the index already has.
+async fn refresh_recently_played(playback: &Playback, store: &BlockingStore) -> Result<()> {
+    let watermark = store.recently_played_watermark().await?;
+    let mut offset = 0;
+    for page in 0..MAX_ORDER_PAGES {
+        let message = playback
+            .recently_played(RECENTLY_PLAYED_LIMIT, offset)
+            .await?;
+        let plays = library_index::recently_played(&message);
+        let newest = plays.iter().map(|(_, played)| *played).max();
+        store.apply_recently_played(plays).await?;
+        if page == 0 && watermark.is_some() && newest <= watermark {
+            return Ok(());
+        }
+        // The server reports what it withheld; the limit asked for is only
+        // a request.
+        match library_index::recently_played_withheld(&message) {
+            Some(next) => offset = next as usize,
+            None => return Ok(()),
+        }
+    }
+    Ok(())
 }
 
 async fn load_library(spotify: &Spotify) -> Result<LibraryContents> {
@@ -3614,10 +3859,11 @@ fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<T
 
 async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<BackendEvent>) {
     match store.local_state().await {
-        Ok((pinned_playlists, recently_played)) => {
+        Ok((pinned_playlists, recently_played, library_index)) => {
             let _ = events.send(BackendEvent::LocalStateLoaded {
                 pinned_playlists,
                 recently_played,
+                library_index,
             });
         }
         Err(error) => send_error(events, error),

@@ -454,11 +454,37 @@ impl RenderOnce for TrackRow {
     }
 }
 
+/// How far one folder level indents the rows inside it.
+const FOLDER_INDENT: f32 = 22.;
+
+/// The left padding a row at `depth` starts its contents at.
+fn row_indent(depth: usize) -> f32 {
+    12. + depth as f32 * FOLDER_INDENT
+}
+
+/// The shell both playlist-list rows share: one tall clickable band, ruled
+/// off from the row above and indented by the folders it sits inside.
+fn library_row(palette: CadencePalette, id: impl Into<ElementId>, depth: usize) -> Stateful<Div> {
+    components::button(palette, id)
+        .w_full()
+        .h(px(76.))
+        .pr(px(12.))
+        .pl(px(row_indent(depth)))
+        .justify_start()
+        .gap(px(14.))
+        .rounded(px(0.))
+        .border_t_1()
+        .border_color(rgb(palette.border))
+        .hover(|style| style.bg(rgb(palette.surface_hover)))
+}
+
 /// One playlist in a list. Stateless, like `TrackRow`.
 #[derive(IntoElement)]
 pub(super) struct PlaylistRow {
     index: usize,
     playlist: model::Playlist,
+    /// How many folders the row sits inside, which is what indents it.
+    depth: usize,
     palette: CadencePalette,
     image_cache: Entity<image_cache::BoundedImageCache>,
     on_open: Option<RowCallback>,
@@ -468,12 +494,14 @@ impl PlaylistRow {
     pub(super) fn new(
         index: usize,
         playlist: model::Playlist,
+        depth: usize,
         palette: CadencePalette,
         image_cache: Entity<image_cache::BoundedImageCache>,
     ) -> Self {
         Self {
             index,
             playlist,
+            depth,
             palette,
             image_cache,
             on_open: None,
@@ -496,16 +524,7 @@ impl RenderOnce for PlaylistRow {
             "{} tracks · {}",
             self.playlist.track_count, self.playlist.owner
         );
-        components::button(palette, ("spotify-playlist", self.index))
-            .w_full()
-            .h(px(76.))
-            .px(px(12.))
-            .justify_start()
-            .gap(px(14.))
-            .rounded(px(0.))
-            .border_t_1()
-            .border_color(rgb(palette.border))
-            .hover(|style| style.bg(rgb(palette.surface_hover)))
+        library_row(palette, ("spotify-playlist", self.index), self.depth)
             .child(components::artwork(
                 palette,
                 &self.image_cache,
@@ -537,9 +556,112 @@ impl RenderOnce for PlaylistRow {
     }
 }
 
+/// A folder in the playlist list. Clicking it opens or closes it where it
+/// stands, rather than navigating anywhere.
+#[derive(IntoElement)]
+pub(super) struct FolderRow {
+    index: usize,
+    name: String,
+    /// How many entries the folder holds directly.
+    children: usize,
+    depth: usize,
+    expanded: bool,
+    palette: CadencePalette,
+    on_toggle: Option<RowCallback>,
+}
+
+impl FolderRow {
+    pub(super) fn new(
+        index: usize,
+        name: String,
+        children: usize,
+        depth: usize,
+        expanded: bool,
+        palette: CadencePalette,
+    ) -> Self {
+        Self {
+            index,
+            name,
+            children,
+            depth,
+            expanded,
+            palette,
+            on_toggle: None,
+        }
+    }
+
+    pub(super) fn on_toggle(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle = Some(Box::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for FolderRow {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let palette = self.palette;
+        let detail = match self.children {
+            1 => "1 item".to_owned(),
+            children => format!("{children} items"),
+        };
+        library_row(palette, ("playlist-folder", self.index), self.depth)
+            .child(
+                div()
+                    .size(px(48.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(10.))
+                    .bg(rgb(palette.control))
+                    .child(components::icon(
+                        if self.expanded {
+                            "folder-open"
+                        } else {
+                            "folder"
+                        },
+                        22.,
+                        palette.text_muted,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(palette.text_primary))
+                            .child(self.name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(palette.text_muted))
+                            .child(detail),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(components::icon(
+                if self.expanded {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                17.,
+                palette.text_muted,
+            ))
+            .when_some(self.on_toggle, |row, handler| row.on_click(handler))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{format_added_at, list_height};
+    use super::{format_added_at, list_height, row_indent};
     use chrono::{TimeZone, Utc};
 
     fn at(seconds: i64) -> chrono::DateTime<Utc> {
@@ -583,5 +705,12 @@ mod tests {
     fn list_height_covers_the_header_the_rows_and_the_frame() {
         assert_eq!(list_height(0), 42.);
         assert_eq!(list_height(3), 234.);
+    }
+
+    #[test]
+    fn every_folder_level_indents_a_row_one_step_further() {
+        assert_eq!(row_indent(0), 12.);
+        assert_eq!(row_indent(1), 34.);
+        assert_eq!(row_indent(2), 56.);
     }
 }

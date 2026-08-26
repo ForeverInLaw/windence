@@ -67,3 +67,19 @@ _Avoid_: release date (the album's), liked at
 **Default Order**:
 The track order Spotify reports for a context: playlists keep their curated sequence, liked songs their like sequence. Every sort view cycles back to it, and playback never edits it.
 _Avoid_: original position, custom order
+
+**Rootlist**:
+The ordered set of playlists and folders Spotify holds for an account, read over the internal protocol. It carries the order, the folder tree and each entry's Date Added, but no names, artwork or owners — those keep coming from the Web API and are joined by uri.
+_Avoid_: library, playlist list (that is what the rootlist feeds)
+
+**Library Index**:
+Cadence's own table of where each playlist and folder sits and when each was last played, fed from the rootlist and the recently-played endpoint. Every client keeps one of these; Spotify has no endpoint that returns an ordered library.
+_Avoid_: library cache (the Web API copy of names and artwork is a different thing), rootlist
+
+**Folder**:
+A group of playlists inside the rootlist, marked by a start-group and an end-group entry around its children. It opens and closes where it stands instead of navigating anywhere, and it has no play history of its own: in the time-ordered sorts it takes the newest of its children.
+_Avoid_: group, directory
+
+**Recents**:
+The default playlist order, and the name the sort menu gives it: newest first by the later of last played and Date Added. The other three modes are Date Added, Alphabetical and Creator, worded as the official client words them.
+_Avoid_: recently played (that is the page of played tracks), last played

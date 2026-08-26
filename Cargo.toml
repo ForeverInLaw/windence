@@ -12,6 +12,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = "6.0"
 env_logger = "0.11"
 futures = "0.3"
+# The HTTP verb for the internal-protocol endpoints librespot's spclient has
+# no helper for. Same major hyper (and so spclient) speaks; already in the
+# graph through reqwest.
+http = "1"
 # The Zed rev is pinned by Cargo.lock, not here: gpui-component declares its
 # Zed deps without a rev, and a rev of our own would split the graph into two
 # checkouts with incompatible gpui types. Move the pin with
@@ -24,6 +28,9 @@ keyring = "4.1"
 # playlist/track messages (see proto_convert) instead of adapting to
 # librespot's high-level metadata structs.
 protobuf = "=3.7.2"
+# Folder names arrive percent-encoded inside the rootlist's group markers.
+# Already in the graph through `url`.
+percent-encoding = "2.3"
 librespot = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 rand = "0.8"
 raw-window-handle = "0.6"
@@ -69,6 +76,9 @@ gpui_platform = { git = "https://github.com/zed-industries/zed" }
 # a librespot release moves past vergen-gitcl 1.x; until then vergen 10 is
 # unreachable and Dependabot bumps of this line must be declined.
 vergen = "=9.0.6"
+# Pinned with the runtime it generates code for; the pure-Rust parser needs
+# no protoc on the build machine.
+protobuf-codegen = "=3.7.2"
 winresource = "0.1.31"
 
 [profile.dev]

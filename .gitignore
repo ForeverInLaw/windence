@@ -7,3 +7,8 @@ WATCHDOG.yml
 
 # Local scan session log.
 .aislop/
+
+# Captured Spotify traffic used while reverse-engineering the internal
+# protocol. Holds live tokens and one account's library; never committed.
+dumps/
+wp.js

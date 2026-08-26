@@ -60,6 +60,8 @@ impl Workspace {
                 | BackendEvent::LibraryLoaded { .. }
                 | BackendEvent::CachedLikedTracks { .. }
                 | BackendEvent::LocalStateLoaded { .. }
+                | BackendEvent::LibraryOrderLoaded { .. }
+                | BackendEvent::ContextPlayed { .. }
                 | BackendEvent::PlaybackReady
                 | BackendEvent::PlaybackReconnecting
                 | BackendEvent::PlaybackReconnected

@@ -39,7 +39,9 @@ pub(super) struct SearchPage {
     results_query: String,
     kind: SearchKind,
     tracks: Arc<[model::ListedTrack]>,
-    playlists: Arc<[model::Playlist]>,
+    /// Search results have no folders and no index behind them, so they are
+    /// held as the flat rows the list draws.
+    playlists: Arc<[library_index::LibraryRow]>,
     loaded: bool,
     searching: bool,
     error: Option<String>,
@@ -108,7 +110,7 @@ impl SearchPage {
                     Ok((tracks, playlists)) => {
                         page.results_query = query;
                         page.tracks = model::ListedTrack::undated_slice(tracks);
-                        page.playlists = playlists.into();
+                        page.playlists = library_index::LibraryRow::flat(playlists).into();
                         page.error = None;
                         cx.emit(PageEvent::Loaded);
                     }
@@ -226,8 +228,9 @@ impl PlaylistPage {
         if tracks.is_empty() {
             return;
         }
+        let uri = self.context_uri();
         self.player.update(cx, |player, cx| {
-            player.play_context(tracks, 0, ContextKind::Collection, cx)
+            player.play_context(tracks, 0, ContextKind::Collection, uri, cx)
         });
     }
 
@@ -237,9 +240,18 @@ impl PlaylistPage {
         if tracks.is_empty() {
             return;
         }
+        let uri = self.context_uri();
         self.player.update(cx, |player, cx| {
-            player.play_context_shuffled(tracks, 0, ContextKind::Collection, cx)
+            player.play_context_shuffled(tracks, 0, ContextKind::Collection, uri, cx)
         });
+    }
+
+    /// The Spotify uri of the open playlist, which playback reports so the
+    /// playlist moves to the top of the library list.
+    fn context_uri(&self) -> Option<String> {
+        self.selected
+            .as_ref()
+            .map(|playlist| library_index::playlist_uri(&playlist.source_id))
     }
 
     pub(super) fn open(&mut self, playlist: model::Playlist, cx: &mut Context<Self>) {
@@ -573,7 +585,7 @@ impl AlbumPage {
         }
         let tracks = model::ListedTrack::tracks(tracks);
         self.player.update(cx, |player, cx| {
-            player.play_context(tracks, 0, ContextKind::Album, cx)
+            player.play_context(tracks, 0, ContextKind::Album, None, cx)
         });
     }
 
@@ -588,7 +600,7 @@ impl AlbumPage {
         }
         let tracks = model::ListedTrack::tracks(tracks);
         self.player.update(cx, |player, cx| {
-            player.play_context_shuffled(tracks, 0, ContextKind::Album, cx)
+            player.play_context_shuffled(tracks, 0, ContextKind::Album, None, cx)
         });
     }
 
@@ -681,7 +693,12 @@ impl Render for SearchPage {
         } else if kind == SearchKind::Tracks && !tracks.is_empty() {
             let list_id = (ElementId::from("search-tracks"), self.results_query.clone());
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), None, ContextKind::Collection, cx)
+                list.show(
+                    list_id,
+                    tracks.clone(),
+                    track_list::ListContext::default(),
+                    cx,
+                )
             });
             self.track_list.clone().into_any_element()
         } else if kind == SearchKind::Playlists && !playlists.is_empty() {
@@ -798,8 +815,7 @@ impl Render for PlaylistPage {
                 list.show(
                     list_id,
                     tracks.clone(),
-                    Some(&playlist.source_id),
-                    ContextKind::Collection,
+                    track_list::ListContext::playlist(playlist),
                     cx,
                 )
             });
@@ -925,7 +941,12 @@ impl Render for ArtistPage {
         } else if section == ArtistSection::Popular && !tracks.is_empty() {
             let list_id = (ElementId::from("artist-popular"), source_id);
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), None, ContextKind::Collection, cx)
+                list.show(
+                    list_id,
+                    tracks.clone(),
+                    track_list::ListContext::default(),
+                    cx,
+                )
             });
             self.track_list.clone().into_any_element()
         } else if section == ArtistSection::Popular {
@@ -1040,7 +1061,15 @@ impl Render for AlbumPage {
                 .expect("open only loads albums that have a source id");
             let list_id = (ElementId::from("album-tracks"), source_id);
             self.track_list.update(cx, |list, cx| {
-                list.show(list_id, tracks.clone(), None, ContextKind::Album, cx)
+                list.show(
+                    list_id,
+                    tracks.clone(),
+                    track_list::ListContext {
+                        kind: ContextKind::Album,
+                        ..Default::default()
+                    },
+                    cx,
+                )
             });
             self.track_list.clone().into_any_element()
         } else if loaded {

@@ -229,15 +229,19 @@ impl Player {
     /// Starts a context at `index`, inheriting the global shuffle toggle.
     /// The kind gates Smart Shuffle: albums and short lists get plain
     /// shuffle even where the global toggle says Smart (the backend clamps
-    /// too; this keeps the optimistic path honest).
+    /// too; this keeps the optimistic path honest). `context_uri` names what
+    /// was started, so a playlist rises to the top of the library list;
+    /// contexts with no uri of their own — a search result, the queue —
+    /// pass `None`.
     pub(super) fn play_context(
         &mut self,
         tracks: Vec<model::Track>,
         index: usize,
         kind: ContextKind,
+        context_uri: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.send_play_context(tracks, index, false, kind, cx)
+        self.send_play_context(tracks, index, false, kind, context_uri, cx)
     }
 
     /// Starts a context shuffled and moves the global toggle to Shuffle,
@@ -247,9 +251,10 @@ impl Player {
         tracks: Vec<model::Track>,
         index: usize,
         kind: ContextKind,
+        context_uri: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.send_play_context(tracks, index, true, kind, cx)
+        self.send_play_context(tracks, index, true, kind, context_uri, cx)
     }
 
     fn send_play_context(
@@ -258,6 +263,7 @@ impl Player {
         index: usize,
         shuffled: bool,
         kind: ContextKind,
+        context_uri: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
         self.context_kind = kind;
@@ -267,6 +273,7 @@ impl Player {
                 index,
                 shuffled,
                 kind,
+                context_uri,
             },
             cx,
         );

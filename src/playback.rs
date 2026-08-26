@@ -21,6 +21,7 @@ use librespot::{
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
     },
+    protocol::playlist4_external,
 };
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, EndpointNotSet, EndpointSet,
@@ -34,6 +35,7 @@ use crate::{
     credential_worker, dj, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    proto::recently_played_backend::RecentlyPlayed,
     proto_convert,
 };
 
@@ -309,6 +311,49 @@ impl Playback {
 
     pub fn is_connected(&self) -> bool {
         !self.session.is_invalid()
+    }
+
+    /// One page of the account's rootlist: the playlist set, the folder
+    /// tree and each entry's Date Added. `from` counts rootlist items,
+    /// group markers included, so it is the scan's own running position.
+    pub(crate) async fn rootlist_page(
+        &self,
+        from: usize,
+        length: usize,
+    ) -> Result<playlist4_external::SelectedListContent> {
+        use protobuf::Message as _;
+        let body = self
+            .session
+            .spclient()
+            .get_rootlist(from, Some(length))
+            .await
+            .context("Spotify rootlist endpoint failed")?;
+        playlist4_external::SelectedListContent::parse_from_bytes(&body)
+            .context("Spotify rootlist returned an undecodable message")
+    }
+
+    /// When each context was last played, on this device or any other.
+    /// librespot has no helper for this endpoint, so the request is built
+    /// here; the session client still supplies the access point and the
+    /// credentials.
+    pub(crate) async fn recently_played(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<RecentlyPlayed> {
+        use protobuf::Message as _;
+        let mut endpoint = format!("/recently-played/v3/recently-played?limit={limit}");
+        if offset > 0 {
+            endpoint.push_str(&format!("&offset={offset}"));
+        }
+        let body = self
+            .session
+            .spclient()
+            .request(&http::Method::GET, &endpoint, None, None)
+            .await
+            .context("Spotify recently-played endpoint failed")?;
+        RecentlyPlayed::parse_from_bytes(&body)
+            .context("Spotify recently-played returned an undecodable message")
     }
 
     pub async fn radio_track_uris(&self, seed_uri: &str) -> Result<Vec<String>> {

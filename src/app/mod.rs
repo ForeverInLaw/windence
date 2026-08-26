@@ -27,7 +27,7 @@ use spotify_gpui_client::{
         Backend, BackendCommand, BackendEvent, BackendHandle, LibraryReload, PlaylistContents,
         Reply,
     },
-    dj,
+    dj, library_index,
     lifecycle::{Instance, InstanceLifecycle},
     model,
     shuffle::{ContextKind, ShuffleMode},
@@ -627,12 +627,16 @@ mod icon_tests {
     /// here renders blank at runtime; keeping this list complete makes its
     /// absence fail the suite instead.
     const REFERENCED_ICONS: &[&str] = &[
+        "chevron-down",
         "chevron-left",
+        "chevron-right",
         "clock",
         "close",
         "copy",
         "ellipsis",
         "external-link",
+        "folder",
+        "folder-open",
         "heart",
         "heart-fill",
         "key",

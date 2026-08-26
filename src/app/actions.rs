@@ -169,6 +169,7 @@ impl Workspace {
     pub(super) fn close_track_menus(&mut self, cx: &mut Context<Self>) {
         self.liked_songs.update(cx, |page, cx| page.close_menus(cx));
         self.recent.update(cx, |page, cx| page.close_menus(cx));
+        self.playlists.update(cx, |page, cx| page.close_menus(cx));
         self.search.update(cx, |page, cx| page.close_menus(cx));
         self.playlist.update(cx, |page, cx| page.close_menus(cx));
         self.artist.update(cx, |page, cx| page.close_menus(cx));

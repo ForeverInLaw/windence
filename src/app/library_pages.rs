@@ -143,8 +143,10 @@ impl Render for LibraryTracksPage {
                 list.show(
                     section.list_id(),
                     tracks,
-                    section.context_id(),
-                    ContextKind::Collection,
+                    track_list::ListContext {
+                        id: section.context_id().map(str::to_owned),
+                        ..Default::default()
+                    },
                     cx,
                 )
             });
@@ -158,10 +160,12 @@ impl Render for LibraryTracksPage {
     }
 }
 
-/// Every playlist the account follows on Spotify.
+/// Every playlist the account follows on Spotify, in Spotify's own order.
 pub(super) struct PlaylistsPage {
     library: Entity<library::Library>,
     playlists: Entity<track_list::PlaylistList>,
+    /// Whether the sort menu is open. A click anywhere else closes it.
+    sort_menu_open: bool,
     _playlists_subscription: Subscription,
 }
 
@@ -172,24 +176,104 @@ impl PlaylistsPage {
         let playlists = cx.new(|cx| track_list::PlaylistList::new(cx));
         Self {
             library: services::AppServices::library(cx),
+            sort_menu_open: false,
             _playlists_subscription: page::forward(&playlists, cx),
             playlists,
         }
+    }
+
+    /// Takes down the sort menu, for a route change no click drove.
+    pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
+        if self.sort_menu_open {
+            self.sort_menu_open = false;
+            cx.notify();
+        }
+    }
+
+    /// The control that names the order and offers the others. Only the
+    /// modes that can work in the current state are listed.
+    fn sort_control(&mut self, palette: CadencePalette, cx: &mut Context<Self>) -> Div {
+        let active = self.library.read(cx).playlist_sort();
+        let available = self.library.read(cx).available_sorts();
+        let menu = self.sort_menu_open.then(|| {
+            available
+                .into_iter()
+                .fold(
+                    components::menu_surface(palette)
+                        .w(px(180.))
+                        .on_mouse_up_out(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.close_menus(cx)),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        ),
+                    |menu, mode| {
+                        menu.child(
+                            components::text_menu_item(
+                                palette,
+                                (
+                                    ElementId::from("playlist-sort-option"),
+                                    SharedString::from(mode.as_str()),
+                                ),
+                                mode.label(),
+                            )
+                            .when(mode == active, |item| {
+                                item.text_color(rgb(palette.text_primary))
+                                    .bg(rgb(palette.selection))
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.sort_menu_open = false;
+                                    this.library.update(cx, |library, cx| {
+                                        library.set_playlist_sort(mode, cx)
+                                    });
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    },
+                )
+                .into_any_element()
+        });
+
+        div()
+            .relative()
+            .child(
+                components::pill(palette, "playlist-sort", active.label(), false).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.sort_menu_open = !this.sort_menu_open;
+                        cx.notify();
+                    }),
+                ),
+            )
+            .when_some(menu, |anchor, menu| {
+                // Anchored elements start at the parent's own top-left, so
+                // the drop is offset by the pill's height to sit under it.
+                anchor.child(deferred(
+                    anchored()
+                        .offset(point(px(0.), px(components::PILL_HEIGHT + 4.)))
+                        .anchor(Anchor::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu),
+                ))
+            })
     }
 }
 
 impl Render for PlaylistsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let (playlists, loaded, detail) = {
+        let (rows, loaded, detail) = {
             let library = self.library.read(cx);
             (
-                library.playlists().clone(),
+                library.playlist_rows().clone(),
                 library.loaded(),
                 components::revalidating_detail("Your Spotify playlists", library.reloading()),
             )
         };
-        let content = if playlists.is_empty() {
+        let content = if rows.is_empty() {
             let message = if loaded {
                 "No Spotify playlists"
             } else {
@@ -198,13 +282,17 @@ impl Render for PlaylistsPage {
             components::empty_state(palette, message).into_any_element()
         } else {
             self.playlists
-                .update(cx, |list, cx| list.show("spotify-playlists", playlists, cx));
+                .update(cx, |list, cx| list.show("spotify-playlists", rows, cx));
             self.playlists.clone().into_any_element()
         };
+        let sort_control = self.sort_control(palette, cx);
 
         components::page("playlists-page")
             .pt(px(12.))
-            .child(components::page_heading(palette, "Playlists", detail))
+            .child(
+                components::page_heading(palette, "Playlists", detail)
+                    .child(div().flex_none().child(sort_control)),
+            )
             .child(content)
     }
 }

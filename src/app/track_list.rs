@@ -2,6 +2,31 @@ use super::*;
 
 use page::PageEvent;
 
+/// What a track list is showing.
+///
+/// `id` is the sort persistence key and the identity the DJ rules test; a
+/// list without one keeps plain headers and no memory. `uri` names the same
+/// context to Spotify, so a row that starts playback can move the playlist
+/// to the top of the library. `kind` gates Smart Shuffle.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ListContext {
+    pub(super) id: Option<String>,
+    pub(super) uri: Option<String>,
+    pub(super) kind: ContextKind,
+}
+
+impl ListContext {
+    /// The context of one Spotify playlist, which sorts, remembers its sort,
+    /// and rises in the library list when it is played.
+    pub(super) fn playlist(playlist: &model::Playlist) -> Self {
+        Self {
+            id: Some(playlist.source_id.clone()),
+            uri: Some(library_index::playlist_uri(&playlist.source_id)),
+            kind: ContextKind::Collection,
+        }
+    }
+}
+
 /// A virtualized table of tracks with a per-row action menu.
 ///
 /// The list owns which row's menu is open, and a click landing anywhere else
@@ -10,9 +35,10 @@ use page::PageEvent;
 /// `close_menu`, because the menu outlives the page going off screen.
 ///
 /// Lists whose context dates and sorts its tracks (playlists, liked songs)
-/// carry a `context_id`; clicking their headers cycles Title/Album/Date added
-/// through A-Z, Z-A, and back to the default order, and the choice survives
-/// restarts. The rows always play in the displayed order.
+/// name themselves in their [`ListContext`]; clicking their headers cycles
+/// Title/Album/Date added through A-Z, Z-A, and back to the default order,
+/// and the choice survives restarts. The rows always play in the displayed
+/// order.
 pub(super) struct TrackList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
@@ -20,10 +46,9 @@ pub(super) struct TrackList {
     listed: Arc<[model::ListedTrack]>,
     /// Display position to index into `listed`; identity while unsorted.
     order: Arc<[usize]>,
-    /// Where this list's playback starts from, which gates Smart Shuffle.
-    context_kind: ContextKind,
-    /// This list's sort persistence key, when its context sorts at all.
-    context_id: Option<String>,
+    /// What is being shown, and so how playback starting from a row is
+    /// reported.
+    context: ListContext,
     sort: Option<model::ListSort>,
     /// The row whose action menu is open, keyed by source ID and row index so
     /// the same track appearing twice opens only the row that was clicked.
@@ -43,8 +68,7 @@ impl TrackList {
             id: None,
             listed: Arc::default(),
             order: Arc::default(),
-            context_kind: ContextKind::default(),
-            context_id: None,
+            context: ListContext::default(),
             sort: None,
             menu_open: None,
             current_album_id: None,
@@ -56,11 +80,7 @@ impl TrackList {
 
     /// Shows `listed` under `id`, which pages vary per playlist or album so
     /// that opening a different one starts back at the top of the list.
-    /// `context_kind` rides along so starting playback from any row carries
-    /// the right Smart Shuffle gate. `context_id` names what is being shown —
-    /// a playlist's source id, a library section — which both enables the
-    /// sortable headers, keyed on that name, and decides which contexts let a
-    /// row start playback. `None` keeps plain labels.
+    /// `context` says what is being shown; see [`ListContext`].
     ///
     /// Pages call this from `render`, so the early return below is what keeps
     /// the notify cycle finite: callers must pass a stored `Arc` clone, not a
@@ -69,28 +89,25 @@ impl TrackList {
         &mut self,
         id: impl Into<ElementId>,
         listed: Arc<[model::ListedTrack]>,
-        context_id: Option<&str>,
-        context_kind: ContextKind,
+        context: ListContext,
         cx: &mut Context<Self>,
     ) {
         let id = Some(id.into());
-        let context_id = context_id.map(str::to_owned);
-        if self.id == id && self.context_id == context_id && Arc::ptr_eq(&self.listed, &listed) {
+        if self.id == id && self.context == context && Arc::ptr_eq(&self.listed, &listed) {
             return;
         }
-        if self.context_id != context_id {
+        if self.context.id != context.id {
             // A different context took over the list; restore whatever the
             // listener last chose for it. Storage trouble degrades silently
             // to the default order rather than blocking the page.
-            self.context_id = context_id;
-            self.sort = self
-                .context_id
+            self.sort = context
+                .id
                 .as_deref()
                 .and_then(|key| services::AppServices::list_sort(key, cx));
         }
         self.id = id;
         self.listed = listed;
-        self.context_kind = context_kind;
+        self.context = context;
         self.menu_open = None;
         self.refresh_order();
         cx.notify();
@@ -114,7 +131,7 @@ impl TrackList {
 
     /// Moves `column`'s header to its next state and remembers the choice.
     fn toggle_sort(&mut self, column: model::ListSortColumn, cx: &mut Context<Self>) {
-        let Some(key) = self.context_id.clone() else {
+        let Some(key) = self.context.id.clone() else {
             return;
         };
         self.sort = model::ListSort::cycle(self.sort, column);
@@ -183,7 +200,7 @@ impl TrackList {
             this.menu_open = (!menu_open).then(|| menu_key.clone());
             cx.notify();
         }));
-        if !self.context_id.as_deref().is_some_and(dj::row_play_hidden) {
+        if !self.context.id.as_deref().is_some_and(dj::row_play_hidden) {
             row = row.on_play(cx.listener(move |this, _, _, cx| this.play_from(index, cx)));
         }
         if let Some(added_at) = entry.added_at {
@@ -196,9 +213,10 @@ impl TrackList {
     /// ordering of the context, sorted or default alike.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
         let tracks = self.displayed_tracks();
-        let kind = self.context_kind;
+        let kind = self.context.kind;
+        let uri = self.context.uri.clone();
         self.player.update(cx, |player, cx| {
-            player.play_context(tracks, index, kind, cx)
+            player.play_context(tracks, index, kind, uri, cx)
         });
     }
 
@@ -346,8 +364,8 @@ impl Render for TrackList {
         let mut columns = track_table_columns(f32::from(window.viewport_size().width));
         // A context without dates never shows the column, however wide the
         // window: albums and search results have nothing to put in it.
-        columns.date_added &= self.context_id.is_some();
-        let sortable = self.context_id.is_some();
+        columns.date_added &= self.context.id.is_some();
+        let sortable = self.context.id.is_some();
         // A list whose context does not sort renders inert labels even if a
         // stale sort survived in memory; the two never combine.
         let active_sort = sortable.then_some(self.sort).flatten();
@@ -407,7 +425,8 @@ impl Render for TrackList {
 pub(super) struct PlaylistList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
-    playlists: Arc<[model::Playlist]>,
+    rows: Arc<[library_index::LibraryRow]>,
+    library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
 }
 
@@ -417,27 +436,68 @@ impl PlaylistList {
     pub(super) fn new(cx: &mut App) -> Self {
         Self {
             id: None,
-            playlists: Arc::default(),
+            rows: Arc::default(),
+            library: services::AppServices::library(cx),
             image_cache: services::AppServices::image_cache(cx),
         }
     }
 
-    /// Shows `playlists` under `id`, which pages vary per content so that a
-    /// new set starts back at the top. Same render-time contract as
+    /// Shows `rows` under `id`, which pages vary per content so that a new
+    /// set starts back at the top. Same render-time contract as
     /// [`TrackList::show`]: pass a stored `Arc` clone, not a fresh slice.
     pub(super) fn show(
         &mut self,
         id: impl Into<ElementId>,
-        playlists: Arc<[model::Playlist]>,
+        rows: Arc<[library_index::LibraryRow]>,
         cx: &mut Context<Self>,
     ) {
         let id = Some(id.into());
-        if self.id == id && Arc::ptr_eq(&self.playlists, &playlists) {
+        if self.id == id && Arc::ptr_eq(&self.rows, &rows) {
             return;
         }
         self.id = id;
-        self.playlists = playlists;
+        self.rows = rows;
         cx.notify();
+    }
+
+    /// One row: a playlist that opens its page, or a folder that opens and
+    /// closes where it stands.
+    fn row(
+        &self,
+        index: usize,
+        row: library_index::LibraryRow,
+        palette: CadencePalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match row {
+            library_index::LibraryRow::Playlist { playlist, depth } => {
+                let selected = playlist.clone();
+                track_row::PlaylistRow::new(
+                    index,
+                    playlist,
+                    depth,
+                    palette,
+                    self.image_cache.clone(),
+                )
+                .on_open(cx.listener(move |_, _, _, cx| {
+                    cx.emit(PageEvent::OpenPlaylist(selected.clone()));
+                }))
+                .into_any_element()
+            }
+            library_index::LibraryRow::Folder {
+                uri,
+                name,
+                depth,
+                children,
+                expanded,
+            } => track_row::FolderRow::new(index, name, children, depth, expanded, palette)
+                .on_toggle(cx.listener(move |this, _, _, cx| {
+                    let uri = uri.clone();
+                    this.library
+                        .update(cx, |library, cx| library.toggle_folder(&uri, cx));
+                }))
+                .into_any_element(),
+        }
     }
 }
 
@@ -458,24 +518,14 @@ impl Render for PlaylistList {
                     self.id
                         .clone()
                         .expect("show sets the id before first paint"),
-                    self.playlists.len(),
+                    self.rows.len(),
                     cx.processor(move |this, range: Range<usize>, _, cx| {
-                        let playlists = this.playlists.clone();
+                        let rows = this.rows.clone();
                         range
                             .filter_map(|index| {
-                                playlists.get(index).cloned().map(|playlist| {
-                                    let selected = playlist.clone();
-                                    track_row::PlaylistRow::new(
-                                        index,
-                                        playlist,
-                                        palette,
-                                        this.image_cache.clone(),
-                                    )
-                                    .on_open(cx.listener(move |_, _, _, cx| {
-                                        cx.emit(PageEvent::OpenPlaylist(selected.clone()));
-                                    }))
-                                    .into_any_element()
-                                })
+                                rows.get(index)
+                                    .cloned()
+                                    .map(|row| this.row(index, row, palette, cx))
                             })
                             .collect()
                     }),

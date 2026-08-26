@@ -14,10 +14,12 @@ use crate::model::{
 };
 use crate::shuffle::{ContextKind, Origin, ShuffleMode, ShuffleState};
 
+mod library_index;
+
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 10;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -328,6 +330,26 @@ impl Store {
                 "BEGIN IMMEDIATE;
                  DROP TABLE IF EXISTS favorites;
                  PRAGMA user_version = 9;
+                 COMMIT;",
+            )?;
+        }
+        if version < 10 {
+            // Where the playlist list gets its order from; see
+            // `crate::library_index`. The rootlist revision and the
+            // recently-played watermark that go with it are two scalars and
+            // live in `preferences` beside every other one.
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE IF NOT EXISTS library_index (
+                     uri TEXT PRIMARY KEY,
+                     kind TEXT NOT NULL,
+                     folder TEXT,
+                     position INTEGER NOT NULL,
+                     name TEXT,
+                     added_at INTEGER,
+                     last_played INTEGER
+                 );
+                 PRAGMA user_version = 10;
                  COMMIT;",
             )?;
         }
@@ -789,6 +811,7 @@ impl Store {
         transaction.execute("DELETE FROM liked_tracks_cache", [])?;
         transaction.execute("DELETE FROM library_playlists_cache", [])?;
         transaction.execute("DELETE FROM library_fingerprint", [])?;
+        transaction.execute("DELETE FROM library_index", [])?;
         transaction.commit()?;
         Ok(())
     }

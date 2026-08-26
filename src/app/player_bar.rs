@@ -527,6 +527,11 @@ impl QueueDrawer {
                                                     playback_context.to_vec(),
                                                     index + context_offset,
                                                     player.context_kind(),
+                                                    // The queue is already
+                                                    // playing this context;
+                                                    // jumping inside it is
+                                                    // not a fresh start.
+                                                    None,
                                                     cx,
                                                 )
                                             });
