@@ -1,0 +1,98 @@
+# Release notes for Cadence, built from the commit history.
+#
+# The Release workflow runs `git cliff --current --strip header` on the tag it
+# publishes and puts the result in the GitHub release body. Running `git cliff`
+# with no arguments writes the whole changelog instead, header and all.
+#
+# Commit subjects follow Conventional Commits, so the type in front of a
+# subject decides the section it lands in. See commit_parsers below.
+
+[changelog]
+header = """
+# Changelog
+"""
+
+body = """
+{% macro line(commit) %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/ForeverInLaw/windence/commit/{{ commit.id }}))
+{%- endmacro line %}
+{% if version -%}
+## {{ version | trim_start_matches(pat="v") }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{%- else -%}
+## Unreleased
+{%- endif %}
+{% for commit in commits | filter(attribute="breaking", value=true) %}
+{%- if loop.first %}
+### Breaking
+{% endif -%}
+- {{ commit.breaking_description | upper_first }}
+{% endfor -%}
+{% for group, group_commits in commits | group_by(attribute="group") %}
+{%- set name = group | striptags | trim -%}
+{%- if name == "Groundwork" -%}
+{%- set shown = group_commits | unique(attribute="message") %}
+<details>
+<summary>Groundwork — {{ shown | length }} commits behind the scenes</summary>
+{% for commit in shown %}{{ self::line(commit=commit) }}{% endfor %}
+</details>
+{%- else %}
+### {{ name }}
+{% for commit in group_commits %}{{ self::line(commit=commit) }}{% endfor %}
+{%- endif %}
+{% endfor -%}
+{% if previous %}{% if previous.version %}
+Every change since {{ previous.version }}: \
+https://github.com/ForeverInLaw/windence/compare/{{ previous.version }}...{{ version }}
+{% endif %}{% endif %}
+"""
+
+footer = """
+
+## Install
+
+Download the `-setup.exe` file below and run it. It installs for your user
+only, so it never asks for an administrator, and it uninstalls from Settings
+like any other app.
+
+Windows shows its "protected your PC" box on first run, because the build is
+not signed. Choose **More info**, then **Run anyway**.
+
+The `.zip` file holds the same app if you would rather not install anything.
+
+Every file has a `.sha256` next to it. The build also carries a provenance
+attestation from GitHub, so you can check it was built by this repository:
+
+```
+gh attestation verify <the file you downloaded> --repo ForeverInLaw/windence
+```
+"""
+
+trim = true
+
+[git]
+conventional_commits = true
+# A commit that skips the convention still shows up, under "Other".
+filter_unconventional = false
+protect_breaking_commits = true
+filter_commits = false
+topo_order = false
+sort_commits = "newest"
+
+# The comments set the order of the sections; striptags removes them again.
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->New" },
+  { message = "^fix", group = "<!-- 1 -->Fixed" },
+  { message = "^perf", group = "<!-- 2 -->Faster" },
+  { message = "^refactor", group = "<!-- 3 -->Reworked" },
+  { message = "^docs", group = "<!-- 4 -->Docs" },
+  { message = "^build|^chore\\(deps\\)", group = "<!-- 5 -->Build and dependencies" },
+  { message = "^revert", skip = true },
+  # Probes, logging, formatting and housekeeping. Real work, but not what
+  # someone downloading a release is reading for, so the body folds this
+  # group into a collapsed block and drops repeated subjects.
+  { message = "^chore|^ci|^style|^test", group = "<!-- 7 -->Groundwork" },
+  # Anything that ignored the convention. Last, so it catches only leftovers.
+  { message = ".*", group = "<!-- 6 -->Other" },
+]

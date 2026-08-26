@@ -1,27 +1,113 @@
 name: Release
 
+# Only a version tag publishes. Nothing here runs on a commit, a push to a
+# branch, or a pull request.
+#
+#   git tag -a v0.5.0 -m "Cadence 0.5.0" && git push origin v0.5.0
+#
+# Start it by hand from the Actions tab to build the installer without
+# publishing anything. The job stops after the artifact upload.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+# A release must never be cut in half, so a second run waits instead of
+# cancelling the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Nothing is reused between runs, so incremental artifacts are pure cache
+  # weight.
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
 
 jobs:
-  release:
-    runs-on: macos-15
+  windows:
+    name: Windows x64
+    # Pinned rather than `windows-latest`. This image carries the Rust 1.97.1
+    # that rust-toolchain.toml asks for, plus Inno Setup and the Visual Studio
+    # redistributable the packaging script needs, so the job installs none of
+    # them.
+    runs-on: windows-2025
+    timeout-minutes: 90
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the build provenance
+      attestations: write # store it
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-      - name: Verify version
+      - name: Check out the tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the release notes read the whole history
+          persist-credentials: false
+
+      # Restores the compiled dependencies. gpui, librespot, SDL2 and SQLite
+      # all build from source, so a cold run is most of this job's time.
+      - name: Restore the Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x64-release
+          cache-on-failure: true
+
+      - name: Build the installer and the zip
         run: |
-          cargo_version=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
-          test "v$cargo_version" = "$GITHUB_REF_NAME"
-      - name: Build app
-        run: |
-          cargo build --release --locked
-          ./scripts/package-app.sh release
-      - name: Publish release
+          # On a manual run the ref is a branch, and there is no tag to check.
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          scripts\package-windows.ps1 -ExpectedVersion $tag
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: cadence-windows-x64
+          path: dist/Cadence-*
+          if-no-files-found: error
+          retention-days: 14
+
+      # Lets anyone confirm the download was built here, from this commit:
+      #   gh attestation verify <file> --repo ForeverInLaw/windence
+      - name: Attest the build
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/Cadence-*.zip
+            dist/Cadence-*-setup.exe
+
+      # Turns the commits since the previous tag into the release body. The
+      # sections and the wording live in cliff.toml.
+      - name: Write the release notes
+        if: github.ref_type == 'tag'
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A tag with a suffix, such as v0.5.0-rc1, is a pre-release and does
+          # not become the download people land on.
+          $latest = if ($env:TAG -match '-') { '--prerelease' } else { '--latest' }
+          $assets = (Get-ChildItem dist -File -Filter 'Cadence-*').FullName
+          gh release create $env:TAG @assets `
+            --verify-tag `
+            --title "Cadence $($env:TAG -replace '^v', '')" `
+            --notes-file RELEASE_NOTES.md `
+            $latest

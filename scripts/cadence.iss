@@ -10,7 +10,11 @@
 ; from Settings like any other.
 
 #define AppName "Cadence"
-#define AppVersion "0.4.0"
+; package-windows.ps1 passes the version from Cargo.toml as /DAppVersion. The
+; fallback only shows up when ISCC is run on its own.
+#ifndef AppVersion
+  #define AppVersion "0.0.0-dev"
+#endif
 #define AppPublisher "Cadence"
 #define AppUrl "https://github.com/ForeverInLaw/windence"
 #define AppExe "Cadence.exe"
