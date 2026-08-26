@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use crate::pins::{Pin, Pins};
+use crate::pins::Pins;
 
 use super::Store;
 
@@ -21,11 +21,11 @@ pub(super) const ACCOUNT_KEYS: [&str; 2] = [PINS_KEY, SYNC_TOKEN_KEY];
 
 impl Store {
     pub fn pins(&self) -> Result<Pins> {
-        let stored: Vec<Pin> = self
+        let stored: Vec<String> = self
             .preference(PINS_KEY)?
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
-        Ok(Pins::from_pins(stored))
+        Ok(Pins::from_uris(stored))
     }
 
     /// Replaces the pin list, and stores the sync token that goes with it.
@@ -33,7 +33,7 @@ impl Store {
     /// would make the next increment apply to the wrong set.
     pub fn set_pins(&mut self, pins: &Pins, sync_token: Option<&str>) -> Result<()> {
         let written = [
-            Some((PINS_KEY, serde_json::to_string(pins.pins())?)),
+            Some((PINS_KEY, serde_json::to_string(pins.uris())?)),
             sync_token.map(|token| (SYNC_TOKEN_KEY, token.to_owned())),
         ];
         let transaction = self.connection.transaction()?;
@@ -67,9 +67,9 @@ mod tests {
         assert!(store.pins().unwrap().is_empty());
         assert_eq!(store.pin_sync_token().unwrap(), None);
 
-        let pins = Pins::from_pins([
-            Pin::new("spotify:playlist:aaa", 1_708_029_349),
-            Pin::new("spotify:folder:f1", 1_708_029_386),
+        let pins = Pins::from_uris([
+            "spotify:playlist:aaa".to_owned(),
+            "spotify:folder:f1".to_owned(),
         ]);
         store.set_pins(&pins, Some("sync-1")).unwrap();
 
@@ -87,7 +87,7 @@ mod tests {
         let mut store = Store::in_memory().unwrap();
         store
             .set_pins(
-                &Pins::from_pins([Pin::new("spotify:playlist:aaa", 0)]),
+                &Pins::from_uris(["spotify:playlist:aaa".to_owned()]),
                 Some("sync-1"),
             )
             .unwrap();

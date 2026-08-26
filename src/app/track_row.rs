@@ -488,6 +488,8 @@ pub(super) struct PlaylistRow {
     palette: CadencePalette,
     image_cache: Entity<image_cache::BoundedImageCache>,
     on_open: Option<RowCallback>,
+    /// Set when the row is a pin, which is what makes it draggable.
+    drag: Option<components::PinDrag>,
 }
 
 impl PlaylistRow {
@@ -505,6 +507,7 @@ impl PlaylistRow {
             palette,
             image_cache,
             on_open: None,
+            drag: None,
         }
     }
 
@@ -513,6 +516,13 @@ impl PlaylistRow {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_open = Some(Box::new(handler));
+        self
+    }
+
+    /// Lets the row be dragged into a new place in the pinned section, and
+    /// be the place another pin is dropped on.
+    pub(super) fn draggable(mut self, drag: components::PinDrag) -> Self {
+        self.drag = Some(drag);
         self
     }
 }
@@ -553,6 +563,9 @@ impl RenderOnce for PlaylistRow {
                     ),
             )
             .when_some(self.on_open, |row, handler| row.on_click(handler))
+            .when_some(self.drag, |row, drag| {
+                components::draggable_pin(row, palette, drag)
+            })
     }
 }
 
@@ -568,6 +581,8 @@ pub(super) struct FolderRow {
     expanded: bool,
     palette: CadencePalette,
     on_toggle: Option<RowCallback>,
+    /// Set when the folder is a pin, which is what makes it draggable.
+    drag: Option<components::PinDrag>,
 }
 
 impl FolderRow {
@@ -587,6 +602,7 @@ impl FolderRow {
             expanded,
             palette,
             on_toggle: None,
+            drag: None,
         }
     }
 
@@ -595,6 +611,13 @@ impl FolderRow {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_toggle = Some(Box::new(handler));
+        self
+    }
+
+    /// Lets the row be dragged into a new place in the pinned section, and
+    /// be the place another pin is dropped on.
+    pub(super) fn draggable(mut self, drag: components::PinDrag) -> Self {
+        self.drag = Some(drag);
         self
     }
 }

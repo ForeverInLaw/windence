@@ -37,13 +37,20 @@ index — so uris are normalised on the way into the index.
 "Recents", the default sort, orders by `max(last_played, add_time)` descending.
 A folder has no `last_played` of its own and takes the newest of its children.
 
-A pin write sends the whole set. Each item carries the library's own Date
-Added, in seconds, rather than the moment it was pinned. Spotify answers with
-`200` and an empty body, then pushes a dealer message carrying back the
-`client_update_id` the write sent. A client can use that to tell its own
-change from another device's. Cadence does not: it answers every one of those
-messages the same way, with a `delta` call that costs one request and settles
-nothing when the change turns out to be its own.
+A pin write sends the whole set, and each item carries an `added_at` in
+seconds. That field is the order: Spotify draws the set newest first by it,
+and clients rewrite every number to say where things sit — a captured drag in
+the official client renumbers the lot, giving the top two pins two
+consecutive seconds of the moment of the drag. It is not a date. The
+library's own Date Added lives in the rootlist and in the desktop client's
+own index, and neither is touched by any of this.
+
+Spotify answers a write with `200` and an empty body, then pushes a dealer
+message carrying back the `client_update_id` the write sent. A client can use
+that to tell its own change from another device's. Cadence does not: it
+answers every one of those messages the same way, with a `delta` call that
+costs one request and settles nothing when the change turns out to be its
+own.
 
 ## Decisions
 
@@ -56,6 +63,13 @@ nothing when the change turns out to be its own.
   otherwise silently clobber a pin made on another device. Unpinning sends a
   single `CollectionItem{is_removed: true}`, as the desktop does, where no race
   exists. The local `pinned_playlists` table is dropped: one truth, not two.
+- **The order is written, not the dates.** Cadence keeps the pin list and
+  not the numbers behind it: on every write it renumbers the whole set, the
+  first pin taking the current second and each next one a second less. The
+  order Spotify sorts into is then the order Cadence drew, which is true
+  whether the server sorts by the field or keeps the list as it was given.
+  Reordering is that same write with the list in a different order, so
+  dragging a pin needs no endpoint of its own.
 - **A refused write is rolled back.** The button moves on the click, so the
   answer has to be able to move it back. What goes to the window after a
   failure is the set Spotify holds — freshly read, in the pinning case — and
@@ -65,6 +79,9 @@ nothing when the change turns out to be its own.
   Each message is answered with a `delta` call against the stored sync
   token, which is also why the full read has to land before the
   subscription is opened.
+- **A new pin goes to the end of the section.** The captured pin write gives
+  a newly pinned item a number that sorts it last, so Cadence appends. A
+  listener who wants it first drags it there.
 - **A delta places a new pin at the end.** It reports what changed without
   saying where it sits, and the section is hand-ordered, so a pin made on
   another device sits last until the next full read puts it where Spotify

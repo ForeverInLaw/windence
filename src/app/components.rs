@@ -24,6 +24,69 @@ pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> State
         })
 }
 
+/// A pinned row on its way to a new place in the section.
+///
+/// The payload carries the pin being dragged; the row it is dropped on says
+/// where it lands. This is also the element drawn under the pointer, which
+/// is why it renders itself.
+#[derive(Clone)]
+pub(super) struct DraggedPin {
+    pub(super) uri: String,
+    pub(super) label: SharedString,
+}
+
+impl Render for DraggedPin {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = appearance::Appearance::palette(cx);
+        div()
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(rgb(palette.control))
+            .text_size(px(14.))
+            .text_color(rgb(palette.text))
+            .child(self.label.clone())
+    }
+}
+
+/// What one row of the pinned section needs to join the drag: the pin it
+/// draws, and what to do when another pin is dropped on it.
+pub(super) struct PinDrag {
+    pub(super) pin: DraggedPin,
+    pub(super) on_drop: Box<dyn Fn(&DraggedPin, &mut Window, &mut App)>,
+}
+
+impl PinDrag {
+    pub(super) fn new(
+        uri: String,
+        label: impl Into<SharedString>,
+        on_drop: impl Fn(&DraggedPin, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            pin: DraggedPin {
+                uri,
+                label: label.into(),
+            },
+            on_drop: Box::new(on_drop),
+        }
+    }
+}
+
+/// Makes a row of the pinned section both draggable and a place to drop
+/// another one.
+pub(super) fn draggable_pin(
+    row: Stateful<Div>,
+    palette: CadencePalette,
+    drag: PinDrag,
+) -> Stateful<Div> {
+    row.on_drag(drag.pin, |dragged, _, _, cx| {
+        let dragged = dragged.clone();
+        cx.new(|_| dragged)
+    })
+    .drag_over::<DraggedPin>(move |style, _, _, _| style.bg(rgb(palette.selection)))
+    .on_drop(drag.on_drop)
+}
+
 /// The transient banner for things that finished without a page to say so.
 pub(super) fn action_notice_banner(
     palette: CadencePalette,

@@ -188,7 +188,7 @@ impl Library {
         let rows = library_index::rows(
             &self.index,
             &self.playlists,
-            &self.pins.uris(),
+            self.pins.uris(),
             self.sort,
             &self.expanded_folders,
         );
@@ -243,9 +243,12 @@ impl Library {
     /// of its own, so this is the account's answer, not this app's.
     pub(super) fn is_playlist_pinned(&self, playlist: &model::Playlist) -> bool {
         playlist.provider == model::Provider::Spotify
-            && self
-                .pins
-                .contains(&library_index::playlist_uri(&playlist.source_id))
+            && self.is_pinned(&library_index::playlist_uri(&playlist.source_id))
+    }
+
+    /// The same answer for anything the library draws, folders included.
+    pub(super) fn is_pinned(&self, uri: &str) -> bool {
+        self.pins.contains(uri)
     }
 
     /// Whether one more pin would go past what Spotify is known to accept.
@@ -271,15 +274,27 @@ impl Library {
         }
         let uri = library_index::playlist_uri(&playlist.source_id);
         if pinned {
-            // Date Added belongs to the library, not to the pin, and the
-            // write path reads it the same way. This copy is only drawn.
-            self.pins
-                .pin(&uri, self.index.added_at_seconds(&uri).unwrap_or_default());
+            self.pins.pin(&uri);
         } else {
             self.pins.unpin(&uri);
         }
         self.refresh_rows(cx);
         self.backend.send(BackendCommand::SetPinned { uri, pinned });
+    }
+
+    /// Moves a pin to where another one sits, which is what dropping a row
+    /// on another row means. The section moves at once; Spotify is told
+    /// after, and what it holds is what settles the order.
+    pub(super) fn move_pin(&mut self, uri: &str, target: &str, cx: &mut Context<Self>) {
+        if uri == target {
+            return;
+        }
+        self.pins.move_onto(uri, target);
+        self.refresh_rows(cx);
+        self.backend.send(BackendCommand::MovePin {
+            uri: uri.to_owned(),
+            target: target.to_owned(),
+        });
     }
 
     /// Marks the catalog as settled without contents, for when the fetch failed.

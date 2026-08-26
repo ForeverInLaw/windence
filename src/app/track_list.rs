@@ -469,6 +469,10 @@ impl PlaylistList {
         palette: CadencePalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The page draws the pinned items at its top, and they are as
+        // draggable there as they are in the sidebar: one library, one
+        // hand-made order.
+        let drag = self.pin_drag(&row, cx);
         match row {
             library_index::LibraryRow::Playlist { playlist, depth } => {
                 let selected = playlist.clone();
@@ -482,6 +486,7 @@ impl PlaylistList {
                 .on_open(cx.listener(move |_, _, _, cx| {
                     cx.emit(PageEvent::OpenPlaylist(selected.clone()));
                 }))
+                .when_some(drag, track_row::PlaylistRow::draggable)
                 .into_any_element()
             }
             library_index::LibraryRow::Folder {
@@ -496,8 +501,33 @@ impl PlaylistList {
                     this.library
                         .update(cx, |library, cx| library.toggle_folder(&uri, cx));
                 }))
+                .when_some(drag, track_row::FolderRow::draggable)
                 .into_any_element(),
         }
+    }
+
+    /// The drag a row joins, when the account has this row pinned. Anything
+    /// else in the list is sorted rather than arranged, so it stays put.
+    fn pin_drag(
+        &self,
+        row: &library_index::LibraryRow,
+        cx: &mut Context<Self>,
+    ) -> Option<components::PinDrag> {
+        let uri = row.uri();
+        if !self.library.read(cx).is_pinned(&uri) {
+            return None;
+        }
+        let target = uri.clone();
+        Some(components::PinDrag::new(
+            uri,
+            row.label().to_owned(),
+            cx.listener(move |this, dragged: &components::DraggedPin, _, cx| {
+                let dragged = dragged.uri.clone();
+                let target = target.clone();
+                this.library
+                    .update(cx, |library, cx| library.move_pin(&dragged, &target, cx));
+            }),
+        ))
     }
 }
 

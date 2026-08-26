@@ -133,6 +133,23 @@ impl Sidebar {
             .gap(px(8.))
             .text_size(px(14.))
             .text_color(rgb(palette.text));
+        // Pin order is hand-made, so every row in this section can be
+        // picked up and dropped on another to take its place.
+        let uri = row.uri();
+        let button = components::draggable_pin(
+            button,
+            palette,
+            components::PinDrag::new(
+                uri.clone(),
+                row.label().to_owned(),
+                cx.listener(move |this, dragged: &components::DraggedPin, _, cx| {
+                    let dragged = dragged.uri.clone();
+                    let target = uri.clone();
+                    this.library
+                        .update(cx, |library, cx| library.move_pin(&dragged, &target, cx));
+                }),
+            ),
+        );
         match row {
             library_index::LibraryRow::Playlist { playlist, .. } => button
                 .child(playlist.name.clone())
