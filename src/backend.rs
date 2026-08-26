@@ -1050,6 +1050,10 @@ struct Worker {
     /// When the playlist order was last fetched, so switching windows every
     /// half minute does not turn into a rootlist walk every half minute.
     order_refreshed_at: Option<Instant>,
+    /// The pinned set as Cadence last wrote it, and when. Spotify does not
+    /// always read a write back at once, so for a moment after one the set
+    /// that went out is the truer of the two.
+    written_pins: Option<(Pins, Instant)>,
     session: SessionTasks,
 }
 
@@ -1079,6 +1083,7 @@ impl Worker {
             injections: Injections::default(),
             smart_shuffle_seen: HashSet::new(),
             order_refreshed_at: None,
+            written_pins: None,
             session: SessionTasks::default(),
         }
     }
@@ -1887,7 +1892,7 @@ impl Worker {
         if !complete {
             bail!("Spotify did not describe the whole pinned set, so nothing was written");
         }
-        let mut pins = fresh;
+        let mut pins = settled_base(self.written_pins.as_ref(), fresh);
         change(&mut pins);
         playback.write_pins(pins.write_items(now_seconds())).await?;
         self.store_pins(pins).await
@@ -1917,6 +1922,7 @@ impl Worker {
     /// window back would be a lie. The sync token stays as the last read
     /// left it — a write is not a read, and Spotify hands none back.
     async fn store_pins(&mut self, pins: Pins) -> Result<Pins> {
+        self.written_pins = Some((pins.clone(), Instant::now()));
         if let Err(error) = self.store.set_pins(pins.clone(), None).await {
             log::warn!("pins: the change landed but could not be stored: {error:#}");
         }
@@ -3602,6 +3608,33 @@ const PIN_PAGE: usize = 100;
 /// a next-page token.
 const MAX_PIN_PAGES: usize = 8;
 
+/// What a pin change goes on top of.
+///
+/// Normally the fresh read, which is the account's own answer. But Spotify
+/// does not always read a write back at once: pin two things in a row and
+/// the read between them can still be describing the set from before the
+/// first. Inside that window what Cadence sent is the truer set, and it
+/// also keeps the order, which re-adding one uri would not. The window is
+/// short, so a change made on another device is only missed for about as
+/// long as one write takes to land.
+fn settled_base(written: Option<&(Pins, Instant)>, fresh: Pins) -> Pins {
+    match written {
+        Some((written, at)) if at.elapsed() < PIN_WRITE_SETTLE && *written != fresh => {
+            log::debug!("pins: the read has not caught up with the last write yet");
+            written.clone()
+        }
+        _ => fresh,
+    }
+}
+
+/// How long a write stays the better answer than a read.
+///
+/// A write and the read after it race: Spotify takes the write, and a read
+/// that arrives before it has settled still describes the set from before.
+/// Past this the read wins again, so a pin made on another device is only
+/// unseen for about as long as one write takes to land.
+const PIN_WRITE_SETTLE: Duration = Duration::from_secs(10);
+
 /// How many times a full read asks for a fresh snapshot when the server
 /// will not settle the one it just gave. A refused increment leaves the
 /// snapshot unproven, and the next one usually comes with a token the
@@ -4305,6 +4338,34 @@ mod tests {
     use crate::shuffle::Origin;
     use crate::storage::Store;
     use std::time::Instant;
+
+    #[test]
+    fn a_pin_change_goes_on_the_read_unless_a_write_has_yet_to_land() {
+        let pins_of = |uris: &[&str]| Pins::from_uris(uris.iter().map(|uri| (*uri).to_owned()));
+        let written = pins_of(&["spotify:playlist:aaa", "spotify:playlist:bbb"]);
+        // What the read describes, still missing the second pin.
+        let fresh = pins_of(&["spotify:playlist:aaa"]);
+
+        // Nothing written: the read is the only answer there is.
+        assert_eq!(settled_base(None, fresh.clone()), fresh);
+
+        // Written a moment ago and the read disagrees: the write is truer.
+        let just_now = (written.clone(), Instant::now());
+        assert_eq!(settled_base(Some(&just_now), fresh.clone()), written);
+
+        // Long enough ago that a disagreement is another device's doing.
+        let settled = (
+            written.clone(),
+            Instant::now()
+                .checked_sub(PIN_WRITE_SETTLE)
+                .expect("the clock is past the settling window"),
+        );
+        assert_eq!(settled_base(Some(&settled), fresh.clone()), fresh);
+
+        // Agreeing sides are one answer, whichever is handed back.
+        let agreed = (fresh.clone(), Instant::now());
+        assert_eq!(settled_base(Some(&agreed), fresh.clone()), fresh);
+    }
 
     fn track() -> Track {
         Track {
