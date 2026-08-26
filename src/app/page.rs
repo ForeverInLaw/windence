@@ -10,6 +10,9 @@ pub(super) enum PageEvent {
     /// Fresh contents arrived, so any stale failure can be cleared.
     Loaded,
     Failed(String),
+    /// Something worth saying that is not a failure, shown as a banner the
+    /// listener can dismiss.
+    Notice(String),
     OpenPlaylist(model::Playlist),
     OpenArtist(model::ArtistRef),
     OpenAlbum(model::AlbumRef),

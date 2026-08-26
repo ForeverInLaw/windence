@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use futures::StreamExt as _;
 use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
@@ -384,6 +384,12 @@ pub enum BackendCommand {
     SetLiked {
         track: Track,
         liked: bool,
+    },
+    /// Pins or unpins one library item on the account, so every device the
+    /// listener has shows the change.
+    SetPinned {
+        uri: String,
+        pinned: bool,
     },
     Resume,
     Pause,
@@ -1197,6 +1203,7 @@ impl Worker {
                 playing,
             } => self.restore_playback(position_ms, playing).await,
             BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
+            BackendCommand::SetPinned { uri, pinned } => self.set_pinned(uri, pinned).await,
             BackendCommand::Resume => self.resume().await,
             BackendCommand::Pause => self.pause().await,
             BackendCommand::Next => {
@@ -1444,7 +1451,7 @@ impl Worker {
             )
             .await
             {
-                Ok(pins) => refreshed(&events, pins),
+                Ok((pins, _)) => refreshed(&events, pins),
                 // Pins sit behind a fallback like the rest of the order: a
                 // failure leaves the stored set on screen.
                 Err(error) => log::warn!("pins: first read failed: {error:#}"),
@@ -1728,6 +1735,92 @@ impl Worker {
     /// error and the next library refresh puts the heart back.
     async fn set_liked(&mut self, track: &Track, liked: bool) -> Result<()> {
         self.spotify.set_liked(&track.source_id, liked).await
+    }
+
+    /// Pins or unpins one item on the account, then tells the window what
+    /// the set now holds.
+    ///
+    /// The window has already moved the button, so a refusal has to put it
+    /// back: the pins that go out on the way to the error are the ones
+    /// Spotify actually holds, not the ones the click hoped for.
+    async fn set_pinned(&mut self, uri: String, pinned: bool) -> Result<()> {
+        let pins = match self.write_pin(&uri, pinned).await {
+            Ok(pins) => pins,
+            Err(error) => {
+                // Only a set that was actually read can roll the button
+                // back. Storage failing too is no reason to send a window
+                // full of pins away as an empty section.
+                match self.store.pins().await {
+                    Ok(stored) => self.send_pins(stored),
+                    Err(error) => log::warn!("pins: nothing to roll back to: {error:#}"),
+                }
+                return Err(error);
+            }
+        };
+        self.send_pins(pins);
+        Ok(())
+    }
+
+    /// Writes one pin change through to Spotify and stores the set it left
+    /// behind.
+    ///
+    /// Pinning sends the whole set, so the set is re-read and merged first:
+    /// between Cadence's last read and this click, another device may have
+    /// pinned something, and sending a list without it would unpin it.
+    /// Unpinning sends a single removal, which no other device's pin can be
+    /// caught by, so it needs no read — the official client does the same.
+    async fn write_pin(&mut self, uri: &str, pinned: bool) -> Result<Pins> {
+        let playback = self
+            .connection
+            .player
+            .clone()
+            .context("Cadence is not connected to Spotify")?;
+        let pins = if pinned {
+            let local = self.store.pins().await?;
+            let (mut set, complete) = read_pins(&playback, &self.store).await?;
+            // A pin sends the whole set, so half of it must never go: what
+            // did not arrive would be unpinned by the write.
+            if !complete {
+                bail!("Spotify sent only part of the pinned set, so the pin was not written");
+            }
+            set.merge(&local);
+            set.pin(uri, self.date_added(uri).await);
+            playback.write_pins(set.write_items()).await?;
+            set
+        } else {
+            playback.write_pins(Pins::removal_items(uri)).await?;
+            let mut set = self.store.pins().await?;
+            set.unpin(uri);
+            set
+        };
+        // Spotify has the change now, so storage failing here is a stale
+        // cache and not a refusal: the next read settles it, and rolling the
+        // button back would be a lie. The sync token stays as the last read
+        // left it — a write is not a read, and Spotify hands none back.
+        if let Err(error) = self.store.set_pins(pins.clone(), None).await {
+            log::warn!("pins: the change landed but could not be stored: {error:#}");
+        }
+        Ok(pins)
+    }
+
+    /// When this item entered the library, in seconds, which is what a pin
+    /// carries: Spotify puts the library's own Date Added in this field, not
+    /// the moment of pinning. It comes from the index, and an item the index
+    /// has never placed carries no date rather than an invented one.
+    async fn date_added(&self, uri: &str) -> i32 {
+        self.store
+            .library_index()
+            .await
+            .ok()
+            .and_then(|index| index.added_at_seconds(uri))
+            .unwrap_or_default()
+    }
+
+    fn send_pins(&self, pins: Pins) {
+        let _ = self.events.send(BackendEvent::PinsLoaded {
+            generation: self.account_generation,
+            pins,
+        });
     }
 
     async fn resume(&mut self) -> Result<()> {
@@ -3375,11 +3468,11 @@ const MAX_PIN_PAGES: usize = 8;
 /// the set is read in full instead.
 async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins> {
     let Some(token) = store.pin_sync_token().await? else {
-        return read_pins(playback, store).await;
+        return Ok(read_pins(playback, store).await?.0);
     };
     let delta = playback.pin_delta(&token).await?;
     if !delta.delta_update_possible {
-        return read_pins(playback, store).await;
+        return Ok(read_pins(playback, store).await?.0);
     }
     let mut pins = store.pins().await?;
     pins.apply_delta(&delta);
@@ -3389,13 +3482,15 @@ async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins
     Ok(pins)
 }
 
-/// Reads the whole pinned set, in the order Spotify holds it.
+/// Reads the whole pinned set, in the order Spotify holds it, and says
+/// whether the whole of it arrived. Only a complete read may be written
+/// back, because a write replaces the set with what it is given.
 ///
 /// A read that runs out of pages stores what arrived but no sync token: an
 /// increment against a set with a hole in it would apply to the wrong
 /// thing, and would go on doing so. Without a token the next read is
 /// another full one.
-async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins> {
+async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<(Pins, bool)> {
     let mut pins = Pins::default();
     let mut page_token = None;
     let mut sync_token = None;
@@ -3417,7 +3512,7 @@ async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins> {
         sync_token = None;
     }
     store.set_pins(pins.clone(), sync_token).await?;
-    Ok(pins)
+    Ok((pins, complete))
 }
 
 /// Walks the rootlist into the index: the playlist set, the folder tree and

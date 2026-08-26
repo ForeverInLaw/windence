@@ -38,7 +38,9 @@ use crate::{
     credential_worker, dj, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
-    proto::collection2v2::{DeltaRequest, DeltaResponse, PageRequest, PageResponse},
+    proto::collection2v2::{
+        CollectionItem, DeltaRequest, DeltaResponse, PageRequest, PageResponse, WriteRequest,
+    },
     proto::recently_played_backend::RecentlyPlayed,
     proto_convert,
 };
@@ -396,6 +398,30 @@ impl Playback {
         self.collection_request("/collection/v2/delta", &request)
             .await
             .context("Spotify pin delta endpoint failed")
+    }
+
+    /// Writes to the pinned set.
+    ///
+    /// A pin sends the whole set — Spotify replaces what it holds with what
+    /// it is given — and an unpin sends one item marked removed. The server
+    /// answers with an empty body, so anything but an error is a success.
+    /// `client_update_id` comes back on the dealer message this write
+    /// causes, which is how a client tells its own change from another
+    /// device's.
+    pub(crate) async fn write_pins(&self, items: Vec<CollectionItem>) -> Result<()> {
+        let request = WriteRequest {
+            username: self.session.username(),
+            set: PIN_SET.to_owned(),
+            items,
+            client_update_id: format!("{:016x}", rand::random::<u64>()),
+            ..Default::default()
+        };
+        self.session
+            .spclient()
+            .request_with_protobuf(&http::Method::POST, "/collection/v2/write", None, &request)
+            .await
+            .context("Spotify refused the pin change")?;
+        Ok(())
     }
 
     async fn collection_request<Request, Response>(

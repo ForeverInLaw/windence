@@ -246,6 +246,25 @@ impl PlaylistPage {
         });
     }
 
+    /// Pins or unpins the open playlist on the account. Past the limit the
+    /// listener is warned and the write is sent anyway; see
+    /// [`library::PIN_WARNING_LIMIT`] for why the number is only a warning.
+    fn toggle_pin(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        let Some(playlist) = self.selected.clone() else {
+            return;
+        };
+        if !pinned && self.library.read(cx).pins_at_limit() {
+            cx.emit(PageEvent::Notice(format!(
+                "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
+                library::PIN_WARNING_LIMIT
+            )));
+        }
+        self.library.update(cx, |library, cx| {
+            library.set_playlist_pinned(&playlist, !pinned, cx)
+        });
+        cx.notify();
+    }
+
     /// The Spotify uri of the open playlist, which playback reports so the
     /// playlist moves to the top of the library list.
     fn context_uri(&self) -> Option<String> {
@@ -875,34 +894,26 @@ impl Render for PlaylistPage {
                                         )
                                     })
                                     .when(!dj::pin_hidden(&source_id), |actions| {
-                                        // Pins belong to the Spotify account
-                                        // now, and writing them back is the
-                                        // next change. Until then the button
-                                        // shows whether the account has this
-                                        // playlist pinned, and answers a
-                                        // click with the cursor that says it
-                                        // cannot be pressed.
+                                        // The pin belongs to the Spotify
+                                        // account, so this button writes to
+                                        // the account: what it does here it
+                                        // does on every device.
                                         actions.child(
-                                            div()
-                                                .id("playlist-pin")
-                                                .size(px(40.))
-                                                .flex_none()
-                                                .rounded(px(20.))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_not_allowed()
-                                                .opacity(0.4)
-                                                .bg(rgb(if pinned {
-                                                    palette.selection
-                                                } else {
-                                                    palette.control
-                                                }))
-                                                .child(components::icon(
-                                                    if pinned { "pin-fill" } else { "pin" },
-                                                    17.,
-                                                    palette.text_primary,
-                                                )),
+                                            components::icon_button(
+                                                palette,
+                                                "playlist-pin",
+                                                if pinned { "pin-fill" } else { "pin" },
+                                            )
+                                            .bg(rgb(if pinned {
+                                                palette.selection
+                                            } else {
+                                                palette.control
+                                            }))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.toggle_pin(pinned, cx);
+                                                }),
+                                            ),
                                         )
                                     }),
                             ),

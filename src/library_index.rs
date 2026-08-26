@@ -89,6 +89,18 @@ impl LibraryIndex {
         self.entries.is_empty()
     }
 
+    /// When this item entered the library, in seconds since the epoch,
+    /// which is the unit the pin set carries. `None` when the index has
+    /// never placed it, or placed it without a date.
+    pub fn added_at_seconds(&self, uri: &str) -> Option<i32> {
+        let uri = normalise_uri(uri);
+        self.entries
+            .iter()
+            .find(|entry| entry.uri == uri)
+            .and_then(|entry| entry.added_at)
+            .map(|added_at_ms| (added_at_ms / 1000).try_into().unwrap_or(i32::MAX))
+    }
+
     /// Records that a context was played just now, so a playlist started in
     /// Cadence rises immediately instead of waiting for the next refresh.
     /// The folder holding it rises with it, because a folder's key is the

@@ -37,9 +37,13 @@ index — so uris are normalised on the way into the index.
 "Recents", the default sort, orders by `max(last_played, add_time)` descending.
 A folder has no `last_played` of its own and takes the newest of its children.
 
-This lands in two steps: reading the order and the pins first, writing pins
-back after. The decisions below describe the finished shape, so the write
-half is written down here before it exists in the code.
+A pin write sends the whole set. Each item carries the library's own Date
+Added, in seconds, rather than the moment it was pinned. Spotify answers with
+`200` and an empty body, then pushes a dealer message carrying back the
+`client_update_id` the write sent. A client can use that to tell its own
+change from another device's. Cadence does not: it answers every one of those
+messages the same way, with a `delta` call that costs one request and settles
+nothing when the change turns out to be its own.
 
 ## Decisions
 
@@ -52,6 +56,10 @@ half is written down here before it exists in the code.
   otherwise silently clobber a pin made on another device. Unpinning sends a
   single `CollectionItem{is_removed: true}`, as the desktop does, where no race
   exists. The local `pinned_playlists` table is dropped: one truth, not two.
+- **A refused write is rolled back.** The button moves on the click, so the
+  answer has to be able to move it back. What goes to the window after a
+  failure is the set Spotify holds — freshly read, in the pinning case — and
+  not the set the click hoped for.
 - **A dealer message is a nudge, not the change.** The subscription says
   that the pinned set moved, never how, and never carries the set itself.
   Each message is answered with a `delta` call against the stored sync

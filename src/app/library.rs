@@ -1,5 +1,11 @@
 use super::*;
 
+/// The pin count the interface warns at. Spotify reports its real limit
+/// only over the Esperanto IPC its own desktop client speaks to itself,
+/// never over the network, so this is a warning and never a rule: the write
+/// is attempted regardless, and Spotify's answer is what decides.
+pub(super) const PIN_WARNING_LIMIT: usize = 20;
+
 /// Debounce between revalidations, so rapid window switches coalesce. Short
 /// on purpose: a revalidation is a two-request head probe unless something
 /// changed, and Spotify's rate limit is a rolling 30-second window. Wall
@@ -182,7 +188,7 @@ impl Library {
         let rows = library_index::rows(
             &self.index,
             &self.playlists,
-            self.pins.uris(),
+            &self.pins.uris(),
             self.sort,
             &self.expanded_folders,
         );
@@ -240,6 +246,40 @@ impl Library {
             && self
                 .pins
                 .contains(&library_index::playlist_uri(&playlist.source_id))
+    }
+
+    /// Whether one more pin would go past what Spotify is known to accept.
+    /// See [`PIN_WARNING_LIMIT`]: the interface warns on this, and nothing
+    /// stops the write.
+    pub(super) fn pins_at_limit(&self) -> bool {
+        self.pins.len() >= PIN_WARNING_LIMIT
+    }
+
+    /// Pins or unpins a playlist on the account.
+    ///
+    /// The section here moves at once, so the button answers the click.
+    /// Spotify is told after, and what it holds is what settles the section.
+    pub(super) fn set_playlist_pinned(
+        &mut self,
+        playlist: &model::Playlist,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // A pin is a Spotify account's, so nothing else can carry one.
+        if playlist.provider != model::Provider::Spotify {
+            return;
+        }
+        let uri = library_index::playlist_uri(&playlist.source_id);
+        if pinned {
+            // Date Added belongs to the library, not to the pin, and the
+            // write path reads it the same way. This copy is only drawn.
+            self.pins
+                .pin(&uri, self.index.added_at_seconds(&uri).unwrap_or_default());
+        } else {
+            self.pins.unpin(&uri);
+        }
+        self.refresh_rows(cx);
+        self.backend.send(BackendCommand::SetPinned { uri, pinned });
     }
 
     /// Marks the catalog as settled without contents, for when the fetch failed.

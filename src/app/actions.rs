@@ -257,6 +257,7 @@ impl Workspace {
         match event {
             page::PageEvent::Loaded => self.last_error = None,
             page::PageEvent::Failed(error) => self.last_error = Some(error.clone()),
+            page::PageEvent::Notice(notice) => self.action_notice = Some(notice.clone()),
             page::PageEvent::OpenPlaylist(playlist) => {
                 self.load_playlist(playlist.clone(), cx);
                 self.open_playlist(origin, cx);
