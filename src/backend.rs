@@ -11,12 +11,14 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::StreamExt as _;
-use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
+use librespot::{
+    core::SpotifyUri, playback::player::PlayerEvent, protocol::connect::PutStateReason,
+};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     audio::NarrationClip,
-    dj,
+    connect, dj,
     library_index::{self, LibraryIndex, RootlistScan},
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
     pins::{self, Pins},
@@ -923,7 +925,8 @@ async fn run(
         Err(acknowledged) => return acknowledged,
     };
     let (unavailable, mut unavailable_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let mut worker = Worker::new(startup, events, unavailable);
+    let (connected, mut connected_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let mut worker = Worker::new(startup, events, unavailable, connected);
     if let Err(acknowledged) = worker.boot(&mut commands, &mut shutdown).await {
         return acknowledged;
     }
@@ -982,6 +985,12 @@ async fn run(
                 }
                 continue;
             }
+            connected = connected_rx.recv() => {
+                if connected.is_some() {
+                    worker.announce_device();
+                }
+                continue;
+            }
             authorization = finished(&mut worker.session.authorization) => {
                 worker.finish_authorization(authorization).await;
                 continue;
@@ -1008,6 +1017,10 @@ struct Worker {
     /// Reports unplayable tracks from the player observer, so a dead
     /// current entry can auto-skip to the next one.
     unavailable: UnboundedSender<String>,
+    /// Says that Spotify has issued a connection id, which is what a device
+    /// state is tagged with: the first one is when Cadence can announce
+    /// itself, and each later one follows a socket that reconnected.
+    connected: UnboundedSender<()>,
     store: BlockingStore,
     spotify: Spotify,
     configuration: Option<SpotifyConfiguration>,
@@ -1035,10 +1048,12 @@ impl Worker {
         startup: Startup,
         events: UnboundedSender<BackendEvent>,
         unavailable: UnboundedSender<String>,
+        connected: UnboundedSender<()>,
     ) -> Self {
         Self {
             events,
             unavailable,
+            connected,
             store: startup.store,
             spotify: startup.spotify,
             configuration: startup.configuration,
@@ -1144,6 +1159,7 @@ impl Worker {
                 // A dropped socket ends the pin watch. Picking it back up
                 // here costs one increment when it is already running.
                 self.watch_pins();
+                self.watch_connection_id();
                 Ok(())
             }
             BackendCommand::SearchCatalog { query, respond } => {
@@ -1189,6 +1205,10 @@ impl Worker {
                 kind,
                 context_uri,
             } => {
+                // What was opened is also what the reported state names as
+                // the context, so a play here reads on other devices the
+                // way the same play from a phone would.
+                self.queue.context_uri = context_uri.clone();
                 if let Some(uri) = context_uri {
                     self.note_context_played(uri).await;
                 }
@@ -1413,6 +1433,66 @@ impl Worker {
                 Err(error) => log::warn!("library order: refresh failed: {error:#}"),
             }
         }));
+    }
+
+    /// Follows the connection ids Spotify issues, and announces the device
+    /// on each one.
+    ///
+    /// A device state is tagged with the id of the socket it belongs to, so
+    /// there is nothing to report until the first id arrives, and a socket
+    /// that reconnects issues another. Announcing again on each is how the
+    /// account keeps knowing this device is here.
+    fn watch_connection_id(&mut self) {
+        let Some(playback) = self.connection.player.clone() else {
+            return;
+        };
+        if self
+            .catalog
+            .connection_id
+            .as_ref()
+            .is_some_and(|running| !running.is_finished())
+        {
+            return;
+        }
+        let connected = self.connected.clone();
+        self.catalog.connection_id = Some(tokio::spawn(async move {
+            let mut ids = match playback.watch_connection_id().await {
+                Ok(ids) => ids,
+                Err(error) => {
+                    log::warn!("connect: no connection id to report against: {error:#}");
+                    return;
+                }
+            };
+            while let Some(message) = ids.next().await {
+                if playback.apply_connection_id(&message) {
+                    let _ = connected.send(());
+                }
+            }
+        }));
+    }
+
+    /// Announces the device to the account, with whatever it is playing.
+    fn announce_device(&self) {
+        self.report_playback(PutStateReason::NEW_DEVICE);
+    }
+
+    /// Tells Spotify what Cadence is playing.
+    ///
+    /// This is what puts a play into the account's history and moves the
+    /// playlist up the library list on the listener's other devices. It
+    /// runs on its own so a slow or refused report never holds up playback,
+    /// and a failure is logged rather than shown: nothing the listener can
+    /// hear depends on it.
+    fn report_playback(&self, reason: PutStateReason) {
+        let Some(playback) = self.connection.player.clone() else {
+            return;
+        };
+        let report = self.queue.report();
+        tokio::spawn(async move {
+            if let Err(error) = playback.report_state(report.as_ref(), reason).await {
+                log::warn!("connect: could not report what is playing: {error:#}");
+            }
+        });
     }
 
     /// Reads the pinned set over the playback session, then follows it for
@@ -1864,6 +1944,7 @@ impl Worker {
         } else {
             // Playback continues from the original playing load.
             self.queue.play_requested = true;
+            self.report_playback(PutStateReason::PLAYER_STATE_CHANGED);
             self.top_up_queue();
         }
         result
@@ -1876,6 +1957,7 @@ impl Worker {
         } else {
             // A paused queue must not auto-skip on a late failure report.
             self.queue.play_requested = false;
+            self.report_playback(PutStateReason::PLAYER_STATE_CHANGED);
         }
         result
     }
@@ -1917,6 +1999,9 @@ impl Worker {
                 send_error(&self.events, error);
             }
             let _ = self.events.send(BackendEvent::QueueEnded);
+            // Nothing is playing here any more, and the account should not
+            // go on thinking otherwise.
+            self.report_playback(PutStateReason::PLAYER_STATE_CHANGED);
             // Late fallback: if the song outran the autoplay prefetch (or
             // none ran), this fetch resumes playback on arrival.
             self.top_up_queue();
@@ -1988,6 +2073,9 @@ impl Worker {
         self.queue.current_unavailable = false;
         // Queue loads always start playing.
         self.queue.play_requested = true;
+        // A new track is a new play, and a play of its own to report.
+        self.queue.playback_id = format!("{:032x}", rand::random::<u128>());
+        self.report_playback(PutStateReason::PLAYER_STATE_CHANGED);
         if let Err(error) = self.commit_queue_change(index).await {
             send_error(&self.events, error);
         }
@@ -2051,9 +2139,10 @@ impl Worker {
                 let _ = self.events.send(BackendEvent::PlaybackReady);
                 // The order and the pins need this session: it is the only
                 // thing that can read the rootlist, the play history and
-                // the pinned set.
+                // the pinned set. Reporting what Cadence plays needs it too.
                 self.refresh_library_order(true);
                 self.watch_pins();
+                self.watch_connection_id();
                 if self.connection.connect_restoring {
                     let _ = self.events.send(BackendEvent::PlaybackReconnected);
                 } else if let Err(error) = restore_saved_playback(
@@ -2847,6 +2936,12 @@ struct PlayQueue {
     kind: ContextKind,
     index: Option<usize>,
     position_ms: u32,
+    /// What the queue was started from, for the state Cadence reports to
+    /// Spotify. A queue built track by track was started from nothing.
+    context_uri: Option<String>,
+    /// Names this run of the current track in what is reported, so several
+    /// reports about one track read as one play. New on every load.
+    playback_id: String,
     /// The last track finished with nothing after it. librespot sits in
     /// EndOfTrack, where play() and seek() are no-ops; only a fresh load
     /// leaves it, so Resume and Seek take different paths while this is set.
@@ -2871,6 +2966,8 @@ impl PlayQueue {
                 kind: snapshot.context_kind,
                 index: Some(snapshot.index),
                 position_ms: snapshot.position_ms,
+                context_uri: None,
+                playback_id: String::new(),
                 ended: false,
                 play_requested: false,
                 current_unavailable: false,
@@ -2884,6 +2981,20 @@ impl PlayQueue {
         self.index
             .and_then(|index| self.tracks.get(index))
             .and_then(|track| track.spotify_uri.as_deref())
+    }
+
+    /// What Spotify should be told this queue is doing, if anything. A
+    /// track Spotify cannot name — a local file — is nothing to report.
+    fn report(&self) -> Option<connect::Report> {
+        let track = self.index.and_then(|index| self.tracks.get(index))?;
+        Some(connect::Report {
+            track_uri: track.spotify_uri.clone()?,
+            context_uri: self.context_uri.clone(),
+            playback_id: self.playback_id.clone(),
+            position_ms: self.position_ms,
+            duration_ms: track.duration_ms,
+            playing: self.play_requested && !self.ended,
+        })
     }
 
     /// Whether an unavailable-track report should advance the queue: only a
@@ -3149,6 +3260,9 @@ struct CatalogFetches {
     /// The pinned set: one task that reads it, then stays on the dealer
     /// subscription for as long as the session lives.
     pins: Option<tokio::task::JoinHandle<()>>,
+    /// The connection ids Spotify issues for this session, which every
+    /// device state Cadence reports is tagged with.
+    connection_id: Option<tokio::task::JoinHandle<()>>,
     search: Option<tokio::task::JoinHandle<()>>,
     playlist: Option<tokio::task::JoinHandle<()>>,
     artist: Option<tokio::task::JoinHandle<()>>,
@@ -3267,6 +3381,7 @@ impl CatalogFetches {
         abort_task(&mut self.reload);
         abort_task(&mut self.order);
         abort_task(&mut self.pins);
+        abort_task(&mut self.connection_id);
         abort_task(&mut self.search);
         abort_task(&mut self.playlist);
         abort_task(&mut self.artist);

@@ -14,7 +14,7 @@ use keyring::Entry;
 use librespot::{
     core::{
         SpotifyUri, authentication::Credentials, config::SessionConfig, dealer::Subscription,
-        session::Session,
+        dealer::protocol::Message as DealerMessage, session::Session,
     },
     metadata::Metadata,
     oauth::OAuthClientBuilder,
@@ -24,7 +24,7 @@ use librespot::{
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
     },
-    protocol::playlist4_external,
+    protocol::{connect::PutStateReason, playlist4_external},
 };
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, EndpointNotSet, EndpointSet,
@@ -35,7 +35,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     audio::{NarrationClip, low_latency_sdl_sink},
-    credential_worker, dj, model, narration,
+    connect, credential_worker, dj, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
     proto::collection2v2::{
@@ -52,6 +52,10 @@ const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
 /// The collection set Spotify keeps the account's pins in.
 const PIN_SET: &str = "ylpin";
+/// Where Spotify announces the id of the socket this session is on, and the
+/// header that announcement carries it in.
+const CONNECTION_ID_TOPIC: &str = "hm://pusher/v1/connections/";
+const CONNECTION_ID_HEADER: &str = "Spotify-Connection-Id";
 /// How many internal-protocol track lookups overlap when resolving a DJ
 /// stretch: a whole stretch resolves well inside the catalog timeout
 /// without bursting one access point.
@@ -442,6 +446,62 @@ impl Playback {
             .with_context(|| format!("Spotify {endpoint} returned an undecodable message"))
     }
 
+    /// Tells Spotify what Cadence is playing, so the play reaches the
+    /// account's history and every other client's library order.
+    ///
+    /// The request carries the session's connection id in a header, and
+    /// that id arrives over the dealer socket — see [`Self::watch_connection_id`],
+    /// which has to have run at least once before this can succeed.
+    pub(crate) async fn report_state(
+        &self,
+        report: Option<&connect::Report>,
+        reason: PutStateReason,
+    ) -> Result<()> {
+        let identity = connect::Identity {
+            device_id: self.session.device_id().to_owned(),
+            client_id: self.session.client_id(),
+        };
+        let request = connect::state_request(
+            &identity,
+            report,
+            reason,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        self.session
+            .spclient()
+            .put_connect_state_request(&request)
+            .await
+            .context("Spotify refused the device state")?;
+        Ok(())
+    }
+
+    /// Follows the connection ids Spotify issues for this session.
+    ///
+    /// Every connect-state request is tagged with the id of the socket it
+    /// belongs to, and Spotify hands that id out over the socket itself. It
+    /// is re-issued whenever the socket reconnects, so this is a stream and
+    /// not a one-off: [`Self::apply_connection_id`] stores each one.
+    pub(crate) async fn watch_connection_id(&self) -> Result<Subscription> {
+        let subscription = self
+            .session
+            .dealer()
+            .add_listen_for(CONNECTION_ID_TOPIC)
+            .context("could not follow the Spotify connection id")?;
+        self.start_dealer().await?;
+        Ok(subscription)
+    }
+
+    /// Stores the connection id a dealer message carried, and says whether
+    /// there was one. A message without the header names no connection and
+    /// is nothing to report against.
+    pub(crate) fn apply_connection_id(&self, message: &DealerMessage) -> bool {
+        let Some(connection_id) = message.headers.get(CONNECTION_ID_HEADER) else {
+            return false;
+        };
+        self.session.set_connection_id(connection_id);
+        true
+    }
+
     /// Opens the dealer subscription that reports pin changes.
     ///
     /// Spotify sends one of these whenever the set moves on any device. The
@@ -454,16 +514,22 @@ impl Playback {
             "hm://collection/{PIN_SET}/{}",
             self.session.username()
         ))?;
-        // Nothing else in Cadence opens the socket, so this is where it
-        // starts — once per session, because starting it a second time
-        // fails for a reason that says nothing about the first.
+        self.start_dealer().await?;
+        Ok(subscription)
+    }
+
+    /// Opens the dealer socket, once per session: starting it a second
+    /// time fails for a reason that says nothing about the first. Nothing
+    /// else in Cadence opens it, so every subscription comes through here.
+    async fn start_dealer(&self) -> Result<()> {
         if !self.dealer_started.swap(true, Ordering::SeqCst) {
-            dealer
+            self.session
+                .dealer()
                 .start()
                 .await
                 .context("could not open the Spotify dealer socket")?;
         }
-        Ok(subscription)
+        Ok(())
     }
 
     pub async fn radio_track_uris(&self, seed_uri: &str) -> Result<Vec<String>> {

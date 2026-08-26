@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod backend;
+pub mod connect;
 mod credential_worker;
 pub mod dj;
 pub mod library_index;
