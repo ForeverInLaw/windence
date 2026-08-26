@@ -20,6 +20,11 @@ use librespot::protocol::playlist4_external::SelectedListContent;
 use crate::model::Playlist;
 use crate::proto::recently_played_backend::RecentlyPlayed;
 
+/// Liked Songs, which the pinned set holds on most accounts. Cadence gives
+/// it a permanent sidebar row of its own, so the pinned section never draws
+/// it a second time.
+pub const LIKED_SONGS_URI: &str = "spotify:collection";
+
 /// The uri prefix every folder is written as once normalised.
 const FOLDER_PREFIX: &str = "spotify:folder:";
 const PLAYLIST_PREFIX: &str = "spotify:playlist:";
@@ -324,21 +329,40 @@ pub fn recently_played_withheld(message: &RecentlyPlayed) -> Option<u32> {
     (next < message.total().max(0) as u32).then_some(next)
 }
 
-/// The rows the playlist list draws, in the order `sort` puts them.
+/// Everything the library draws, in one pass so that the two places it is
+/// drawn cannot disagree about what is pinned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LibraryRows {
+    /// The pinned items alone, for the sidebar's own section.
+    pub pinned: Vec<LibraryRow>,
+    /// The whole list: the pinned items first, in the order Spotify holds
+    /// them, then everything else in the order the sort puts it.
+    pub all: Vec<LibraryRow>,
+}
+
+/// Builds both lists.
 ///
 /// `playlists` is the Web API load, which owns every name, owner, artwork
 /// and track count; the index owns where things sit. A playlist the index
 /// has never heard of — the index is empty, or the rootlist arrived first —
 /// is placed at the top level as if the rootlist had listed it last, so the
 /// list is never shorter than the account's and every mode still sorts it.
+///
+/// `sort` orders what an opened folder holds, pinned folders included. The
+/// pins themselves are hand-ordered and no mode moves them.
 pub fn rows(
     index: &LibraryIndex,
     playlists: &[Playlist],
+    pins: &[String],
     sort: PlaylistSort,
     expanded: &HashSet<String>,
-) -> Vec<LibraryRow> {
+) -> LibraryRows {
     let entries = with_unplaced(index, playlists);
-    Ordering::new(&entries, playlists, sort, expanded).level(None, 0)
+    let ordering = Ordering::new(&entries, playlists, pins, sort, expanded);
+    let pinned = ordering.pinned();
+    let mut all = pinned.clone();
+    all.extend(ordering.level(None, 0));
+    LibraryRows { pinned, all }
 }
 
 /// The index plus one top-level entry per playlist it has not placed. With
@@ -388,6 +412,11 @@ struct Ordering<'a> {
     newest: HashMap<&'a str, i64>,
     /// The Web API playlist behind each index entry, by uri.
     known: HashMap<String, &'a Playlist>,
+    /// The index entry behind each uri, for the pinned section, which is
+    /// given uris rather than a level of the tree.
+    placed: HashMap<&'a str, &'a IndexEntry>,
+    /// The pinned uris, in Spotify's own order.
+    pins: &'a [String],
     sort: PlaylistSort,
     expanded: &'a HashSet<String>,
 }
@@ -396,6 +425,7 @@ impl<'a> Ordering<'a> {
     fn new(
         entries: &'a [IndexEntry],
         playlists: &'a [Playlist],
+        pins: &'a [String],
         sort: PlaylistSort,
         expanded: &'a HashSet<String>,
     ) -> Self {
@@ -406,6 +436,7 @@ impl<'a> Ordering<'a> {
         // Index entries the Web API load knows nothing about are left out: a
         // playlist with no name has no row to draw.
         let mut children: HashMap<Option<&str>, Vec<&IndexEntry>> = HashMap::new();
+        let mut placed = HashMap::new();
         for entry in entries {
             let listed = match entry.kind {
                 EntryKind::Playlist => known.contains_key(&entry.uri),
@@ -416,6 +447,7 @@ impl<'a> Ordering<'a> {
                     .entry(entry.folder.as_deref())
                     .or_default()
                     .push(entry);
+                placed.insert(entry.uri.as_str(), entry);
             }
         }
         for level in children.values_mut() {
@@ -425,6 +457,8 @@ impl<'a> Ordering<'a> {
             children,
             newest: HashMap::new(),
             known,
+            placed,
+            pins,
             sort,
             expanded,
         };
@@ -455,7 +489,8 @@ impl<'a> Ordering<'a> {
     }
 
     /// One level of the tree in sorted order, following into the folders the
-    /// listener has opened.
+    /// listener has opened. A pinned item is drawn by [`Self::pinned`]
+    /// instead, so the top level leaves it out rather than listing it twice.
     fn level(&self, folder: Option<&str>, depth: usize) -> Vec<LibraryRow> {
         let Some(level) = self.children.get(&folder) else {
             return Vec::new();
@@ -467,36 +502,62 @@ impl<'a> Ordering<'a> {
             self.compare(left, right)
                 .then(left.position.cmp(&right.position))
         });
-        let mut rows = Vec::new();
-        for entry in level {
-            match entry.kind {
-                EntryKind::Playlist => {
-                    if let Some(playlist) = self.known.get(&entry.uri) {
-                        rows.push(LibraryRow::Playlist {
-                            playlist: (*playlist).clone(),
-                            depth,
-                        });
-                    }
-                }
-                EntryKind::Folder => {
-                    let expanded = self.expanded.contains(&entry.uri);
-                    rows.push(LibraryRow::Folder {
-                        uri: entry.uri.clone(),
-                        name: entry.name.clone().unwrap_or_else(|| "Folder".to_owned()),
+        level
+            .into_iter()
+            .filter(|entry| folder.is_some() || !self.is_pinned(&entry.uri))
+            .flat_map(|entry| self.rows_for(entry, depth))
+            .collect()
+    }
+
+    /// The pinned section: every pin, in the order Spotify holds them, with
+    /// a pinned folder opening in place like any other. A pin the library
+    /// knows nothing about — a podcast, an artist, something a Cadence build
+    /// does not draw — has no row and is passed over.
+    fn pinned(&self) -> Vec<LibraryRow> {
+        self.pins
+            .iter()
+            .filter(|uri| uri.as_str() != LIKED_SONGS_URI)
+            .filter_map(|uri| self.placed.get(uri.as_str()).copied())
+            .flat_map(|entry| self.rows_for(entry, 0))
+            .collect()
+    }
+
+    /// One entry's rows: itself, and what it holds when it is a folder the
+    /// listener has opened.
+    fn rows_for(&self, entry: &IndexEntry, depth: usize) -> Vec<LibraryRow> {
+        match entry.kind {
+            EntryKind::Playlist => self
+                .known
+                .get(&entry.uri)
+                .map(|playlist| {
+                    vec![LibraryRow::Playlist {
+                        playlist: (*playlist).clone(),
                         depth,
-                        children: self
-                            .children
-                            .get(&Some(entry.uri.as_str()))
-                            .map_or(0, Vec::len),
-                        expanded,
-                    });
-                    if expanded {
-                        rows.extend(self.level(Some(&entry.uri), depth + 1));
-                    }
+                    }]
+                })
+                .unwrap_or_default(),
+            EntryKind::Folder => {
+                let expanded = self.expanded.contains(&entry.uri);
+                let mut rows = vec![LibraryRow::Folder {
+                    uri: entry.uri.clone(),
+                    name: entry.name.clone().unwrap_or_else(|| "Folder".to_owned()),
+                    depth,
+                    children: self
+                        .children
+                        .get(&Some(entry.uri.as_str()))
+                        .map_or(0, Vec::len),
+                    expanded,
+                }];
+                if expanded {
+                    rows.extend(self.level(Some(&entry.uri), depth + 1));
                 }
+                rows
             }
         }
-        rows
+    }
+
+    fn is_pinned(&self, uri: &str) -> bool {
+        self.pins.iter().any(|pinned| pinned == uri)
     }
 
     fn compare(&self, left: &IndexEntry, right: &IndexEntry) -> std::cmp::Ordering {
@@ -669,6 +730,16 @@ mod tests {
         (index, playlists)
     }
 
+    /// The whole list with nothing pinned, which is what most of these check.
+    fn listed(
+        index: &LibraryIndex,
+        playlists: &[Playlist],
+        sort: PlaylistSort,
+        expanded: &HashSet<String>,
+    ) -> Vec<LibraryRow> {
+        rows(index, playlists, &[], sort, expanded).all
+    }
+
     fn names(rows: &[LibraryRow]) -> Vec<String> {
         rows.iter()
             .map(|row| match row {
@@ -808,7 +879,7 @@ mod tests {
         let (index, playlists) = fixture();
         let expanded = HashSet::from(["spotify:folder:f1".to_owned()]);
 
-        let rows = rows(&index, &playlists, PlaylistSort::Recents, &expanded);
+        let rows = listed(&index, &playlists, PlaylistSort::Recents, &expanded);
 
         // Mixes takes Bravo's play at 900, behind Delta's add at 1000 and
         // ahead of Alpha, whose newest signal is a play at 100.
@@ -825,7 +896,7 @@ mod tests {
         let (index, playlists) = fixture();
         let expanded = HashSet::from(["spotify:folder:f1".to_owned()]);
 
-        let rows = rows(&index, &playlists, PlaylistSort::DateAdded, &expanded);
+        let rows = listed(&index, &playlists, PlaylistSort::DateAdded, &expanded);
 
         // Mixes takes Bravo's add at 400, behind Delta's at 1000.
         assert_eq!(
@@ -840,7 +911,7 @@ mod tests {
         let expanded = HashSet::from(["spotify:folder:f1".to_owned()]);
 
         assert_eq!(
-            names(&rows(
+            names(&listed(
                 &index,
                 &playlists,
                 PlaylistSort::Alphabetical,
@@ -850,7 +921,12 @@ mod tests {
         );
         // The folder has no creator, so it leads; then Spotify, then Zoe.
         assert_eq!(
-            names(&rows(&index, &playlists, PlaylistSort::Creator, &expanded)),
+            names(&listed(
+                &index,
+                &playlists,
+                PlaylistSort::Creator,
+                &expanded
+            )),
             vec!["Mixes", "Bravo", "Charlie", "Delta", "Alpha"]
         );
     }
@@ -859,7 +935,7 @@ mod tests {
     fn a_closed_folder_hides_its_children_but_keeps_its_place() {
         let (index, playlists) = fixture();
 
-        let rows = rows(&index, &playlists, PlaylistSort::Recents, &HashSet::new());
+        let rows = listed(&index, &playlists, PlaylistSort::Recents, &HashSet::new());
 
         assert_eq!(names(&rows), vec!["Delta", "Mixes", "Alpha"]);
         match &rows[1] {
@@ -880,14 +956,24 @@ mod tests {
 
         index.mark_played("spotify:playlist:ddd", 5_000);
         assert_eq!(
-            names(&rows(&index, &playlists, PlaylistSort::Recents, &expanded)),
+            names(&listed(
+                &index,
+                &playlists,
+                PlaylistSort::Recents,
+                &expanded
+            )),
             vec!["Delta", "Mixes", "Alpha"]
         );
 
         // The legacy spelling reaches the same entry.
         index.mark_played("spotify:user:someone:playlist:ccc", 9_000);
         assert_eq!(
-            names(&rows(&index, &playlists, PlaylistSort::Recents, &expanded)),
+            names(&listed(
+                &index,
+                &playlists,
+                PlaylistSort::Recents,
+                &expanded
+            )),
             vec!["Mixes", "Delta", "Alpha"]
         );
     }
@@ -900,7 +986,7 @@ mod tests {
         // Nothing is known about when it arrived, so a time-ordered mode
         // leaves it at the bottom.
         assert_eq!(
-            names(&rows(
+            names(&listed(
                 &index,
                 &playlists,
                 PlaylistSort::Recents,
@@ -911,7 +997,7 @@ mod tests {
         // A name-ordered mode has everything it needs, so it sorts the new
         // playlist into place rather than leaving it below Z.
         assert_eq!(
-            names(&rows(
+            names(&listed(
                 &index,
                 &playlists,
                 PlaylistSort::Alphabetical,
@@ -928,12 +1014,17 @@ mod tests {
         let expanded = HashSet::new();
 
         assert_eq!(
-            names(&rows(&index, &playlists, PlaylistSort::Recents, &expanded)),
+            names(&listed(
+                &index,
+                &playlists,
+                PlaylistSort::Recents,
+                &expanded
+            )),
             vec!["Alpha", "Bravo", "Charlie", "Delta"],
             "the Web API order stands"
         );
         assert_eq!(
-            names(&rows(
+            names(&listed(
                 &index,
                 &playlists,
                 PlaylistSort::Alphabetical,
@@ -942,7 +1033,12 @@ mod tests {
             vec!["Alpha", "Bravo", "Charlie", "Delta"]
         );
         assert_eq!(
-            names(&rows(&index, &playlists, PlaylistSort::Creator, &expanded)),
+            names(&listed(
+                &index,
+                &playlists,
+                PlaylistSort::Creator,
+                &expanded
+            )),
             vec!["Bravo", "Charlie", "Delta", "Alpha"]
         );
         for mode in PlaylistSort::ALL {
@@ -951,6 +1047,36 @@ mod tests {
                 matches!(mode, PlaylistSort::Alphabetical | PlaylistSort::Creator),
                 "{mode:?}"
             );
+        }
+    }
+
+    #[test]
+    fn pins_lead_the_list_in_spotifys_order_and_no_sort_moves_them() {
+        let (index, playlists) = fixture();
+        let expanded = HashSet::from(["spotify:folder:f1".to_owned()]);
+        let pins = [
+            // Liked Songs has a permanent sidebar row of its own.
+            LIKED_SONGS_URI.to_owned(),
+            "spotify:playlist:ddd".to_owned(),
+            "spotify:folder:f1".to_owned(),
+            // Nothing in the library answers to this, so it has no row.
+            "spotify:show:zzz".to_owned(),
+        ];
+
+        let pinned = rows(&index, &playlists, &pins, PlaylistSort::Recents, &expanded).pinned;
+        assert_eq!(names(&pinned), vec!["Delta", "Mixes", "Bravo", "Charlie"]);
+        // A pinned folder opens in place, like any other.
+        assert_eq!(
+            pinned.iter().map(LibraryRow::depth).collect::<Vec<_>>(),
+            vec![0, 0, 1, 1]
+        );
+
+        for sort in PlaylistSort::ALL {
+            let rows = rows(&index, &playlists, &pins, sort, &expanded);
+            assert_eq!(rows.pinned, pinned, "{sort:?} moved the pins");
+            assert_eq!(names(&rows.all[..pinned.len()]), names(&pinned), "{sort:?}");
+            // What is pinned is drawn once: at the top, not again below.
+            assert_eq!(names(&rows.all[pinned.len()..]), vec!["Alpha"], "{sort:?}");
         }
     }
 

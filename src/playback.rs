@@ -12,7 +12,10 @@ use async_channel as async_chan;
 use futures::StreamExt as _;
 use keyring::Entry;
 use librespot::{
-    core::{SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session},
+    core::{
+        SpotifyUri, authentication::Credentials, config::SessionConfig, dealer::Subscription,
+        session::Session,
+    },
     metadata::Metadata,
     oauth::OAuthClientBuilder,
     playback::{
@@ -35,6 +38,7 @@ use crate::{
     credential_worker, dj, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    proto::collection2v2::{DeltaRequest, DeltaResponse, PageRequest, PageResponse},
     proto::recently_played_backend::RecentlyPlayed,
     proto_convert,
 };
@@ -44,6 +48,8 @@ const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const KEYCHAIN_SERVICE: &str = "com.cadence.spotify";
 const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
+/// The collection set Spotify keeps the account's pins in.
+const PIN_SET: &str = "ylpin";
 /// How many internal-protocol track lookups overlap when resolving a DJ
 /// stretch: a whole stretch resolves well inside the catalog timeout
 /// without bursting one access point.
@@ -124,6 +130,9 @@ pub struct Playback {
     /// followed, so this client is configured differently from the
     /// session's own.
     http: oauth2_reqwest::Client,
+    /// Whether the dealer socket has been opened on this session. It takes
+    /// one start, and a second one fails whatever the first one did.
+    dealer_started: Arc<AtomicBool>,
 }
 
 struct PlaybackOAuthToken {
@@ -271,6 +280,7 @@ impl Playback {
                 .redirect(oauth2_reqwest::redirect::Policy::none())
                 .build()
                 .context("could not configure the narration client")?,
+            dealer_started: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -354,6 +364,80 @@ impl Playback {
             .context("Spotify recently-played endpoint failed")?;
         RecentlyPlayed::parse_from_bytes(&body)
             .context("Spotify recently-played returned an undecodable message")
+    }
+
+    /// One page of the pinned set. `page_token` is what the previous page
+    /// handed back, or `None` for the first.
+    pub(crate) async fn pin_page(
+        &self,
+        limit: usize,
+        page_token: Option<&str>,
+    ) -> Result<PageResponse> {
+        let request = PageRequest {
+            username: self.session.username(),
+            set: PIN_SET.to_owned(),
+            pagination_token: page_token.unwrap_or_default().to_owned(),
+            limit: limit.try_into().unwrap_or(i32::MAX),
+            ..Default::default()
+        };
+        self.collection_request("/collection/v2/paging", &request)
+            .await
+            .context("Spotify pin paging endpoint failed")
+    }
+
+    /// What has changed in the pinned set since `sync_token` was issued.
+    pub(crate) async fn pin_delta(&self, sync_token: &str) -> Result<DeltaResponse> {
+        let request = DeltaRequest {
+            username: self.session.username(),
+            set: PIN_SET.to_owned(),
+            last_sync_token: sync_token.to_owned(),
+            ..Default::default()
+        };
+        self.collection_request("/collection/v2/delta", &request)
+            .await
+            .context("Spotify pin delta endpoint failed")
+    }
+
+    async fn collection_request<Request, Response>(
+        &self,
+        endpoint: &str,
+        request: &Request,
+    ) -> Result<Response>
+    where
+        Request: protobuf::Message + protobuf::MessageFull,
+        Response: protobuf::Message,
+    {
+        let body = self
+            .session
+            .spclient()
+            .request_with_protobuf(&http::Method::POST, endpoint, None, request)
+            .await?;
+        Response::parse_from_bytes(&body)
+            .with_context(|| format!("Spotify {endpoint} returned an undecodable message"))
+    }
+
+    /// Opens the dealer subscription that reports pin changes.
+    ///
+    /// Spotify sends one of these whenever the set moves on any device. The
+    /// message says that something changed, not what, so Cadence answers it
+    /// with an increment against the stored sync token. It also never
+    /// carries the set itself, which is why the full read comes first.
+    pub(crate) async fn subscribe_pins(&self) -> Result<Subscription> {
+        let dealer = self.session.dealer();
+        let subscription = dealer.add_listen_for(format!(
+            "hm://collection/{PIN_SET}/{}",
+            self.session.username()
+        ))?;
+        // Nothing else in Cadence opens the socket, so this is where it
+        // starts — once per session, because starting it a second time
+        // fails for a reason that says nothing about the first.
+        if !self.dealer_started.swap(true, Ordering::SeqCst) {
+            dealer
+                .start()
+                .await
+                .context("could not open the Spotify dealer socket")?;
+        }
+        Ok(subscription)
     }
 
     pub async fn radio_track_uris(&self, seed_uri: &str) -> Result<Vec<String>> {

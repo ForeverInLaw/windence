@@ -37,6 +37,10 @@ index — so uris are normalised on the way into the index.
 "Recents", the default sort, orders by `max(last_played, add_time)` descending.
 A folder has no `last_played` of its own and takes the newest of its children.
 
+This lands in two steps: reading the order and the pins first, writing pins
+back after. The decisions below describe the finished shape, so the write
+half is written down here before it exists in the code.
+
 ## Decisions
 
 - **The Web API stays the source of playlist metadata.** The rootlist carries
@@ -48,8 +52,19 @@ A folder has no `last_played` of its own and takes the newest of its children.
   otherwise silently clobber a pin made on another device. Unpinning sends a
   single `CollectionItem{is_removed: true}`, as the desktop does, where no race
   exists. The local `pinned_playlists` table is dropped: one truth, not two.
+- **A dealer message is a nudge, not the change.** The subscription says
+  that the pinned set moved, never how, and never carries the set itself.
+  Each message is answered with a `delta` call against the stored sync
+  token, which is also why the full read has to land before the
+  subscription is opened.
+- **A delta places a new pin at the end.** It reports what changed without
+  saying where it sits, and the section is hand-ordered, so a pin made on
+  another device sits last until the next full read puts it where Spotify
+  holds it.
 - **`spotify:collection` is skipped when rendering pins.** Liked Songs is a
-  permanent sidebar row and stays where it is.
+  permanent sidebar row and stays where it is. It stays in the stored pin
+  list all the same: a write sends the whole set, so dropping it on the way
+  in would unpin it on the way out.
 - **Sorting never moves pins.** Pin order is hand-made — that is what
   `after_uri`/`before_uri`/`first` exist for.
 - **Change detection by revision.** The rootlist's first page carries its

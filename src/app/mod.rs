@@ -30,6 +30,7 @@ use spotify_gpui_client::{
     dj, library_index,
     lifecycle::{Instance, InstanceLifecycle},
     model,
+    pins::Pins,
     shuffle::{ContextKind, ShuffleMode},
     spotify::{self, ClientIdSource, valid_client_id},
     storage::{AppPreferences, Store, ThemePreference},

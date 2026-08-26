@@ -875,29 +875,34 @@ impl Render for PlaylistPage {
                                         )
                                     })
                                     .when(!dj::pin_hidden(&source_id), |actions| {
+                                        // Pins belong to the Spotify account
+                                        // now, and writing them back is the
+                                        // next change. Until then the button
+                                        // shows whether the account has this
+                                        // playlist pinned, and answers a
+                                        // click with the cursor that says it
+                                        // cannot be pressed.
                                         actions.child(
-                                            components::icon_button(
-                                                palette,
-                                                "playlist-pin",
-                                                if pinned { "pin-fill" } else { "pin" },
-                                            )
-                                            .bg(rgb(if pinned {
-                                                palette.selection
-                                            } else {
-                                                palette.control
-                                            }))
-                                            .on_click(
-                                                cx.listener(move |this, _, _, cx| {
-                                                    if let Some(playlist) = this.selected.clone() {
-                                                        this.library.update(cx, |library, cx| {
-                                                            library.set_playlist_pinned(
-                                                                playlist, !pinned, cx,
-                                                            )
-                                                        });
-                                                    }
-                                                    cx.notify();
-                                                }),
-                                            ),
+                                            div()
+                                                .id("playlist-pin")
+                                                .size(px(40.))
+                                                .flex_none()
+                                                .rounded(px(20.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_not_allowed()
+                                                .opacity(0.4)
+                                                .bg(rgb(if pinned {
+                                                    palette.selection
+                                                } else {
+                                                    palette.control
+                                                }))
+                                                .child(components::icon(
+                                                    if pinned { "pin-fill" } else { "pin" },
+                                                    17.,
+                                                    palette.text_primary,
+                                                )),
                                         )
                                     }),
                             ),

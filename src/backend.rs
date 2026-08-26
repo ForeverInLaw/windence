@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow};
+use futures::StreamExt as _;
 use librespot::{core::SpotifyUri, playback::player::PlayerEvent};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
@@ -18,6 +19,7 @@ use crate::{
     dj,
     library_index::{self, LibraryIndex, RootlistScan},
     model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
+    pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
@@ -115,15 +117,28 @@ impl BlockingStore {
         self.call(|store| store.playback_state()).await
     }
 
-    async fn local_state(&self) -> Result<(Vec<Playlist>, Vec<Track>, LibraryIndex)> {
+    async fn local_state(&self) -> Result<(Pins, Vec<Track>, LibraryIndex)> {
         self.call(|store| {
             Ok((
-                store.pinned_playlists()?,
+                store.pins()?,
                 store.recent_tracks(100)?,
                 store.library_index()?,
             ))
         })
         .await
+    }
+
+    async fn pins(&self) -> Result<Pins> {
+        self.call(|store| store.pins()).await
+    }
+
+    async fn pin_sync_token(&self) -> Result<Option<String>> {
+        self.call(|store| store.pin_sync_token()).await
+    }
+
+    async fn set_pins(&self, pins: Pins, sync_token: Option<String>) -> Result<()> {
+        self.call(move |store| store.set_pins(&pins, sync_token.as_deref()))
+            .await
     }
 
     async fn library_index(&self) -> Result<LibraryIndex> {
@@ -242,11 +257,6 @@ impl BlockingStore {
 
     async fn update_playback_position(&self, position_ms: u32) -> Result<()> {
         self.call(move |store| store.update_playback_position(position_ms))
-            .await
-    }
-
-    async fn set_playlist_pinned(&self, playlist: Playlist, pinned: bool) -> Result<()> {
-        self.call(move |store| store.set_playlist_pinned(&playlist, pinned))
             .await
     }
 
@@ -375,10 +385,6 @@ pub enum BackendCommand {
         track: Track,
         liked: bool,
     },
-    SetPlaylistPinned {
-        playlist: Playlist,
-        pinned: bool,
-    },
     Resume,
     Pause,
     Next,
@@ -439,11 +445,18 @@ pub enum BackendEvent {
         tracks: Vec<ListedTrack>,
     },
     LocalStateLoaded {
-        pinned_playlists: Vec<Playlist>,
+        /// The pins as last read from Spotify, so the section is drawn
+        /// before the network answers and still drawn without a session.
+        pins: Pins,
         recently_played: Vec<Track>,
         /// The stored playlist order, so the list paints from what Cadence
         /// already knows instead of waiting on the network.
         library_index: LibraryIndex,
+    },
+    /// A refreshed pin set from the internal protocol.
+    PinsLoaded {
+        generation: u64,
+        pins: Pins,
     },
     /// A refreshed playlist order from the internal protocol.
     LibraryOrderLoaded {
@@ -1122,6 +1135,9 @@ impl Worker {
             BackendCommand::ReloadLibrary { respond } => {
                 self.reload_library(respond);
                 self.refresh_library_order(false);
+                // A dropped socket ends the pin watch. Picking it back up
+                // here costs one increment when it is already running.
+                self.watch_pins();
                 Ok(())
             }
             BackendCommand::SearchCatalog { query, respond } => {
@@ -1181,9 +1197,6 @@ impl Worker {
                 playing,
             } => self.restore_playback(position_ms, playing).await,
             BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
-            BackendCommand::SetPlaylistPinned { playlist, pinned } => {
-                self.set_playlist_pinned(playlist, pinned).await
-            }
             BackendCommand::Resume => self.resume().await,
             BackendCommand::Pause => self.pause().await,
             BackendCommand::Next => {
@@ -1391,6 +1404,68 @@ impl Worker {
                     let _ = events.send(BackendEvent::LibraryOrderLoaded { generation, index });
                 }
                 Err(error) => log::warn!("library order: refresh failed: {error:#}"),
+            }
+        }));
+    }
+
+    /// Reads the pinned set over the playback session, then follows it for
+    /// as long as the session lives.
+    ///
+    /// One task owns pins from end to end: the full read has to land before
+    /// the subscription is opened, because the subscription reports what
+    /// changes and never the set itself. Without a session there is nothing
+    /// to read with and the stored pins stay on screen.
+    fn watch_pins(&mut self) {
+        let Some(playback) = self.connection.player.clone() else {
+            return;
+        };
+        if self
+            .catalog
+            .pins
+            .as_ref()
+            .is_some_and(|running| !running.is_finished())
+        {
+            return;
+        }
+        let store = self.store.clone();
+        let events = self.events.clone();
+        let generation = self.account_generation;
+        let current_generation = self.catalog_generation.clone();
+        self.catalog.pins = Some(tokio::spawn(async move {
+            let refreshed = |events: &UnboundedSender<BackendEvent>, pins| {
+                let _ = events.send(BackendEvent::PinsLoaded { generation, pins });
+            };
+            // In full, not as an increment: the order pins are held in is
+            // hand-made, and only a full read carries it.
+            match run_with_timeout(
+                LIBRARY_TIMEOUT_SECONDS,
+                "Spotify pin request",
+                read_pins(&playback, &store),
+            )
+            .await
+            {
+                Ok(pins) => refreshed(&events, pins),
+                // Pins sit behind a fallback like the rest of the order: a
+                // failure leaves the stored set on screen.
+                Err(error) => log::warn!("pins: first read failed: {error:#}"),
+            }
+            let mut updates = match playback.subscribe_pins().await {
+                Ok(updates) => updates,
+                Err(error) => {
+                    log::warn!("pins: could not follow changes from other devices: {error:#}");
+                    return;
+                }
+            };
+            // Spotify says that the set moved, not how, so each message is
+            // answered with an increment against the stored sync token.
+            while updates.next().await.is_some() {
+                if current_generation.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                match refresh_pins(&playback, &store).await {
+                    Ok(pins) => refreshed(&events, pins),
+                    Err(error) => log::warn!("pins: refresh failed: {error:#}"),
+                }
             }
         }));
     }
@@ -1655,12 +1730,6 @@ impl Worker {
         self.spotify.set_liked(&track.source_id, liked).await
     }
 
-    async fn set_playlist_pinned(&mut self, playlist: Playlist, pinned: bool) -> Result<()> {
-        self.store.set_playlist_pinned(playlist, pinned).await?;
-        send_local_state(&self.store, &self.events).await;
-        Ok(())
-    }
-
     async fn resume(&mut self) -> Result<()> {
         if self.queue.ended {
             // play() is a no-op in librespot's EndOfTrack state: reload the
@@ -1887,9 +1956,11 @@ impl Worker {
                     send_error(&self.events, error);
                 }
                 let _ = self.events.send(BackendEvent::PlaybackReady);
-                // The order needs this session: it is the only thing that can
-                // read the rootlist and the play history.
+                // The order and the pins need this session: it is the only
+                // thing that can read the rootlist, the play history and
+                // the pinned set.
                 self.refresh_library_order(true);
+                self.watch_pins();
                 if self.connection.connect_restoring {
                     let _ = self.events.send(BackendEvent::PlaybackReconnected);
                 } else if let Err(error) = restore_saved_playback(
@@ -2982,6 +3053,9 @@ struct CatalogFetches {
     /// The playlist-order refresh, which runs off the playback session
     /// rather than the Web API.
     order: Option<tokio::task::JoinHandle<()>>,
+    /// The pinned set: one task that reads it, then stays on the dealer
+    /// subscription for as long as the session lives.
+    pins: Option<tokio::task::JoinHandle<()>>,
     search: Option<tokio::task::JoinHandle<()>>,
     playlist: Option<tokio::task::JoinHandle<()>>,
     artist: Option<tokio::task::JoinHandle<()>>,
@@ -3099,6 +3173,7 @@ impl CatalogFetches {
         abort_task(&mut self.library);
         abort_task(&mut self.reload);
         abort_task(&mut self.order);
+        abort_task(&mut self.pins);
         abort_task(&mut self.search);
         abort_task(&mut self.playlist);
         abort_task(&mut self.artist);
@@ -3281,6 +3356,68 @@ async fn refresh_library_order(playback: &Playback, store: &BlockingStore) -> Re
         log::warn!("library order: recently-played refresh failed: {error:#}");
     }
     store.library_index().await
+}
+
+/// How many pins one page asks for. Accounts hold a couple of dozen at
+/// most, so one page normally covers the whole set.
+const PIN_PAGE: usize = 100;
+
+/// A ceiling on how many pin pages one full read follows, matching the one
+/// the order walk uses: it only ever stops a server that keeps handing back
+/// a next-page token.
+const MAX_PIN_PAGES: usize = 8;
+
+/// Asks for the changes since the stored sync token, and hands back the
+/// pinned set as it now stands.
+///
+/// Without a token there is no set to compare against, and a server may
+/// also answer that it can no longer describe the difference. Either way
+/// the set is read in full instead.
+async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins> {
+    let Some(token) = store.pin_sync_token().await? else {
+        return read_pins(playback, store).await;
+    };
+    let delta = playback.pin_delta(&token).await?;
+    if !delta.delta_update_possible {
+        return read_pins(playback, store).await;
+    }
+    let mut pins = store.pins().await?;
+    pins.apply_delta(&delta);
+    store
+        .set_pins(pins.clone(), pins::token(&delta.sync_token))
+        .await?;
+    Ok(pins)
+}
+
+/// Reads the whole pinned set, in the order Spotify holds it.
+///
+/// A read that runs out of pages stores what arrived but no sync token: an
+/// increment against a set with a hole in it would apply to the wrong
+/// thing, and would go on doing so. Without a token the next read is
+/// another full one.
+async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins> {
+    let mut pins = Pins::default();
+    let mut page_token = None;
+    let mut sync_token = None;
+    let mut complete = false;
+    for _ in 0..MAX_PIN_PAGES {
+        let page = playback.pin_page(PIN_PAGE, page_token.as_deref()).await?;
+        pins.read_page(&page);
+        sync_token = pins::token(&page.sync_token).or(sync_token);
+        page_token = pins::token(&page.next_page_token);
+        if page_token.is_none() {
+            complete = true;
+            break;
+        }
+    }
+    if !complete {
+        log::warn!(
+            "pins: the set is longer than {MAX_PIN_PAGES} pages; reading it again next time"
+        );
+        sync_token = None;
+    }
+    store.set_pins(pins.clone(), sync_token).await?;
+    Ok(pins)
 }
 
 /// Walks the rootlist into the index: the playlist set, the folder tree and
@@ -3859,9 +3996,9 @@ fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<T
 
 async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<BackendEvent>) {
     match store.local_state().await {
-        Ok((pinned_playlists, recently_played, library_index)) => {
+        Ok((pins, recently_played, library_index)) => {
             let _ = events.send(BackendEvent::LocalStateLoaded {
-                pinned_playlists,
+                pins,
                 recently_played,
                 library_index,
             });

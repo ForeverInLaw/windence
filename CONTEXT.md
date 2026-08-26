@@ -80,6 +80,10 @@ _Avoid_: library cache (the Web API copy of names and artwork is a different thi
 A group of playlists inside the rootlist, marked by a start-group and an end-group entry around its children. It opens and closes where it stands instead of navigating anywhere, and it has no play history of its own: in the time-ordered sorts it takes the newest of its children.
 _Avoid_: group, directory
 
+**Pin**:
+An item the listener has fixed to the top of their library in Spotify: a playlist or a folder. Pins belong to the account rather than to Cadence, so every client shows the same ones, and their order is hand-made and never sorted. Liked Songs is pinned on most accounts and is passed over, because Cadence already gives it a sidebar row of its own.
+_Avoid_: favourite (that is Liked Songs), bookmark, starred
+
 **Recents**:
 The default playlist order, and the name the sort menu gives it: newest first by the later of last played and Date Added. The other three modes are Date Added, Alphabetical and Creator, worded as the official client words them.
 _Avoid_: recently played (that is the page of played tracks), last played

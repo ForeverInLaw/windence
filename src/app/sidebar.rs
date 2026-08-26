@@ -114,6 +114,57 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// One row of the pinned section: a playlist that opens its page, or a
+    /// folder that opens and closes where it stands, like anywhere else the
+    /// library is drawn.
+    fn pinned_row(
+        &self,
+        index: usize,
+        row: library_index::LibraryRow,
+        palette: CadencePalette,
+        origin: Route,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let indent = px(row.depth() as f32 * 12.);
+        let button = components::button(palette, ("pinned-item", index))
+            .h(px(32.))
+            .justify_start()
+            .pl(indent)
+            .gap(px(8.))
+            .text_size(px(14.))
+            .text_color(rgb(palette.text));
+        match row {
+            library_index::LibraryRow::Playlist { playlist, .. } => button
+                .child(playlist.name.clone())
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(SidebarEvent::OpenPlaylist {
+                        playlist: playlist.clone(),
+                        origin,
+                    });
+                }))
+                .into_any_element(),
+            library_index::LibraryRow::Folder {
+                uri,
+                name,
+                expanded,
+                ..
+            } => button
+                .child(components::icon(
+                    if expanded { "folder-open" } else { "folder" },
+                    15.,
+                    palette.text_muted,
+                ))
+                .child(name)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let uri = uri.clone();
+                    this.library
+                        .update(cx, |library, cx| library.toggle_folder(&uri, cx));
+                    cx.notify();
+                }))
+                .into_any_element(),
+        }
+    }
+
     fn panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let route = self.route;
@@ -219,30 +270,13 @@ impl Sidebar {
             .flex_col()
             .gap(px(8.))
             .px(px(10.))
-            .child(components::section_label(palette, "Pinned Playlists"));
-        let pinned_playlists = self.library.read(cx).pinned_playlists().clone();
-        let show_pinned = if self.library.read(cx).local_loaded() {
-            for (index, playlist) in pinned_playlists.iter().cloned().enumerate() {
-                let selected_playlist = playlist.clone();
-                pinned_section = pinned_section.child(
-                    components::button(palette, ("pinned-playlist", index))
-                        .h(px(32.))
-                        .justify_start()
-                        .text_size(px(14.))
-                        .text_color(rgb(palette.text))
-                        .child(playlist.name)
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(SidebarEvent::OpenPlaylist {
-                                playlist: selected_playlist.clone(),
-                                origin: pinned_origin,
-                            });
-                        })),
-                );
-            }
-            !pinned_playlists.is_empty()
-        } else {
-            false
-        };
+            .child(components::section_label(palette, "Pinned"));
+        let pinned_rows = self.library.read(cx).pinned_rows().clone();
+        for (index, row) in pinned_rows.iter().cloned().enumerate() {
+            pinned_section =
+                pinned_section.child(self.pinned_row(index, row, palette, pinned_origin, cx));
+        }
+        let show_pinned = !pinned_rows.is_empty();
         let brand_fill = div()
             .h(px(48.))
             .rounded(px(12.))

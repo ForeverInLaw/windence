@@ -25,10 +25,16 @@ pub(super) struct Library {
     sort: library_index::PlaylistSort,
     /// The folders they left open, likewise.
     expanded_folders: HashSet<String>,
+    /// What the account has pinned in Spotify, in Spotify's own order.
+    /// Stored on disk, so the section is drawn before the network answers
+    /// and still drawn when there is no session to read it with.
+    pins: Pins,
     /// The rows the playlist list draws, rebuilt whenever anything above
     /// changes so a render never has to sort.
     rows: Arc<[library_index::LibraryRow]>,
-    pinned_playlists: Arc<[model::Playlist]>,
+    /// The pinned rows on their own, for the sidebar's own section. They
+    /// also lead `rows`, so the two can never disagree.
+    pinned_rows: Arc<[library_index::LibraryRow]>,
     recently_played: Arc<[model::ListedTrack]>,
     local_loaded: bool,
     reload: Option<gpui::Task<()>>,
@@ -53,8 +59,9 @@ impl Library {
             index: library_index::LibraryIndex::default(),
             sort: services::AppServices::playlist_sort(cx),
             expanded_folders: services::AppServices::expanded_folders(cx),
+            pins: Pins::default(),
             rows: Arc::default(),
-            pinned_playlists: Arc::default(),
+            pinned_rows: Arc::default(),
             recently_played: Arc::default(),
             local_loaded: false,
             reload: None,
@@ -172,13 +179,15 @@ impl Library {
     /// playlists, the sort or the open folders ends here, so the rows and
     /// what they came from cannot disagree.
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
-        self.rows = library_index::rows(
+        let rows = library_index::rows(
             &self.index,
             &self.playlists,
+            self.pins.uris(),
             self.sort,
             &self.expanded_folders,
-        )
-        .into();
+        );
+        self.rows = rows.all.into();
+        self.pinned_rows = rows.pinned.into();
         cx.notify();
     }
 
@@ -186,8 +195,9 @@ impl Library {
         self.loaded
     }
 
-    pub(super) fn pinned_playlists(&self) -> &Arc<[model::Playlist]> {
-        &self.pinned_playlists
+    /// The pinned rows, for the sidebar section that draws only those.
+    pub(super) fn pinned_rows(&self) -> &Arc<[library_index::LibraryRow]> {
+        &self.pinned_rows
     }
 
     pub(super) fn recently_played(&self) -> &Arc<[model::ListedTrack]> {
@@ -223,10 +233,13 @@ impl Library {
         self.refresh_rows(cx);
     }
 
+    /// Whether Spotify holds a pin for this playlist. Cadence keeps no pins
+    /// of its own, so this is the account's answer, not this app's.
     pub(super) fn is_playlist_pinned(&self, playlist: &model::Playlist) -> bool {
-        self.pinned_playlists.iter().any(|candidate| {
-            candidate.provider == playlist.provider && candidate.source_id == playlist.source_id
-        })
+        playlist.provider == model::Provider::Spotify
+            && self
+                .pins
+                .contains(&library_index::playlist_uri(&playlist.source_id))
     }
 
     /// Marks the catalog as settled without contents, for when the fetch failed.
@@ -261,17 +274,6 @@ impl Library {
         self.backend.send(BackendCommand::SetLiked { track, liked })
     }
 
-    pub(super) fn set_playlist_pinned(
-        &mut self,
-        playlist: model::Playlist,
-        pinned: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        cx.notify();
-        self.backend
-            .send(BackendCommand::SetPlaylistPinned { playlist, pinned })
-    }
-
     /// Forgets the account's catalog. Locally-owned state stays: it is not tied
     /// to the Spotify account and the backend re-sends it regardless.
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
@@ -279,6 +281,7 @@ impl Library {
         self.refreshed_at = None;
         self.set_liked_tracks(Vec::new());
         self.index = library_index::LibraryIndex::default();
+        self.pins = Pins::default();
         self.set_playlists(Vec::new(), cx);
         self.loaded = false;
     }
@@ -314,11 +317,11 @@ impl Library {
                 }
             }
             BackendEvent::LocalStateLoaded {
-                pinned_playlists,
+                pins,
                 recently_played,
                 library_index,
             } => {
-                self.pinned_playlists = pinned_playlists.into();
+                self.pins = pins;
                 self.recently_played = recently_played
                     .into_iter()
                     .map(model::ListedTrack::undated)
@@ -327,6 +330,15 @@ impl Library {
                 self.index = library_index;
                 self.refresh_rows(cx);
                 cx.emit(LibraryLoaded);
+            }
+            BackendEvent::PinsLoaded {
+                generation: pins_generation,
+                pins,
+            } => {
+                if pins_generation == generation {
+                    self.pins = pins;
+                    self.refresh_rows(cx);
+                }
             }
             BackendEvent::LibraryOrderLoaded {
                 generation: order_generation,

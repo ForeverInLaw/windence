@@ -18,6 +18,11 @@ const WATERMARK_KEY: &str = "recently_played_watermark";
 const SORT_KEY: &str = "playlist_sort";
 const EXPANDED_KEY: &str = "expanded_folders";
 
+/// The keys that describe one account's order, and so go when the account
+/// does. The sort and the open folders stay: they are the listener's
+/// choices, not the account's data.
+pub(super) const ACCOUNT_KEYS: [&str; 2] = [REVISION_KEY, WATERMARK_KEY];
+
 impl Store {
     /// The whole index, in rootlist order. Rows whose stored kind is no
     /// longer one this build knows are skipped rather than failing the read.

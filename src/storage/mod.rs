@@ -15,11 +15,12 @@ use crate::model::{
 use crate::shuffle::{ContextKind, Origin, ShuffleMode, ShuffleState};
 
 mod library_index;
+mod pins;
 
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -353,6 +354,18 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 11 {
+            // Cadence's own pins are gone: the pinned section now shows what
+            // Spotify holds for the account, which is one truth instead of
+            // two. The list and its sync token are two scalars and live in
+            // `preferences` beside every other one.
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 DROP TABLE IF EXISTS pinned_playlists;
+                 PRAGMA user_version = 11;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -521,35 +534,6 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    pub fn set_playlist_pinned(&mut self, playlist: &Playlist, pinned: bool) -> Result<()> {
-        if pinned {
-            self.connection.execute(
-                "INSERT INTO pinned_playlists (provider, source_id, playlist_json)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT (provider, source_id) DO UPDATE SET playlist_json = excluded.playlist_json",
-                params![
-                    playlist.provider.as_str(),
-                    playlist.source_id,
-                    serde_json::to_string(playlist)?
-                ],
-            )?;
-        } else {
-            self.connection.execute(
-                "DELETE FROM pinned_playlists WHERE provider = ?1 AND source_id = ?2",
-                params![playlist.provider.as_str(), playlist.source_id],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn pinned_playlists(&self) -> Result<Vec<Playlist>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT playlist_json FROM pinned_playlists ORDER BY created_at DESC")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     pub fn add_history(&mut self, track: &Track) -> Result<()> {
@@ -812,6 +796,16 @@ impl Store {
         transaction.execute("DELETE FROM library_playlists_cache", [])?;
         transaction.execute("DELETE FROM library_fingerprint", [])?;
         transaction.execute("DELETE FROM library_index", [])?;
+        // The order and the pins belong to the account too, and each is
+        // fetched against a stored token. Leaving a token behind an emptied
+        // set would make the next refresh answer "nothing changed" over the
+        // hole and serve it forever.
+        for key in library_index::ACCOUNT_KEYS
+            .into_iter()
+            .chain(pins::ACCOUNT_KEYS)
+        {
+            transaction.execute("DELETE FROM preferences WHERE key = ?1", params![key])?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -1835,22 +1829,62 @@ mod tests {
         assert_eq!(recent[1].source_id, "two");
     }
 
+    /// The pinned section shows what Spotify holds, so Cadence's own pinned
+    /// table goes. A database written by the previous schema still opens,
+    /// and nothing it pinned locally comes back beside the real pins.
     #[test]
-    fn playlists_can_be_pinned_and_unpinned() {
-        let mut store = Store::in_memory().unwrap();
-        let playlist = Playlist {
-            provider: Provider::Spotify,
-            source_id: "focus".to_owned(),
-            name: "Focus".to_owned(),
-            owner: "Owner".to_owned(),
-            track_count: 10,
-            artwork_url: None,
-        };
+    fn schema_version_ten_databases_lose_their_local_pins() {
+        let path = temporary_database("migration-v10");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     CREATE TABLE pinned_playlists (
+                         provider TEXT NOT NULL,
+                         source_id TEXT NOT NULL,
+                         playlist_json TEXT NOT NULL,
+                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                         PRIMARY KEY (provider, source_id)
+                     );
+                     CREATE TABLE preferences (
+                         key TEXT PRIMARY KEY,
+                         value TEXT NOT NULL
+                     );
+                     INSERT INTO pinned_playlists (provider, source_id, playlist_json)
+                     VALUES ('spotify', 'focus', '{}');
+                     INSERT INTO preferences (key, value) VALUES ('theme', 'dark');
+                     PRAGMA user_version = 10;
+                     COMMIT;",
+                )
+                .unwrap();
+        }
 
-        store.set_playlist_pinned(&playlist, true).unwrap();
-        assert_eq!(store.pinned_playlists().unwrap(), vec![playlist.clone()]);
+        let store = Store::open(&path).unwrap();
 
-        store.set_playlist_pinned(&playlist, false).unwrap();
-        assert!(store.pinned_playlists().unwrap().is_empty());
+        assert_eq!(
+            store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'pinned_playlists'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(store.pins().unwrap().is_empty());
+        // Everything else the database held is still there.
+        assert_eq!(store.preferences().unwrap().theme, ThemePreference::Dark);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
     }
 }
