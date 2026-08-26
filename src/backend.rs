@@ -3612,6 +3612,7 @@ async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins
     }
     let mut pins = store.pins().await?;
     pins.apply_delta(&delta);
+    log::debug!("pins: delta since {token} left {:?}", pins.uris());
     store
         .set_pins(pins.clone(), pins::token(&delta.sync_token))
         .await?;
@@ -3621,6 +3622,12 @@ async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins
 /// Reads the whole pinned set, in the order Spotify holds it, and says
 /// whether the whole of it arrived. Only a complete read may be written
 /// back, because a write replaces the set with what it is given.
+///
+/// Paging answers with a snapshot rather than the live set — it can be old
+/// enough to hold pins the account has since dropped and to miss ones it
+/// has since taken — so the snapshot is caught up with one increment
+/// against the token it came with. That is the pair the official client's
+/// own reads come down to, and it is why nothing writes off paging alone.
 ///
 /// A read that runs out of pages stores what arrived but no sync token: an
 /// increment against a set with a hole in it would apply to the wrong
@@ -3647,6 +3654,19 @@ async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<(Pins, 
         );
         sync_token = None;
     }
+    if let Some(token) = sync_token.clone() {
+        let delta = playback.pin_delta(&token).await?;
+        // Without a usable increment the snapshot is all there is. Saying
+        // the read is complete would let a write send a stale set, so it is
+        // stored to draw from and nothing more.
+        if !delta.delta_update_possible {
+            complete = false;
+        } else {
+            pins.apply_delta(&delta);
+            sync_token = pins::token(&delta.sync_token).or(sync_token);
+        }
+    }
+    log::debug!("pins: Spotify holds {:?}", pins.uris());
     store.set_pins(pins.clone(), sync_token).await?;
     Ok((pins, complete))
 }
