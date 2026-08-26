@@ -367,18 +367,24 @@ pub struct LibraryRows {
 ///
 /// `sort` orders what an opened folder holds, pinned folders included. The
 /// pins themselves are hand-ordered and no mode moves them.
+///
+/// The two lists open their folders separately. The same folder is drawn
+/// twice — once in the pinned section, once in the tree — and opening one
+/// is no reason for the other to open, so `expanded` says which folders the
+/// tree has open and `expanded_pins` says the same for the pinned section.
 pub fn rows(
     index: &LibraryIndex,
     playlists: &[Playlist],
     pins: &[String],
     sort: PlaylistSort,
     expanded: &HashSet<String>,
+    expanded_pins: &HashSet<String>,
 ) -> LibraryRows {
     let entries = with_unplaced(index, playlists);
-    let ordering = Ordering::new(&entries, playlists, pins, sort, expanded);
-    let pinned = ordering.pinned();
+    let ordering = Ordering::new(&entries, playlists, pins, sort);
+    let pinned = ordering.pinned(expanded_pins);
     let mut all = pinned.clone();
-    all.extend(ordering.level(None, 0));
+    all.extend(ordering.level(None, 0, expanded));
     LibraryRows { pinned, all }
 }
 
@@ -435,7 +441,6 @@ struct Ordering<'a> {
     /// The pinned uris, in Spotify's own order.
     pins: &'a [String],
     sort: PlaylistSort,
-    expanded: &'a HashSet<String>,
 }
 
 impl<'a> Ordering<'a> {
@@ -444,7 +449,6 @@ impl<'a> Ordering<'a> {
         playlists: &'a [Playlist],
         pins: &'a [String],
         sort: PlaylistSort,
-        expanded: &'a HashSet<String>,
     ) -> Self {
         let known: HashMap<String, &Playlist> = playlists
             .iter()
@@ -477,7 +481,6 @@ impl<'a> Ordering<'a> {
             placed,
             pins,
             sort,
-            expanded,
         };
         ordering.roll_up(None);
         ordering
@@ -508,7 +511,12 @@ impl<'a> Ordering<'a> {
     /// One level of the tree in sorted order, following into the folders the
     /// listener has opened. A pinned item is drawn by [`Self::pinned`]
     /// instead, so the top level leaves it out rather than listing it twice.
-    fn level(&self, folder: Option<&str>, depth: usize) -> Vec<LibraryRow> {
+    fn level(
+        &self,
+        folder: Option<&str>,
+        depth: usize,
+        expanded: &HashSet<String>,
+    ) -> Vec<LibraryRow> {
         let Some(level) = self.children.get(&folder) else {
             return Vec::new();
         };
@@ -522,7 +530,7 @@ impl<'a> Ordering<'a> {
         level
             .into_iter()
             .filter(|entry| folder.is_some() || !self.is_pinned(&entry.uri))
-            .flat_map(|entry| self.rows_for(entry, depth))
+            .flat_map(|entry| self.rows_for(entry, depth, expanded))
             .collect()
     }
 
@@ -530,18 +538,23 @@ impl<'a> Ordering<'a> {
     /// a pinned folder opening in place like any other. A pin the library
     /// knows nothing about — a podcast, an artist, something a Cadence build
     /// does not draw — has no row and is passed over.
-    fn pinned(&self) -> Vec<LibraryRow> {
+    fn pinned(&self, expanded: &HashSet<String>) -> Vec<LibraryRow> {
         self.pins
             .iter()
             .filter(|uri| uri.as_str() != LIKED_SONGS_URI)
             .filter_map(|uri| self.placed.get(uri.as_str()).copied())
-            .flat_map(|entry| self.rows_for(entry, 0))
+            .flat_map(|entry| self.rows_for(entry, 0, expanded))
             .collect()
     }
 
     /// One entry's rows: itself, and what it holds when it is a folder the
     /// listener has opened.
-    fn rows_for(&self, entry: &IndexEntry, depth: usize) -> Vec<LibraryRow> {
+    fn rows_for(
+        &self,
+        entry: &IndexEntry,
+        depth: usize,
+        expanded: &HashSet<String>,
+    ) -> Vec<LibraryRow> {
         match entry.kind {
             EntryKind::Playlist => self
                 .known
@@ -554,7 +567,7 @@ impl<'a> Ordering<'a> {
                 })
                 .unwrap_or_default(),
             EntryKind::Folder => {
-                let expanded = self.expanded.contains(&entry.uri);
+                let open = expanded.contains(&entry.uri);
                 let mut rows = vec![LibraryRow::Folder {
                     uri: entry.uri.clone(),
                     name: entry.name.clone().unwrap_or_else(|| "Folder".to_owned()),
@@ -563,10 +576,10 @@ impl<'a> Ordering<'a> {
                         .children
                         .get(&Some(entry.uri.as_str()))
                         .map_or(0, Vec::len),
-                    expanded,
+                    expanded: open,
                 }];
-                if expanded {
-                    rows.extend(self.level(Some(&entry.uri), depth + 1));
+                if open {
+                    rows.extend(self.level(Some(&entry.uri), depth + 1, expanded));
                 }
                 rows
             }
@@ -754,7 +767,7 @@ mod tests {
         sort: PlaylistSort,
         expanded: &HashSet<String>,
     ) -> Vec<LibraryRow> {
-        rows(index, playlists, &[], sort, expanded).all
+        rows(index, playlists, &[], sort, expanded, expanded).all
     }
 
     fn names(rows: &[LibraryRow]) -> Vec<String> {
@@ -1080,7 +1093,15 @@ mod tests {
             "spotify:show:zzz".to_owned(),
         ];
 
-        let pinned = rows(&index, &playlists, &pins, PlaylistSort::Recents, &expanded).pinned;
+        let pinned = rows(
+            &index,
+            &playlists,
+            &pins,
+            PlaylistSort::Recents,
+            &expanded,
+            &expanded,
+        )
+        .pinned;
         assert_eq!(names(&pinned), vec!["Delta", "Mixes", "Bravo", "Charlie"]);
         // A pinned folder opens in place, like any other.
         assert_eq!(
@@ -1089,7 +1110,7 @@ mod tests {
         );
 
         for sort in PlaylistSort::ALL {
-            let rows = rows(&index, &playlists, &pins, sort, &expanded);
+            let rows = rows(&index, &playlists, &pins, sort, &expanded, &expanded);
             assert_eq!(rows.pinned, pinned, "{sort:?} moved the pins");
             assert_eq!(names(&rows.all[..pinned.len()]), names(&pinned), "{sort:?}");
             // What is pinned is drawn once: at the top, not again below.

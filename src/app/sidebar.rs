@@ -42,6 +42,13 @@ pub(super) struct Sidebar {
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
+/// A row's name, cut with an ellipsis rather than painted through the rail's
+/// edge. The row itself has to allow it: a flex child will not shrink below
+/// its text without `min_w_0`.
+fn row_label(text: impl Into<SharedString>) -> Div {
+    div().min_w_0().flex_1().truncate().child(text.into())
+}
+
 fn expanded_sidebar_width(compact_layout: bool) -> f32 {
     if compact_layout { 200. } else { 232. }
 }
@@ -125,12 +132,15 @@ impl Sidebar {
         origin: Route,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let indent = px(row.depth() as f32 * 12.);
         let button = components::button(palette, ("pinned-item", index))
             .h(px(32.))
+            .w_full()
+            .min_w_0()
             .justify_start()
-            .pl(indent)
+            .pl(px(2. + row.depth() as f32 * 12.))
+            .pr(px(2.))
             .gap(px(8.))
+            .overflow_hidden()
             .text_size(px(14.))
             .text_color(rgb(palette.text));
         // Pin order is hand-made, so every row in this section can be
@@ -152,7 +162,7 @@ impl Sidebar {
         );
         match row {
             library_index::LibraryRow::Playlist { playlist, .. } => button
-                .child(playlist.name.clone())
+                .child(row_label(playlist.name.clone()))
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.emit(SidebarEvent::OpenPlaylist {
                         playlist: playlist.clone(),
@@ -171,11 +181,11 @@ impl Sidebar {
                     15.,
                     palette.text_muted,
                 ))
-                .child(name)
+                .child(row_label(name))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let uri = uri.clone();
                     this.library
-                        .update(cx, |library, cx| library.toggle_folder(&uri, cx));
+                        .update(cx, |library, cx| library.toggle_pinned_folder(&uri, cx));
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -282,12 +292,12 @@ impl Sidebar {
                     }),
                 }))
         };
-        let mut pinned_section = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .px(px(10.))
-            .child(components::section_label(palette, "Pinned"));
+        let mut pinned_section = div().flex().flex_col().gap(px(4.)).px(px(10.)).child(
+            div()
+                .px(px(2.))
+                .pb(px(4.))
+                .child(components::section_label(palette, "Pinned")),
+        );
         let pinned_rows = self.library.read(cx).pinned_rows().clone();
         for (index, row) in pinned_rows.iter().cloned().enumerate() {
             pinned_section =
@@ -401,73 +411,88 @@ impl Sidebar {
                     .pt(px(SIDEBAR_TOP_PADDING))
                     .child(brand)
                     .child(
+                        // Everything below the brand scrolls together: a long
+                        // pinned section used to run off the bottom of the
+                        // rail with no way to reach the rest of it.
                         div()
+                            .id("sidebar-sections")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(px(28.))
                             .child(
                                 div()
-                                    .px(px(12.))
-                                    .pb(px(4.))
-                                    .child(components::section_label(palette, "Library"))
-                                    .with_animation(
-                                        ("sidebar-library-label", animation_id),
-                                        row_animation.clone(),
-                                        move |label, delta| {
-                                            label.opacity(
-                                                start_progress
-                                                    + (target_progress - start_progress) * delta,
-                                            )
-                                        },
-                                    ),
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .px(px(12.))
+                                            .pb(px(4.))
+                                            .child(components::section_label(palette, "Library"))
+                                            .with_animation(
+                                                ("sidebar-library-label", animation_id),
+                                                row_animation.clone(),
+                                                move |label, delta| {
+                                                    label.opacity(
+                                                        start_progress
+                                                            + (target_progress - start_progress)
+                                                                * delta,
+                                                    )
+                                                },
+                                            ),
+                                    )
+                                    .child(nav_item(
+                                        "nav-library",
+                                        "nav-library-fill",
+                                        "Liked Songs",
+                                        "heart",
+                                        "heart-fill",
+                                        NavTarget::Route(Route::LikedSongs),
+                                        cx,
+                                    ))
+                                    .child(nav_item(
+                                        "nav-playlist",
+                                        "nav-playlist-fill",
+                                        "Playlists",
+                                        "list-music",
+                                        "list-music",
+                                        NavTarget::Route(Route::Playlists),
+                                        cx,
+                                    ))
+                                    .child(nav_item(
+                                        "nav-recent",
+                                        "nav-recent-fill",
+                                        "Recently played",
+                                        "clock",
+                                        "clock",
+                                        NavTarget::Route(Route::Recent),
+                                        cx,
+                                    ))
+                                    .child(nav_item(
+                                        "nav-dj",
+                                        "nav-dj-fill",
+                                        dj::DISPLAY_NAME,
+                                        "bot",
+                                        "bot",
+                                        NavTarget::DjX,
+                                        cx,
+                                    )),
                             )
-                            .child(nav_item(
-                                "nav-library",
-                                "nav-library-fill",
-                                "Liked Songs",
-                                "heart",
-                                "heart-fill",
-                                NavTarget::Route(Route::LikedSongs),
-                                cx,
-                            ))
-                            .child(nav_item(
-                                "nav-playlist",
-                                "nav-playlist-fill",
-                                "Playlists",
-                                "list-music",
-                                "list-music",
-                                NavTarget::Route(Route::Playlists),
-                                cx,
-                            ))
-                            .child(nav_item(
-                                "nav-recent",
-                                "nav-recent-fill",
-                                "Recently played",
-                                "clock",
-                                "clock",
-                                NavTarget::Route(Route::Recent),
-                                cx,
-                            ))
-                            .child(nav_item(
-                                "nav-dj",
-                                "nav-dj-fill",
-                                dj::DISPLAY_NAME,
-                                "bot",
-                                "bot",
-                                NavTarget::DjX,
-                                cx,
-                            )),
-                    )
-                    .when(show_pinned && !collapsed, |sidebar| {
-                        sidebar.child(div().child(pinned_section).with_animation(
-                            ("sidebar-pinned", animation_id),
-                            row_animation.clone(),
-                            move |pinned, delta| {
-                                pinned.opacity(start_progress + (1. - start_progress) * delta)
-                            },
-                        ))
-                    })
-                    .child(div().flex_1()),
+                            .when(show_pinned && !collapsed, |sections| {
+                                sections.child(div().child(pinned_section).with_animation(
+                                    ("sidebar-pinned", animation_id),
+                                    row_animation.clone(),
+                                    move |pinned, delta| {
+                                        pinned
+                                            .opacity(start_progress + (1. - start_progress) * delta)
+                                    },
+                                ))
+                            })
+                            .child(div().flex_none().h(px(SIDEBAR_CONTENT_PAD))),
+                    ),
             )
             .with_animation(
                 ("sidebar-width", animation_id),

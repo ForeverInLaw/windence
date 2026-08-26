@@ -54,7 +54,17 @@ impl AppServices {
         let handle = backend.handle();
         let player = cx.new(|_| player::Player::new(handle.clone(), preferences.volume));
         let session = cx.new(|_| session::Session::new(handle.clone()));
-        let library = cx.new(|cx| library::Library::new(handle.clone(), cx));
+        let sort = store
+            .as_ref()
+            .and_then(|store| store.playlist_sort().ok())
+            .unwrap_or_default();
+        let expanded_folders = store
+            .as_ref()
+            .and_then(|store| store.expanded_folders().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let library = cx.new(|_| library::Library::new(handle.clone(), sort, expanded_folders));
         let image_cache = image_cache::BoundedImageCache::new(cx);
         let brand_mark = Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Png,
@@ -178,16 +188,6 @@ impl AppServices {
         }
     }
 
-    /// The playlist order the listener last chose. Storage trouble degrades
-    /// to Recents, the same default a fresh install starts on.
-    pub(super) fn playlist_sort(cx: &App) -> library_index::PlaylistSort {
-        cx.global::<Self>()
-            .store
-            .as_ref()
-            .and_then(|store| store.playlist_sort().ok())
-            .unwrap_or_default()
-    }
-
     pub(super) fn set_playlist_sort(sort: library_index::PlaylistSort, cx: &mut App) {
         let services = cx.global_mut::<Self>();
         if let Some(Err(error)) = services
@@ -197,18 +197,6 @@ impl AppServices {
         {
             log::error!("could not save the playlist sort: {error}");
         }
-    }
-
-    /// The folders the listener left open. A list that cannot be read leaves
-    /// every folder closed, which is what a fresh install shows anyway.
-    pub(super) fn expanded_folders(cx: &App) -> HashSet<String> {
-        cx.global::<Self>()
-            .store
-            .as_ref()
-            .and_then(|store| store.expanded_folders().ok())
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
     }
 
     pub(super) fn set_expanded_folders(folders: &[String], cx: &mut App) {

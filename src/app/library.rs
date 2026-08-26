@@ -31,6 +31,11 @@ pub(super) struct Library {
     sort: library_index::PlaylistSort,
     /// The folders they left open, likewise.
     expanded_folders: HashSet<String>,
+    /// The folders left open in the pinned section, which opens and closes
+    /// on its own: the same folder is drawn in both lists, and opening it
+    /// in one is no reason for the other to open. Not remembered between
+    /// launches, unlike the list's own.
+    expanded_pins: HashSet<String>,
     /// What the account has pinned in Spotify, in Spotify's own order.
     /// Stored on disk, so the section is drawn before the network answers
     /// and still drawn when there is no session to read it with.
@@ -55,7 +60,11 @@ pub(super) struct LibraryLoaded;
 impl EventEmitter<LibraryLoaded> for Library {}
 
 impl Library {
-    pub(super) fn new(backend: BackendHandle, cx: &App) -> Self {
+    pub(super) fn new(
+        backend: BackendHandle,
+        sort: library_index::PlaylistSort,
+        expanded_folders: HashSet<String>,
+    ) -> Self {
         Self {
             backend,
             liked_tracks: Arc::default(),
@@ -63,8 +72,9 @@ impl Library {
             playlists: Arc::default(),
             loaded: false,
             index: library_index::LibraryIndex::default(),
-            sort: services::AppServices::playlist_sort(cx),
-            expanded_folders: services::AppServices::expanded_folders(cx),
+            sort,
+            expanded_folders,
+            expanded_pins: HashSet::new(),
             pins: Pins::default(),
             rows: Arc::default(),
             pinned_rows: Arc::default(),
@@ -181,6 +191,15 @@ impl Library {
         self.refresh_rows(cx);
     }
 
+    /// Opens or closes a folder in the pinned section, leaving the same
+    /// folder in the list alone.
+    pub(super) fn toggle_pinned_folder(&mut self, uri: &str, cx: &mut Context<Self>) {
+        if !self.expanded_pins.remove(uri) {
+            self.expanded_pins.insert(uri.to_owned());
+        }
+        self.refresh_rows(cx);
+    }
+
     /// Rebuilds the drawn order. Every path that changes the index, the
     /// playlists, the sort or the open folders ends here, so the rows and
     /// what they came from cannot disagree.
@@ -191,9 +210,22 @@ impl Library {
             self.pins.uris(),
             self.sort,
             &self.expanded_folders,
+            &self.expanded_pins,
         );
         self.rows = rows.all.into();
         self.pinned_rows = rows.pinned.into();
+        // A pin names something the library may not draw — a podcast, an
+        // artist, a playlist the rootlist has not caught up with. When the
+        // section and the account disagree about what is pinned, this is
+        // the line that says which side is missing what.
+        log::debug!(
+            "library: pins {:?} drew {:?}",
+            self.pins.uris(),
+            self.pinned_rows
+                .iter()
+                .map(library_index::LibraryRow::uri)
+                .collect::<Vec<_>>()
+        );
         cx.notify();
     }
 
