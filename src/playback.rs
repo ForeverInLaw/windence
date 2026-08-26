@@ -541,15 +541,21 @@ impl Playback {
     /// made while a start is in flight is refused, so two callers arriving
     /// at once have to take their turn rather than overlap. Nothing else in
     /// Cadence opens the socket, so every subscription comes through here.
+    ///
+    /// A start that fails takes the socket with it for good: librespot hands
+    /// its builder to the attempt before it knows whether the attempt works,
+    /// and there is no second builder. So the session is given up as well,
+    /// which is the one thing that does bring the socket back — a reconnect
+    /// builds a new session, and a new session has a builder again.
     async fn subscribe(&self, topic: String) -> Result<Subscription> {
         let mut started = self.dealer_started.lock().await;
         let subscription = self.session.dealer().add_listen_for(topic)?;
         if !*started {
-            self.session
-                .dealer()
-                .start()
-                .await
-                .context("could not open the Spotify dealer socket")?;
+            if let Err(error) = self.session.dealer().start().await {
+                self.session.shutdown();
+                return Err(anyhow::Error::new(error))
+                    .context("could not open the Spotify dealer socket; reconnecting");
+            }
             *started = true;
         }
         Ok(subscription)

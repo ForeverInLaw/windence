@@ -957,11 +957,19 @@ async fn run(
                 continue;
             }
             reconnected = finished(&mut worker.connection.reconnect) => {
-                worker.connection.finish_reconnect(
+                if worker.connection.finish_reconnect(
                     reconnected,
                     &worker.events,
                     &worker.unavailable,
-                );
+                ) {
+                    // Both watches were reading the session that just went
+                    // away, so they are ended rather than waited on: the
+                    // fresh session is the only one with a socket now.
+                    abort_task(&mut worker.catalog.pins);
+                    abort_task(&mut worker.catalog.connection_id);
+                    worker.watch_pins();
+                    worker.watch_connection_id();
+                }
                 continue;
             }
             connected = finished(&mut worker.connection.connect) => {
@@ -3496,12 +3504,16 @@ impl PlaybackConnection {
         }
     }
 
+    /// Takes up a finished reconnection attempt, and says whether it brought
+    /// a session. A caller that hears yes has to open everything that hangs
+    /// off a session again: the one that just went away took its dealer
+    /// socket, and every subscription on it, with it.
     fn finish_reconnect(
         &mut self,
         reconnected: Finished<Result<Playback>>,
         events: &UnboundedSender<BackendEvent>,
         unavailable: &UnboundedSender<String>,
-    ) {
+    ) -> bool {
         self.reconnect = None;
         match reconnected {
             Some(Ok(Ok(player))) => {
@@ -3509,6 +3521,7 @@ impl PlaybackConnection {
                 self.adopt(player, events, unavailable);
                 self.reconnect_pending = false;
                 let _ = events.send(BackendEvent::PlaybackReconnected);
+                return true;
             }
             Some(Ok(Err(error))) => {
                 log::warn!("playback: reconnect attempt failed: {error}");
@@ -3519,6 +3532,7 @@ impl PlaybackConnection {
             Some(Err(error)) => send_error(events, error),
             None => {}
         }
+        false
     }
 }
 
