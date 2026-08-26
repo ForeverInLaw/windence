@@ -957,7 +957,11 @@ async fn run(
                 continue;
             }
             reconnected = finished(&mut worker.connection.reconnect) => {
-                worker.connection.finish_reconnect(reconnected, &worker.events, &worker.unavailable);
+                worker.connection.finish_reconnect(
+                    reconnected,
+                    &worker.events,
+                    &worker.unavailable,
+                );
                 continue;
             }
             connected = finished(&mut worker.connection.connect) => {
@@ -1877,11 +1881,13 @@ impl Worker {
     /// here, because both send the whole set.
     async fn write_whole_set(&mut self, change: impl FnOnce(&mut Pins)) -> Result<Pins> {
         let playback = self.pin_writer()?;
-        let (mut pins, complete) = read_pins(&playback, &self.store).await?;
-        // Half a set must never go: what did not arrive would be unpinned.
+        let (fresh, complete) = read_pins(&playback, &self.store).await?;
+        // A set Spotify could not describe in full must never go back: what
+        // it did not describe would be unpinned.
         if !complete {
-            bail!("Spotify sent only part of the pinned set, so nothing was written");
+            bail!("Spotify did not describe the whole pinned set, so nothing was written");
         }
+        let mut pins = fresh;
         change(&mut pins);
         playback.write_pins(pins.write_items(now_seconds())).await?;
         self.store_pins(pins).await
@@ -3596,6 +3602,12 @@ const PIN_PAGE: usize = 100;
 /// a next-page token.
 const MAX_PIN_PAGES: usize = 8;
 
+/// How many times a full read asks for a fresh snapshot when the server
+/// will not settle the one it just gave. A refused increment leaves the
+/// snapshot unproven, and the next one usually comes with a token the
+/// server does honour; asking forever would only hammer it.
+const PIN_READ_ATTEMPTS: usize = 2;
+
 /// Asks for the changes since the stored sync token, and hands back the
 /// pinned set as it now stands.
 ///
@@ -3629,46 +3641,63 @@ async fn refresh_pins(playback: &Playback, store: &BlockingStore) -> Result<Pins
 /// against the token it came with. That is the pair the official client's
 /// own reads come down to, and it is why nothing writes off paging alone.
 ///
-/// A read that runs out of pages stores what arrived but no sync token: an
-/// increment against a set with a hole in it would apply to the wrong
-/// thing, and would go on doing so. Without a token the next read is
-/// another full one.
+/// A read that cannot be settled is still drawn from — the set on screen is
+/// better than none — but it is never written back, because the snapshot
+/// alone has been wrong before and a write replaces what Spotify holds.
 async fn read_pins(playback: &Playback, store: &BlockingStore) -> Result<(Pins, bool)> {
+    for attempt in 1..=PIN_READ_ATTEMPTS {
+        let (mut pins, mut sync_token, whole) = pin_snapshot(playback).await?;
+        // The increment that settles the snapshot goes against the token
+        // that snapshot came with. A server that refuses it has described
+        // nothing that can be trusted enough to write back, so the snapshot
+        // is asked for again before the read gives up on settling it.
+        let settled = match sync_token.clone() {
+            Some(token) => {
+                let delta = playback.pin_delta(&token).await?;
+                if delta.delta_update_possible {
+                    pins.apply_delta(&delta);
+                    sync_token = pins::token(&delta.sync_token).or(sync_token);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+        if settled || attempt == PIN_READ_ATTEMPTS {
+            if !settled {
+                log::warn!(
+                    "pins: Spotify would not describe what changed since the set it                      sent, so the set stays on screen and no change can be written"
+                );
+            }
+            log::debug!("pins: Spotify holds {:?}", pins.uris());
+            store.set_pins(pins.clone(), sync_token).await?;
+            return Ok((pins, whole && settled));
+        }
+    }
+    unreachable!("the loop returns on its last attempt");
+}
+
+/// One walk of the paging endpoint: the set as Spotify last wrote it down,
+/// the token to settle it against, and whether every page arrived.
+async fn pin_snapshot(playback: &Playback) -> Result<(Pins, Option<String>, bool)> {
     let mut pins = Pins::default();
     let mut page_token = None;
     let mut sync_token = None;
-    let mut complete = false;
     for _ in 0..MAX_PIN_PAGES {
         let page = playback.pin_page(PIN_PAGE, page_token.as_deref()).await?;
         pins.read_page(&page);
         sync_token = pins::token(&page.sync_token).or(sync_token);
         page_token = pins::token(&page.next_page_token);
         if page_token.is_none() {
-            complete = true;
-            break;
+            return Ok((pins, sync_token, true));
         }
     }
-    if !complete {
-        log::warn!(
-            "pins: the set is longer than {MAX_PIN_PAGES} pages; reading it again next time"
-        );
-        sync_token = None;
-    }
-    if let Some(token) = sync_token.clone() {
-        let delta = playback.pin_delta(&token).await?;
-        // Without a usable increment the snapshot is all there is. Saying
-        // the read is complete would let a write send a stale set, so it is
-        // stored to draw from and nothing more.
-        if !delta.delta_update_possible {
-            complete = false;
-        } else {
-            pins.apply_delta(&delta);
-            sync_token = pins::token(&delta.sync_token).or(sync_token);
-        }
-    }
-    log::debug!("pins: Spotify holds {:?}", pins.uris());
-    store.set_pins(pins.clone(), sync_token).await?;
-    Ok((pins, complete))
+    log::warn!("pins: the set is longer than {MAX_PIN_PAGES} pages; reading it again next time");
+    // An increment against a set with a hole in it would apply to the wrong
+    // thing, and would go on doing so, so what arrived is kept without a
+    // token and the next read is another full one.
+    Ok((pins, None, false))
 }
 
 /// Walks the rootlist into the index: the playlist set, the folder tree and
@@ -4269,12 +4298,13 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendCommand, BlockingStore, PlayQueue, ShuffleState, build_radio_context,
-        injected_flags, next_injection_seed, send_command,
+        BackendCommand, BlockingStore, PIN_WRITE_SETTLE, Pins, PlayQueue, ShuffleState,
+        build_radio_context, injected_flags, next_injection_seed, send_command, settled_base,
     };
     use crate::model::{Provider, Track};
     use crate::shuffle::Origin;
     use crate::storage::Store;
+    use std::time::Instant;
 
     fn track() -> Track {
         Track {
