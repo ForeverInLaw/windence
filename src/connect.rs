@@ -7,10 +7,12 @@
 //! list. Without it Spotify does not know this app exists, and a play here
 //! is invisible everywhere else.
 //!
-//! Cadence reports and takes no orders. The device says it is hidden and
-//! cannot be played to, so it stays out of the Connect picker on the phone:
-//! tapping a device is a promise to start playing, and Cadence cannot keep
-//! that promise yet.
+//! Cadence reports and takes no orders. It does announce itself as a
+//! player that can play, because a device that says it cannot play while
+//! reporting a track is telling Spotify two different things, and the
+//! account's history is what gets dropped. The commands are still all
+//! refused: nothing here can be transferred to or controlled from another
+//! device, so tapping Cadence in the Connect picker does nothing.
 //!
 //! Everything here is pure. See [`crate::playback`] for the request that
 //! carries it.
@@ -79,10 +81,12 @@ pub fn state_request(
     }
 }
 
-/// The device as the account sees it: a reporter, not a speaker.
+/// The device as the account sees it: a player that plays for itself.
 fn device_info(identity: &Identity) -> DeviceInfo {
     DeviceInfo {
-        can_play: false,
+        // A device that plays. Saying otherwise while reporting a track is
+        // a contradiction, and what Spotify drops is the play.
+        can_play: true,
         name: DEVICE_NAME.to_owned(),
         device_id: identity.device_id.clone(),
         client_id: identity.client_id.clone(),
@@ -90,14 +94,15 @@ fn device_info(identity: &Identity) -> DeviceInfo {
         device_software_version: version::SEMVER.to_owned(),
         spirc_version: version::SPOTIFY_SPIRC_VERSION.to_owned(),
         capabilities: MessageField::some(Capabilities {
+            can_be_player: true,
             // Every one of these is a way in for a command Cadence has no
-            // answer to, so every one of them is off.
-            can_be_player: false,
+            // answer to, so every one of them is off. The device is in the
+            // picker but nothing can be handed to it.
             is_controllable: false,
             supports_transfer_command: false,
             supports_command_request: false,
-            connect_disabled: true,
-            hidden: true,
+            connect_disabled: false,
+            hidden: false,
             disable_volume: true,
             supported_types: vec!["audio/track".to_owned()],
             ..Default::default()
@@ -219,18 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn the_device_offers_nothing_that_could_be_commanded() {
+    fn the_device_plays_but_offers_nothing_that_could_be_commanded() {
         let request = state_request(&identity(), None, PutStateReason::NEW_DEVICE, 0);
         let device = &request.device.device_info;
         let capabilities = &device.capabilities;
 
-        assert!(!device.can_play);
-        assert!(!capabilities.can_be_player);
+        // A player, so the account counts what it plays as a play.
+        assert!(device.can_play);
+        assert!(capabilities.can_be_player);
         assert!(!capabilities.is_controllable);
         assert!(!capabilities.supports_transfer_command);
         assert!(!capabilities.supports_command_request);
-        // Both of these keep the device out of the picker on the phone.
-        assert!(capabilities.connect_disabled);
-        assert!(capabilities.hidden);
     }
 }
