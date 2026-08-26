@@ -1868,20 +1868,20 @@ impl Worker {
 
     /// Applies `change` to the account's pins and writes the whole set.
     ///
-    /// The set is re-read and merged first: a write replaces what Spotify
-    /// holds, and between Cadence's last read and this gesture another
-    /// device may have pinned something the write would otherwise unpin.
-    /// Pinning and reordering both come through here, because both send the
-    /// whole set.
+    /// The set is re-read first: a write replaces what Spotify holds, so
+    /// the change has to go on top of what the account holds now and not on
+    /// top of what Cadence last saw. The fresh read is the whole truth —
+    /// nothing stored is folded back into it, because a pin dropped on
+    /// another device is missing from the fresh read on purpose, and adding
+    /// it back would pin it again. Pinning and reordering both come through
+    /// here, because both send the whole set.
     async fn write_whole_set(&mut self, change: impl FnOnce(&mut Pins)) -> Result<Pins> {
         let playback = self.pin_writer()?;
-        let local = self.store.pins().await?;
         let (mut pins, complete) = read_pins(&playback, &self.store).await?;
         // Half a set must never go: what did not arrive would be unpinned.
         if !complete {
             bail!("Spotify sent only part of the pinned set, so nothing was written");
         }
-        pins.merge(&local);
         change(&mut pins);
         playback.write_pins(pins.write_items(now_seconds())).await?;
         self.store_pins(pins).await

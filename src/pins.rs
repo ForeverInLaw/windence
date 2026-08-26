@@ -81,18 +81,6 @@ impl Pins {
         self.uris.retain(|pinned| pinned != uri);
     }
 
-    /// Takes in everything `other` holds that this set does not.
-    ///
-    /// A write sends the whole pin list, so the set about to be written has
-    /// to hold both sides: what the account holds now, freshly read, and
-    /// what Cadence already had. Neither side's pin is dropped, and the
-    /// fresh side keeps the order, because that is the order Spotify draws.
-    pub fn merge(&mut self, other: &Self) {
-        for uri in &other.uris {
-            self.insert(uri.clone());
-        }
-    }
-
     /// Pins one item, at the end of the section. Pinning something already
     /// pinned changes nothing.
     pub fn pin(&mut self, uri: &str) {
@@ -279,36 +267,6 @@ mod tests {
         assert_eq!(
             pins.uris(),
             ["spotify:playlist:bbb", "spotify:playlist:ccc"]
-        );
-    }
-
-    #[test]
-    fn a_merge_keeps_both_sides_and_the_fresh_order() {
-        // What the account holds now: a pin made on another device since
-        // Cadence last read, and one Cadence never saw at all.
-        let mut fresh = pins_of(&[
-            "spotify:collection",
-            "spotify:playlist:from-the-phone",
-            "spotify:playlist:aaa",
-        ]);
-        let local = pins_of(&[
-            "spotify:collection",
-            "spotify:playlist:aaa",
-            "spotify:playlist:only-here",
-        ]);
-
-        fresh.merge(&local);
-
-        assert_eq!(
-            fresh.uris(),
-            [
-                // The fresh read owns the order.
-                "spotify:collection",
-                "spotify:playlist:from-the-phone",
-                "spotify:playlist:aaa",
-                // What only Cadence held is kept, at the end.
-                "spotify:playlist:only-here",
-            ]
         );
     }
 
