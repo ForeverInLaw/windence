@@ -468,7 +468,7 @@ fn library_row(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     depth: usize,
-    first: bool,
+    edges: RowEdges,
 ) -> Stateful<Div> {
     components::button(palette, id)
         .w_full()
@@ -478,14 +478,33 @@ fn library_row(
         .justify_start()
         .gap(px(14.))
         .rounded(px(0.))
-        // The top row sits in the frame's rounded corners, and clipping is
-        // rectangular: without the radius its hover fill paints into them.
-        // It also needs no rule above it — the frame's own border is there.
-        .when(first, |row| row.rounded_t(px(LIST_CORNER_RADIUS)))
-        .when(!first, |row| {
+        // The rows at either end sit in the frame's rounded corners, and
+        // clipping is rectangular: without the radius their hover fill
+        // paints into them. The first needs no rule above it either — the
+        // frame's own border already draws that line.
+        .when(edges.first, |row| row.rounded_t(px(LIST_CORNER_RADIUS)))
+        .when(edges.last, |row| row.rounded_b(px(LIST_CORNER_RADIUS)))
+        .when(!edges.first, |row| {
             row.border_t_1().border_color(rgb(palette.border))
         })
         .hover(|style| style.bg(rgb(palette.surface_hover)))
+}
+
+/// Where a row sits in the list it is drawn in, which is what says whether
+/// it has to carry the frame's rounded corners.
+#[derive(Clone, Copy)]
+pub(super) struct RowEdges {
+    first: bool,
+    last: bool,
+}
+
+impl RowEdges {
+    pub(super) fn of(index: usize, count: usize) -> Self {
+        Self {
+            first: index == 0,
+            last: index + 1 == count,
+        }
+    }
 }
 
 /// The mark a row carries when the account has it pinned, so the list says
@@ -502,6 +521,9 @@ fn pin_marker(palette: CadencePalette, pinned: bool) -> Option<Div> {
 #[derive(IntoElement)]
 pub(super) struct PlaylistRow {
     index: usize,
+    /// Whether the row sits at either end of the list, which is what makes
+    /// it carry the frame's rounded corners.
+    edges: RowEdges,
     playlist: model::Playlist,
     /// How many folders the row sits inside, which is what indents it.
     depth: usize,
@@ -515,6 +537,7 @@ pub(super) struct PlaylistRow {
 impl PlaylistRow {
     pub(super) fn new(
         index: usize,
+        edges: RowEdges,
         playlist: model::Playlist,
         depth: usize,
         palette: CadencePalette,
@@ -522,6 +545,7 @@ impl PlaylistRow {
     ) -> Self {
         Self {
             index,
+            edges,
             playlist,
             depth,
             palette,
@@ -561,7 +585,7 @@ impl RenderOnce for PlaylistRow {
             palette,
             ("spotify-playlist", self.index),
             self.depth,
-            self.index == 0,
+            self.edges,
         )
         .child(components::artwork(
             palette,
@@ -604,6 +628,8 @@ impl RenderOnce for PlaylistRow {
 #[derive(IntoElement)]
 pub(super) struct FolderRow {
     index: usize,
+    /// Whether the row sits at either end of the list, as on `PlaylistRow`.
+    edges: RowEdges,
     name: String,
     /// How many entries the folder holds directly.
     children: usize,
@@ -618,6 +644,7 @@ pub(super) struct FolderRow {
 impl FolderRow {
     pub(super) fn new(
         index: usize,
+        edges: RowEdges,
         name: String,
         children: usize,
         depth: usize,
@@ -626,6 +653,7 @@ impl FolderRow {
     ) -> Self {
         Self {
             index,
+            edges,
             name,
             children,
             depth,
@@ -664,7 +692,7 @@ impl RenderOnce for FolderRow {
             palette,
             ("playlist-folder", self.index),
             self.depth,
-            self.index == 0,
+            self.edges,
         )
         .child(
             div()

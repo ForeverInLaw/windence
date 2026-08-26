@@ -473,11 +473,13 @@ impl PlaylistList {
         // draggable there as they are in the sidebar: one library, one
         // hand-made order.
         let drag = self.pin_drag(&row, cx);
+        let edges = track_row::RowEdges::of(index, self.rows.len());
         match row {
             library_index::LibraryRow::Playlist { playlist, depth } => {
                 let selected = playlist.clone();
                 track_row::PlaylistRow::new(
                     index,
+                    edges,
                     playlist,
                     depth,
                     palette,
@@ -495,7 +497,7 @@ impl PlaylistList {
                 depth,
                 children,
                 expanded,
-            } => track_row::FolderRow::new(index, name, children, depth, expanded, palette)
+            } => track_row::FolderRow::new(index, edges, name, children, depth, expanded, palette)
                 .on_toggle(cx.listener(move |this, _, _, cx| {
                     let uri = uri.clone();
                     this.library
