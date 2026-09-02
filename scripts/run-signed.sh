@@ -47,8 +47,8 @@ contents="$app/Contents"
 if [ ! -f assets/AppIcon.icns ] ||
   [ assets/AppIcon.svg -nt assets/AppIcon.icns ] ||
   [ assets/cadence-mark.svg -nt assets/cadence-mark.png ] ||
-  [ scripts/build-icon.sh -nt assets/AppIcon.icns ]; then
-  ./scripts/build-icon.sh
+  [ scripts/build-icon.py -nt assets/AppIcon.icns ]; then
+  python3 scripts/build-icon.py
 fi
 
 cargo build
