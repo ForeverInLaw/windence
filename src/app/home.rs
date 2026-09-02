@@ -72,7 +72,15 @@ impl HomePage {
             let _ = this.update(cx, |page, cx| {
                 page.request = None;
                 match result {
-                    Ok(feed) => {
+                    Ok(mut feed) => {
+                        // A shelf with nothing Cadence can draw (podcast
+                        // rows, the liked-songs tile) would be a bare title.
+                        feed.shelves.retain(|shelf| {
+                            shelf
+                                .cards
+                                .iter()
+                                .any(|card| card.kind != model::HomeCardKind::Other)
+                        });
                         // A refresh may reorder the shelves, so nothing tied
                         // to a shelf's position survives it: rows start at
                         // their left edge, and a page still loading for the
@@ -230,7 +238,10 @@ impl HomePage {
                 row.child(self.more_card(index, loading_more, palette, cx))
             });
 
+        // Full width, or the shelf sizes to its cards: the row then has
+        // nothing to overflow and never scrolls.
         div()
+            .w_full()
             .h(px(SHELF_HEIGHT))
             .flex()
             .flex_col()
