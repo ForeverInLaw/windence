@@ -149,16 +149,18 @@ impl HomePage {
     }
 
     fn shelves(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
-        uniform_list(
+        let mut list = uniform_list(
             "home-shelves",
             count,
             cx.processor(move |this, range: Range<usize>, _, cx| {
                 range.map(|index| this.shelf(index, cx)).collect()
             }),
-        )
-        .flex_1()
-        .min_h_0()
-        .into_any_element()
+        );
+        // A sideways wheel (shift held, a trackpad) moves a shelf's row,
+        // not the page; without this the list would read it as vertical.
+        // The list offers no builder for the flag, so it is set directly.
+        list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
+        list.flex_1().min_h_0().into_any_element()
     }
 
     /// One shelf: its title with paging arrows, then its cards in a row that
