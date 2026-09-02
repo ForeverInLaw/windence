@@ -55,7 +55,7 @@ Cards are typed wrappers: `PlaylistResponseWrapper`, `AlbumResponseWrapper`,
   no Web API equivalent to fall back to.
 - **A card opens the page Cadence already has.** A card carries a uri, a
   name and artwork; opening it hands the existing playlist, album or artist
-  page that uri. Spotify's own playlists (ids starting `37i9dQZF`) are
+  page that uri. Spotify's own playlists (ids starting `37i9dQZ`) are
   withheld from third-party apps on the Web API, which answers 404, so the
   playlist page reads those over the internal protocol
   (`playlist/v2/playlist/<id>`, tracks resolved by uri like a DJ lineup).

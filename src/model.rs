@@ -281,10 +281,12 @@ pub struct Playlist {
 impl Playlist {
     /// Whether Spotify itself made the playlist: an editorial or personal
     /// one such as Discover Weekly, a Daily Mix or a daylist. Their ids all
-    /// share one prefix. The Web API withholds these from third-party apps,
-    /// so their tracks are read over the internal protocol instead.
+    /// share one prefix (`37i9dQZF…` for most, `37i9dQZEVX…` for Discover
+    /// Weekly, Release Radar and the yearly Wrapped lists). The Web API
+    /// withholds these from third-party apps, so their tracks are read over
+    /// the internal protocol instead.
     pub fn spotify_curated(&self) -> bool {
-        self.source_id.starts_with("37i9dQZF")
+        self.source_id.starts_with("37i9dQZ")
     }
 }
 
@@ -433,6 +435,8 @@ mod tests {
         };
         assert!(playlist("37i9dQZF1E39CQiaB7kkGx").spotify_curated());
         assert!(playlist("37i9dQZF1DXcBWIGoYBM5M").spotify_curated());
+        // Discover Weekly, Release Radar and Wrapped use the other spelling.
+        assert!(playlist("37i9dQZEVXcXHWVVT0lfDq").spotify_curated());
         assert!(!playlist("19bJuVvQRoDL5nCt8rYVUE").spotify_curated());
     }
 
