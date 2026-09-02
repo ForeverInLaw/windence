@@ -24,7 +24,7 @@ It runs on `windows-2025`, whose image already carries the Rust version
 `rust-toolchain.toml` asks for, Inno Setup, and the Visual Studio
 redistributable the app ships beside itself. The job installs none of them. It
 does cache the compiled dependencies between releases, which matters more than
-it sounds: gpui, librespot, SDL2 and SQLite all build from source, and on a
+it sounds: gpui, librespot and SQLite all build from source, and on a
 cold run that is nearly the whole job.
 
 1. Builds and packages the binary through `scripts/package-windows.ps1`. The

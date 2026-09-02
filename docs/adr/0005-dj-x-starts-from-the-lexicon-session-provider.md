@@ -86,9 +86,9 @@ Cadence starts DJ X itself.
   ordinary queue: one transport, one position-saving path, one player bar.
 - Narration audio cannot go through the player library, whose local-file path
   indexes a directory once at startup. It is decoded separately and queued on
-  the output device ahead of the song. SDL refuses to initialize from a second
-  thread and its device handles are neither `Send` nor `Sync`, so this is not a
-  preference — it is the only arrangement available.
+  the output device ahead of the song, on the same stream: a second stream
+  could not promise the voice ends before the song starts, or that the song
+  follows it without a gap.
 - Out of scope, deliberately: crossfading the voice into the song, applying the
   loudness and true-peak targets the metadata carries, the closing line each
   stretch ends with, the "Let DJ pick" affordance, resampling a line that comes

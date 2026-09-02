@@ -21,8 +21,8 @@ player for macOS.
 
 ## Status
 
-The Port plays sound through the bundled librespot and SDL2 stack.
-Everything around it works too:
+The Port plays sound through librespot and the Windows audio stack (WASAPI,
+through CPAL). Everything around it works too:
 
 - Sign in with Spotify through your default browser
 - Browse your saved tracks in a scrollable library view
@@ -38,8 +38,9 @@ Everything around it works too:
 **Rust** + **GPUI** + **rspotify** + **SQLite**
 
 GPUI renders the GPU-accelerated interface, rspotify connects to the Spotify
-Web API, and SQLite keeps local state. Audio streams through librespot into a
-bundled, statically linked SDL2 output.
+Web API, and SQLite keeps local state. Audio streams through librespot into the
+system's default output through CPAL, following the default device when it
+changes.
 
 ## Requirements
 
@@ -50,10 +51,9 @@ Building needs a 64-bit Windows 10 or 11 machine with:
 - [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/)
   with the **Desktop development with C++** workload — provides the MSVC
   compiler and the Windows SDK.
-- [CMake](https://cmake.org/download/) — builds the bundled SDL2 from source.
 
-NASM is **not** needed. Assembly code arrives preassembled inside the
-`ring` crate, and SDL2 has no assembly of its own.
+Neither CMake nor NASM is needed. Assembly code arrives preassembled inside
+the `ring` crate, and nothing else builds C from source.
 
 You also need a Spotify Premium account.
 

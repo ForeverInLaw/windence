@@ -21,7 +21,7 @@ Windows System Media Transport Controls — the OS media overlay that displays t
 _Avoid_: media keys, MPRIS (Linux term), Now Playing (macOS term)
 
 **Milestone 2**:
-The second end-to-end state: tracks play audibly through the upstream librespot + SDL2 audio stack, with playback behavior matching upstream.
+The second end-to-end state: tracks play audibly through the upstream librespot + CPAL audio stack, with playback behavior matching upstream.
 _Avoid_: audio work, sound milestone
 
 **Queue**:

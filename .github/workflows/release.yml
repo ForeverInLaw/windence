@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0 # the release notes read the whole history
           persist-credentials: false
 
-      # Restores the compiled dependencies. gpui, librespot, SDL2 and SQLite
+      # Restores the compiled dependencies. gpui, librespot and SQLite
       # all build from source, so a cold run is most of this job's time.
       - name: Restore the Rust cache
         uses: Swatinem/rust-cache@v2
