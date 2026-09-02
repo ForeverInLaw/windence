@@ -15,6 +15,7 @@ pub(super) struct Workspace {
     pub(super) player: Entity<player::Player>,
     pub(super) session: Entity<session::Session>,
     pub(super) library: Entity<library::Library>,
+    pub(super) home: Entity<home::HomePage>,
     pub(super) liked_songs: Entity<library_pages::LibraryTracksPage>,
     pub(super) recent: Entity<library_pages::LibraryTracksPage>,
     pub(super) playlists: Entity<library_pages::PlaylistsPage>,
@@ -43,9 +44,10 @@ impl Workspace {
         // Coming back to the app is when staleness gets noticed. The check
         // costs two head requests behind the staleness window and the
         // rate-limit gate, so it is safe to run on every activation.
-        let activation_subscription = cx.observe_window_activation(window, |_, window, cx| {
+        let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 services::AppServices::library(cx).update(cx, |library, cx| library.revalidate(cx));
+                this.revalidate_home_if_shown(cx);
             }
         });
         window.focus(&focus_handle, cx);
@@ -74,6 +76,7 @@ impl Workspace {
         let library_page = |section, cx: &mut Context<Self>| {
             cx.new(|cx| library_pages::LibraryTracksPage::new(section, cx))
         };
+        let home = cx.new(|cx| home::HomePage::new(backend.clone(), cx));
         let liked_songs = library_page(LibrarySection::LikedSongs, cx);
         let recent = library_page(LibrarySection::Recent, cx);
         let playlists = cx.new(library_pages::PlaylistsPage::new);
@@ -82,6 +85,7 @@ impl Workspace {
         let artist = cx.new(|cx| catalog::ArtistPage::new(backend.clone(), cx));
         let album = cx.new(|cx| catalog::AlbumPage::new(backend.clone(), cx));
         for subscription in [
+            cx.subscribe(&home, Workspace::handle_page_event),
             cx.subscribe(&liked_songs, Workspace::handle_page_event),
             cx.subscribe(&recent, Workspace::handle_page_event),
             cx.subscribe(&playlists, Workspace::handle_page_event),
@@ -180,6 +184,7 @@ impl Workspace {
             player,
             session,
             library,
+            home,
             liked_songs,
             recent,
             playlists,
@@ -221,6 +226,7 @@ impl Workspace {
     /// The page for the route the listener is on.
     fn page(&self) -> AnyElement {
         match self.router.route() {
+            Route::Home => self.home.clone().into_any_element(),
             Route::LikedSongs => self.liked_songs.clone().into_any_element(),
             Route::Recent => self.recent.clone().into_any_element(),
             Route::Search => self.search.clone().into_any_element(),

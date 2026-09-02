@@ -119,6 +119,7 @@ impl Workspace {
     fn clear_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toolbar
             .update(cx, |toolbar, cx| toolbar.clear_search(window, cx));
+        self.home.update(cx, |page, cx| page.clear(cx));
         self.search.update(cx, |page, cx| page.clear(cx));
         self.playlist.update(cx, |page, cx| page.clear(cx));
         self.artist.update(cx, |page, cx| page.clear(cx));
@@ -183,7 +184,17 @@ impl Workspace {
 
     pub(super) fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
         self.router.navigate(route);
+        self.revalidate_home_if_shown(cx);
         self.settle_navigation(cx);
+    }
+
+    /// Refreshes the Home feed when it is the page on screen. The feed is
+    /// fetched on arrival rather than at start-up: it needs the playback
+    /// session, and a session may never open the page.
+    pub(super) fn revalidate_home_if_shown(&mut self, cx: &mut Context<Self>) {
+        if self.router.route() == Route::Home {
+            self.home.update(cx, |page, cx| page.revalidate(cx));
+        }
     }
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {

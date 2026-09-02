@@ -94,12 +94,7 @@ impl Library {
     /// additionally answers Unchanged while the boot load owns the first
     /// fetch, so this cannot race it into a doubled walk.
     pub(super) fn revalidate(&mut self, cx: &mut Context<Self>) {
-        let fresh = self.refreshed_at.is_some_and(|refreshed_at| {
-            refreshed_at
-                .elapsed()
-                .is_ok_and(|elapsed| elapsed < REVALIDATION_DEBOUNCE)
-        });
-        if self.reload.is_some() || fresh {
+        if self.reload.is_some() || is_fresh(self.refreshed_at, REVALIDATION_DEBOUNCE) {
             return;
         }
         let (respond, reply) = tokio::sync::oneshot::channel();

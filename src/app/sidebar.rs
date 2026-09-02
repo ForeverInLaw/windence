@@ -427,9 +427,21 @@ impl Sidebar {
                                     .flex()
                                     .flex_col()
                                     .gap(px(4.))
+                                    // Home is Spotify's page, not a library
+                                    // item, so it sits above the label.
+                                    .child(nav_item(
+                                        "nav-home",
+                                        "nav-home-fill",
+                                        "Home",
+                                        "house",
+                                        "house",
+                                        NavTarget::Route(Route::Home),
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .px(px(12.))
+                                            .pt(px(12.))
                                             .pb(px(4.))
                                             .child(components::section_label(palette, "Library"))
                                             .with_animation(

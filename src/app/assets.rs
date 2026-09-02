@@ -30,6 +30,10 @@ const CADENCE_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/icons/heart-fill.svg"),
     ),
     (
+        "icons/house.svg",
+        include_bytes!("../../assets/icons/house.svg"),
+    ),
+    (
         "icons/key.svg",
         include_bytes!("../../assets/icons/key.svg"),
     ),

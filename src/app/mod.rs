@@ -298,6 +298,7 @@ fn uses_compact_player_layout(window_width: f32) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
+    Home,
     LikedSongs,
     Recent,
     Search,
@@ -358,14 +359,15 @@ fn next_request_id(request_id: &mut u64) -> u64 {
     *request_id
 }
 
-/// Wall clock, not `Instant`: `Instant` does not advance while the machine is
+/// Whether something loaded at `loaded_at` is younger than `max_age`. Wall
+/// clock, not `Instant`: `Instant` does not advance while the machine is
 /// asleep, so a sleep would leave stale data looking fresh.
+fn is_fresh(loaded_at: Option<SystemTime>, max_age: Duration) -> bool {
+    loaded_at.is_some_and(|loaded_at| loaded_at.elapsed().is_ok_and(|elapsed| elapsed < max_age))
+}
+
 fn catalog_data_is_fresh(loaded_at: Option<SystemTime>) -> bool {
-    loaded_at.is_some_and(|loaded_at| {
-        loaded_at
-            .elapsed()
-            .is_ok_and(|elapsed| elapsed < CATALOG_STALE_TIME)
-    })
+    is_fresh(loaded_at, CATALOG_STALE_TIME)
 }
 
 async fn receive_backend_event_batch(
@@ -390,6 +392,7 @@ mod catalog;
 mod chrome;
 mod components;
 mod events;
+mod home;
 mod library;
 mod library_pages;
 mod media_controls;
@@ -640,6 +643,7 @@ mod icon_tests {
         "folder-open",
         "heart",
         "heart-fill",
+        "house",
         "key",
         "list-music",
         "log-out",
