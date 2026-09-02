@@ -1208,8 +1208,12 @@ impl Worker {
                         respond,
                     );
                 } else {
-                    self.catalog
-                        .playlist(self.spotify.clone(), playlist, respond);
+                    self.catalog.playlist(
+                        self.spotify.clone(),
+                        self.connection.player.clone(),
+                        playlist,
+                        respond,
+                    );
                 }
                 Ok(())
             }
@@ -3372,19 +3376,34 @@ impl CatalogFetches {
         });
     }
 
-    fn playlist(&mut self, spotify: Spotify, playlist: Playlist, respond: Reply<PlaylistContents>) {
+    /// Loads a playlist's tracks. Spotify's own curated playlists are
+    /// withheld from third-party apps on the Web API, so those are read
+    /// over the playback session the way the desktop client reads them;
+    /// every other playlist comes from the Web API as before.
+    fn playlist(
+        &mut self,
+        spotify: Spotify,
+        playback: Option<Playback>,
+        playlist: Playlist,
+        respond: Reply<PlaylistContents>,
+    ) {
         Self::start(
             &mut self.playlist,
             respond,
             "Spotify playlist request",
             async move {
-                spotify
-                    .playlist_tracks(&playlist.source_id)
-                    .await
-                    .map(|tracks| PlaylistContents::Loaded {
-                        playlist: None,
-                        tracks,
-                    })
+                let tracks = if playlist.spotify_curated() {
+                    playback
+                        .context("Spotify playback is not connected")?
+                        .playlist_tracks(&playlist.source_id)
+                        .await?
+                } else {
+                    spotify.playlist_tracks(&playlist.source_id).await?
+                };
+                Ok(PlaylistContents::Loaded {
+                    playlist: None,
+                    tracks,
+                })
             },
         );
     }

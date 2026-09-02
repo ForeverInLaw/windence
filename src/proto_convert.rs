@@ -68,6 +68,21 @@ pub fn is_track_item(uri: &str) -> bool {
     uri.starts_with("spotify:track:")
 }
 
+/// The tracks a playlist lists, in order, each with its Date Added: the
+/// items of a `playlist/v2` answer minus the episodes and other entries
+/// Cadence's pages cannot show.
+pub fn playlist_entries(
+    content: &playlist4_external::SelectedListContent,
+) -> Vec<(String, Option<DateTime<Utc>>)> {
+    content
+        .contents
+        .items
+        .iter()
+        .filter(|item| is_track_item(item.uri()))
+        .map(|item| (item.uri().to_owned(), added_at(item)))
+        .collect()
+}
+
 /// The playlist artwork URL from the internal protocol's list attributes:
 /// a ready-made URL when the server decorated the list with one, otherwise
 /// the raw picture file id.
@@ -143,7 +158,7 @@ fn base62(gid: &[u8]) -> Option<String> {
 mod tests {
     use super::{
         added_at, album_ref, artist_ref, base62, cover_artwork, file_url, is_track_item,
-        playlist_artwork, track,
+        playlist_artwork, playlist_entries, track,
     };
     use crate::model::{AlbumRef, ArtistRef};
     use librespot::core::FileId;
@@ -276,6 +291,39 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(uri, expected)| assert_eq!(is_track_item(uri), expected, "{uri}"));
+    }
+
+    #[test]
+    fn playlist_entries_keep_tracks_in_order_and_drop_the_rest() {
+        let item = |uri: &str, timestamp: Option<i64>| playlist4_external::Item {
+            uri: Some(uri.to_owned()),
+            attributes: timestamp
+                .map(|timestamp| ItemAttributes {
+                    timestamp: Some(timestamp),
+                    ..Default::default()
+                })
+                .into(),
+            ..Default::default()
+        };
+        let content = playlist4_external::SelectedListContent {
+            contents: Some(playlist4_external::ListItems {
+                items: vec![
+                    item("spotify:track:b", Some(2_000)),
+                    item("spotify:episode:x", Some(3_000)),
+                    item("spotify:track:a", None),
+                ],
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+
+        let entries = playlist_entries(&content);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "spotify:track:b");
+        assert_eq!(entries[0].1.map(|at| at.timestamp_millis()), Some(2_000));
+        assert_eq!(entries[1], ("spotify:track:a".to_owned(), None));
     }
 
     #[test]

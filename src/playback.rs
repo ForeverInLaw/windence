@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,8 +13,8 @@ use futures::StreamExt as _;
 use keyring::Entry;
 use librespot::{
     core::{
-        SpotifyUri, authentication::Credentials, config::SessionConfig, dealer::Subscription,
-        dealer::protocol::Message as DealerMessage, session::Session,
+        SpotifyId, SpotifyUri, authentication::Credentials, config::SessionConfig,
+        dealer::Subscription, dealer::protocol::Message as DealerMessage, session::Session,
     },
     metadata::Metadata,
     oauth::OAuthClientBuilder,
@@ -726,6 +726,43 @@ impl Playback {
         .collect::<Vec<_>>()
         .await;
         fetched.into_iter().flatten().flatten().collect()
+    }
+
+    /// A playlist's tracks over the internal protocol, the way the desktop
+    /// client reads them. This is how Spotify's own curated playlists open:
+    /// the Web API withholds them from third-party apps. The list names
+    /// tracks by uri only, so each is resolved like a DJ lineup's.
+    pub(crate) async fn playlist_tracks(&self, source_id: &str) -> Result<Vec<model::ListedTrack>> {
+        use protobuf::Message as _;
+        let id = SpotifyId::from_base62(source_id).context("not a Spotify playlist id")?;
+        let body = self
+            .session
+            .spclient()
+            .get_playlist(&id)
+            .await
+            .context("Spotify playlist endpoint failed")?;
+        let content = playlist4_external::SelectedListContent::parse_from_bytes(&body)
+            .context("Spotify playlist returned an undecodable message")?;
+        let entries = proto_convert::playlist_entries(&content);
+        let uris: Vec<String> = entries.iter().map(|(uri, _)| uri.clone()).collect();
+        let added_at: HashMap<&str, _> = entries
+            .iter()
+            .map(|(uri, added_at)| (uri.as_str(), *added_at))
+            .collect();
+        Ok(self
+            .tracks_for_uris(&uris)
+            .await
+            .into_iter()
+            .map(|listed| model::ListedTrack {
+                added_at: listed
+                    .track
+                    .spotify_uri
+                    .as_deref()
+                    .and_then(|uri| added_at.get(uri).copied())
+                    .flatten(),
+                ..listed
+            })
+            .collect())
     }
 }
 

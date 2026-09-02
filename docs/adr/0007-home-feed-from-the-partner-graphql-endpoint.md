@@ -53,10 +53,14 @@ Cards are typed wrappers: `PlaylistResponseWrapper`, `AlbumResponseWrapper`,
   `PersistedQueryNotFound`, the page shows the error, and the fix is to read
   the new hash from the current xpui bundle. No retry, no fallback: there is
   no Web API equivalent to fall back to.
-- **The Web API stays the source of what a card opens.** A card carries a
-  uri, a name and artwork; opening it hands the existing playlist, album or
-  artist page that uri, and the tracks load the way they always have. The
-  same split ADR 0006 uses for the library.
+- **A card opens the page Cadence already has.** A card carries a uri, a
+  name and artwork; opening it hands the existing playlist, album or artist
+  page that uri. Spotify's own playlists (ids starting `37i9dQZF`) are
+  withheld from third-party apps on the Web API, which answers 404, so the
+  playlist page reads those over the internal protocol
+  (`playlist/v2/playlist/<id>`, tracks resolved by uri like a DJ lineup).
+  Every other playlist keeps loading from the Web API. The choice is made
+  by id up front; nothing is tried twice.
 - **Fetched on arrival, not at start-up.** The feed needs the playback
   session and changes by the hour, so the page loads when the listener opens
   it and refreshes on return behind a 30 second debounce. No SQLite cache: a

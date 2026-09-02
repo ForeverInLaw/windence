@@ -278,6 +278,16 @@ pub struct Playlist {
     pub artwork_url: Option<String>,
 }
 
+impl Playlist {
+    /// Whether Spotify itself made the playlist: an editorial or personal
+    /// one such as Discover Weekly, a Daily Mix or a daylist. Their ids all
+    /// share one prefix. The Web API withholds these from third-party apps,
+    /// so their tracks are read over the internal protocol instead.
+    pub fn spotify_curated(&self) -> bool {
+        self.source_id.starts_with("37i9dQZF")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct UserProfile {
     pub display_name: String,
@@ -409,6 +419,21 @@ mod tests {
 
     fn sort(column: ListSortColumn, direction: ListSortDirection) -> Option<ListSort> {
         Some(ListSort { column, direction })
+    }
+
+    #[test]
+    fn spotify_made_playlists_are_told_apart_by_their_id() {
+        let playlist = |id: &str| super::Playlist {
+            provider: super::Provider::Spotify,
+            source_id: id.to_owned(),
+            name: String::new(),
+            owner: String::new(),
+            track_count: 0,
+            artwork_url: None,
+        };
+        assert!(playlist("37i9dQZF1E39CQiaB7kkGx").spotify_curated());
+        assert!(playlist("37i9dQZF1DXcBWIGoYBM5M").spotify_curated());
+        assert!(!playlist("19bJuVvQRoDL5nCt8rYVUE").spotify_curated());
     }
 
     #[test]
