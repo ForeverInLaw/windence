@@ -27,6 +27,7 @@ Everything around it works too:
 - Sign in with Spotify through your default browser
 - Browse your saved tracks in a scrollable library view
 - Search tracks and playlists; native artist and album pages
+- Spotify's Home feed: Discover Weekly, Daily Mixes, daylists and the other curated shelves
 - Queue, history, and Liked Songs visible in the UI
 - Control playback from Windows system media controls (SMTC)
 - Light, dark, and follow-system appearances

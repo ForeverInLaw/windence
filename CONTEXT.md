@@ -87,3 +87,15 @@ _Avoid_: favourite (that is Liked Songs), bookmark, starred
 **Recents**:
 The default playlist order, and the name the sort menu gives it: newest first by the later of last played and Date Added. The other three modes are Date Added, Alphabetical and Creator, worded as the official client words them.
 _Avoid_: recently played (that is the page of played tracks), last played
+
+**Home**:
+Spotify's own page for the account: the curated shelves it offers right now, read from the internal partner endpoint because the Web API has no feed of them. Fetched when opened and refreshed on return; never stored.
+_Avoid_: dashboard, recommendations (that is the track-level Web API feature behind Radio and Smart Shuffle), browse (a different destination)
+
+**Shelf**:
+One titled row of the Home feed, such as "Made For You" or "Soundtrack your Wednesday afternoon". It arrives with its first ten cards and a place to continue from; "Show more" appends the next page in place.
+_Avoid_: section (the wire name), carousel, row (too generic)
+
+**Card**:
+One item on a Shelf: a playlist, album or artist with its artwork. Opening it hands the item to the page Cadence already has for that kind; podcast and episode cards are carried but not drawn.
+_Avoid_: tile, item, entry
