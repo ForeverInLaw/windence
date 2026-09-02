@@ -7501,6 +7501,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "http",
+ "iana-time-zone",
  "keyring",
  "librespot",
  "log",

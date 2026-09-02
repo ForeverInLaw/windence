@@ -239,6 +239,35 @@ pub fn list_order(listed: &[ListedTrack], sort: Option<ListSort>) -> Vec<usize> 
     order
 }
 
+/// The cover to load out of the sizes Spotify offers, given as
+/// `(url, edge)` pairs: the smallest at or above the display size, else
+/// the largest, else one whose size is not stated. Every Spotify source
+/// (the Web API, the Home feed) picks the same way.
+pub fn pick_artwork<'a>(
+    images: impl IntoIterator<Item = (&'a str, Option<u32>)>,
+) -> Option<String> {
+    const TARGET_ARTWORK_SIZE: u32 = 300;
+
+    let images: Vec<(&str, Option<u32>)> = images.into_iter().collect();
+    let sized = || {
+        images
+            .iter()
+            .filter_map(|(url, size)| size.map(|size| (*url, size)))
+    };
+    sized()
+        .filter(|(_, size)| *size >= TARGET_ARTWORK_SIZE)
+        .min_by_key(|(_, size)| *size)
+        .or_else(|| sized().max_by_key(|(_, size)| *size))
+        .map(|(url, _)| url)
+        .or_else(|| {
+            images
+                .iter()
+                .find(|(_, size)| size.is_none())
+                .map(|(url, _)| *url)
+        })
+        .map(str::to_owned)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Playlist {
     pub provider: Provider,
@@ -253,6 +282,95 @@ pub struct Playlist {
 pub struct UserProfile {
     pub display_name: String,
     pub artwork_url: Option<String>,
+}
+
+/// Spotify's Home feed: the curated shelves the desktop client opens on.
+/// Read from the internal partner endpoint (see `feed`); nothing in the Web
+/// API returns it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HomeFeed {
+    /// The time-of-day greeting the feed opens with, in the request locale.
+    pub greeting: Option<String>,
+    pub shelves: Vec<HomeShelf>,
+}
+
+/// One shelf of the Home feed. The first load carries its first page of
+/// cards; `next_offset` is where the next page starts, or `None` when the
+/// shelf is complete.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HomeShelf {
+    pub uri: Option<String>,
+    /// Missing on shelves Spotify draws without a heading (the Shorts row).
+    pub title: Option<String>,
+    pub cards: Vec<HomeCard>,
+    pub next_offset: Option<u32>,
+}
+
+/// One page of cards appended to a shelf by a load-more request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HomeShelfPage {
+    pub cards: Vec<HomeCard>,
+    pub next_offset: Option<u32>,
+}
+
+/// A card on a Home shelf. Shelves mix playlists, albums, artists and
+/// podcast items; `kind` says which, and the pages decide what opens.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HomeCard {
+    pub uri: String,
+    pub name: String,
+    pub kind: HomeCardKind,
+    /// The playlist's owner, or an album's artists.
+    pub owner: Option<String>,
+    pub track_count: Option<u32>,
+    pub artwork_url: Option<String>,
+    /// The account a personal playlist was generated for.
+    pub made_for: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HomeCardKind {
+    Playlist,
+    Album,
+    Artist,
+    /// Episodes, podcasts and the other card types Cadence has no page for.
+    Other,
+}
+
+impl HomeCard {
+    /// The card's Spotify id: the last segment of its uri.
+    pub fn source_id(&self) -> &str {
+        self.uri.rsplit(':').next().unwrap_or(&self.uri)
+    }
+
+    /// The playlist a playlist card opens. `None` for every other kind.
+    pub fn playlist(&self) -> Option<Playlist> {
+        (self.kind == HomeCardKind::Playlist).then(|| Playlist {
+            provider: Provider::Spotify,
+            source_id: self.source_id().to_owned(),
+            name: self.name.clone(),
+            owner: self.owner.clone().unwrap_or_default(),
+            track_count: self.track_count.unwrap_or_default(),
+            artwork_url: self.artwork_url.clone(),
+        })
+    }
+
+    pub fn album(&self) -> Option<AlbumRef> {
+        (self.kind == HomeCardKind::Album).then(|| AlbumRef {
+            name: self.name.clone(),
+            source_id: Some(self.source_id().to_owned()),
+            spotify_uri: Some(self.uri.clone()),
+            artwork_url: self.artwork_url.clone(),
+        })
+    }
+
+    pub fn artist(&self) -> Option<ArtistRef> {
+        (self.kind == HomeCardKind::Artist).then(|| ArtistRef {
+            name: self.name.clone(),
+            source_id: Some(self.source_id().to_owned()),
+            spotify_uri: Some(self.uri.clone()),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

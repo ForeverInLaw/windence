@@ -20,7 +20,7 @@ use crate::{
     audio::NarrationClip,
     connect, dj,
     library_index::{self, LibraryIndex, RootlistScan},
-    model::{Album, Artist, ListedTrack, Playlist, Track, UserProfile},
+    model::{Album, Artist, HomeFeed, HomeShelfPage, ListedTrack, Playlist, Track, UserProfile},
     pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     shuffle::{
@@ -355,6 +355,17 @@ pub enum BackendCommand {
     LoadAlbum {
         source_id: String,
         respond: Reply<AlbumDetails>,
+    },
+    /// The Home feed's shelves, from the playback session's internal
+    /// endpoint rather than the Web API.
+    LoadHomeFeed {
+        respond: Reply<HomeFeed>,
+    },
+    /// The next page of one Home shelf's cards from `offset`.
+    LoadHomeShelf {
+        shelf_uri: String,
+        offset: u32,
+        respond: Reply<HomeShelfPage>,
     },
     StartRadio {
         request_id: u64,
@@ -1209,6 +1220,20 @@ impl Worker {
             }
             BackendCommand::LoadAlbum { source_id, respond } => {
                 self.catalog.album(self.spotify.clone(), source_id, respond);
+                Ok(())
+            }
+            BackendCommand::LoadHomeFeed { respond } => {
+                self.catalog
+                    .home_feed(self.connection.player.clone(), respond);
+                Ok(())
+            }
+            BackendCommand::LoadHomeShelf {
+                shelf_uri,
+                offset,
+                respond,
+            } => {
+                self.catalog
+                    .home_shelf(self.connection.player.clone(), shelf_uri, offset, respond);
                 Ok(())
             }
             BackendCommand::StartRadio { request_id, seed } => {
@@ -3308,6 +3333,10 @@ struct CatalogFetches {
     playlist: Option<tokio::task::JoinHandle<()>>,
     artist: Option<tokio::task::JoinHandle<()>>,
     album: Option<tokio::task::JoinHandle<()>>,
+    /// The Home feed, which runs off the playback session like the order
+    /// refresh does. Shelf pages are not tracked here: several shelves may
+    /// load more at once, and none should cancel another.
+    home: Option<tokio::task::JoinHandle<()>>,
     /// Seeded from the database at boot and kept current by every load;
     /// lets later reloads answer Unchanged from the head probes alone,
     /// across restarts.
@@ -3404,6 +3433,35 @@ impl CatalogFetches {
         );
     }
 
+    fn home_feed(&mut self, playback: Option<Playback>, respond: Reply<HomeFeed>) {
+        Self::start(
+            &mut self.home,
+            respond,
+            "Spotify Home feed request",
+            async move {
+                playback
+                    .context("Spotify playback is not connected")?
+                    .home_feed()
+                    .await
+            },
+        );
+    }
+
+    fn home_shelf(
+        &mut self,
+        playback: Option<Playback>,
+        shelf_uri: String,
+        offset: u32,
+        respond: Reply<HomeShelfPage>,
+    ) {
+        spawn_reply(respond, "Spotify Home shelf request", async move {
+            playback
+                .context("Spotify playback is not connected")?
+                .home_shelf(&shelf_uri, offset)
+                .await
+        });
+    }
+
     fn start<T: Send + 'static>(
         slot: &mut Option<tokio::task::JoinHandle<()>>,
         respond: Reply<T>,
@@ -3411,10 +3469,7 @@ impl CatalogFetches {
         request: impl Future<Output = Result<T>> + Send + 'static,
     ) {
         abort_task(slot);
-        *slot = Some(tokio::spawn(async move {
-            let _ =
-                respond.send(run_with_timeout(CATALOG_TIMEOUT_SECONDS, operation, request).await);
-        }));
+        *slot = Some(spawn_reply(respond, operation, request));
     }
 
     fn abort_all(&mut self) {
@@ -3427,6 +3482,7 @@ impl CatalogFetches {
         abort_task(&mut self.playlist);
         abort_task(&mut self.artist);
         abort_task(&mut self.album);
+        abort_task(&mut self.home);
         // The next account's library must not compare equal to this one's.
         clear_fingerprint(&self.library_fingerprint);
     }
@@ -3548,6 +3604,18 @@ async fn finished<T>(
 }
 
 /// Runs `request`, turning a timeout into an error the caller can show.
+/// Runs `request` under the catalog timeout and sends its answer through
+/// `respond`. A dropped receiver means the page moved on; nothing is lost.
+fn spawn_reply<T: Send + 'static>(
+    respond: Reply<T>,
+    operation: &'static str,
+    request: impl Future<Output = Result<T>> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let _ = respond.send(run_with_timeout(CATALOG_TIMEOUT_SECONDS, operation, request).await);
+    })
+}
+
 async fn run_with_timeout<T>(
     seconds: u64,
     operation: &str,

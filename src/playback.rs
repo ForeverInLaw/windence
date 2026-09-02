@@ -35,7 +35,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     audio::{NarrationClip, low_latency_sdl_sink},
-    connect, credential_worker, dj, model, narration,
+    connect, credential_worker, dj, feed, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
     proto::collection2v2::{
@@ -380,6 +380,54 @@ impl Playback {
             .context("Spotify recently-played returned an undecodable message")
     }
 
+    /// The two tokens a direct request to a Spotify service carries: the
+    /// account's access token and the client token. Both come from the
+    /// session and rotate, so they are read for each request. `purpose`
+    /// names the request in the error.
+    async fn service_tokens(&self, purpose: &str) -> Result<(String, String)> {
+        let access_token = self
+            .session
+            .login5()
+            .auth_token()
+            .await
+            .with_context(|| format!("no Spotify access token for {purpose}"))?
+            .access_token;
+        let client_token = self
+            .session
+            .spclient()
+            .client_token()
+            .await
+            .with_context(|| format!("no Spotify client token for {purpose}"))?;
+        Ok((access_token, client_token))
+    }
+
+    /// The partner-endpoint client for this session, built per call because
+    /// the tokens it carries rotate.
+    async fn pathfinder(&self) -> Result<feed::Pathfinder> {
+        let (access_token, client_token) = self.service_tokens("the Home feed").await?;
+        Ok(feed::Pathfinder::new(
+            self.http.clone(),
+            access_token,
+            client_token,
+        ))
+    }
+
+    /// The account's Home feed: Spotify's curated shelves (Discover Weekly,
+    /// the Daily Mixes, daylists, editorial and mood shelves). The Web API
+    /// has no such feed; this reads the internal GraphQL partner endpoint.
+    pub(crate) async fn home_feed(&self) -> Result<model::HomeFeed> {
+        self.pathfinder().await?.home().await
+    }
+
+    /// The next page of one Home shelf's cards; see `feed::Pathfinder`.
+    pub(crate) async fn home_shelf(
+        &self,
+        shelf_uri: &str,
+        offset: u32,
+    ) -> Result<model::HomeShelfPage> {
+        self.pathfinder().await?.home_shelf(shelf_uri, offset).await
+    }
+
     /// One page of the pinned set. `page_token` is what the previous page
     /// handed back, or `None` for the first.
     pub(crate) async fn pin_page(
@@ -603,19 +651,7 @@ impl Playback {
             .base_url()
             .await
             .context("no Spotify access point for narration")?;
-        let access_token = self
-            .session
-            .login5()
-            .auth_token()
-            .await
-            .context("no Spotify access token for narration")?
-            .access_token;
-        let client_token = self
-            .session
-            .spclient()
-            .client_token()
-            .await
-            .context("no Spotify client token for narration")?;
+        let (access_token, client_token) = self.service_tokens("narration").await?;
         let response = self
             .http
             .post(format!("{base_url}/client-tts/v1/fulfill"))

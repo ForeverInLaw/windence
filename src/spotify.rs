@@ -21,7 +21,8 @@ use tokio::{
 use crate::{
     credential_worker,
     model::{
-        Album, AlbumRef, Artist, ArtistRef, ListedTrack, Playlist, Provider, Track, UserProfile,
+        self, Album, AlbumRef, Artist, ArtistRef, ListedTrack, Playlist, Provider, Track,
+        UserProfile,
     },
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
@@ -850,24 +851,11 @@ fn album_ref_from_full(album: &FullAlbum) -> AlbumRef {
 }
 
 fn artwork_url(images: &[Image]) -> Option<String> {
-    const TARGET_ARTWORK_SIZE: u32 = 300;
-
-    let image_size = |image: &Image| image.width.or(image.height);
-    images
-        .iter()
-        .filter_map(|image| image_size(image).map(|size| (image, size)))
-        .filter(|(_, size)| *size >= TARGET_ARTWORK_SIZE)
-        .min_by_key(|(_, size)| *size)
-        .map(|(image, _)| image)
-        .or_else(|| {
-            images
-                .iter()
-                .filter_map(|image| image_size(image).map(|size| (image, size)))
-                .max_by_key(|(_, size)| *size)
-                .map(|(image, _)| image)
-        })
-        .or_else(|| images.iter().find(|image| image_size(image).is_none()))
-        .map(|image| image.url.clone())
+    model::pick_artwork(
+        images
+            .iter()
+            .map(|image| (image.url.as_str(), image.width.or(image.height))),
+    )
 }
 
 fn convert_playlist(playlist: SimplifiedPlaylist) -> Playlist {

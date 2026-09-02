@@ -16,6 +16,10 @@ futures = "0.3"
 # no helper for. Same major hyper (and so spclient) speaks; already in the
 # graph through reqwest.
 http = "1"
+# The IANA name of the machine's time zone, which the Home feed sends so
+# its greeting and time-of-day shelves match the listener's clock. Already
+# in the graph through chrono's `clock` feature.
+iana-time-zone = "0.1"
 # The Zed rev is pinned by Cargo.lock, not here: gpui-component declares its
 # Zed deps without a rev, and a rev of our own would split the graph into two
 # checkouts with incompatible gpui types. Move the pin with

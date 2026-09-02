@@ -3,6 +3,7 @@ pub mod backend;
 pub mod connect;
 mod credential_worker;
 pub mod dj;
+pub mod feed;
 pub mod library_index;
 pub mod lifecycle;
 pub mod model;
