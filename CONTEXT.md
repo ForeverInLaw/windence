@@ -88,6 +88,10 @@ _Avoid_: favourite (that is Liked Songs), bookmark, starred
 The default playlist order, and the name the sort menu gives it: newest first by the later of last played and Date Added. The other three modes are Date Added, Alphabetical and Creator, worded as the official client words them.
 _Avoid_: recently played (that is the page of played tracks), last played
 
+**Saved**:
+A playlist the account holds in its library: an entry in the Rootlist. Saving is what the official client calls "Add to Your Library"; it is one change to the rootlist and shows on every device. The listener's own playlists are saved by definition and cannot be un-saved, only deleted, which Cadence does not do.
+_Avoid_: followed (the Web API's word), subscribed, liked (that is a track)
+
 **Home**:
 Spotify's own page for the account: the curated shelves it offers right now, read from the internal partner endpoint because the Web API has no feed of them. Fetched when opened and refreshed on return; never stored.
 _Avoid_: dashboard, recommendations (that is the track-level Web API feature behind Radio and Smart Shuffle), browse (a different destination)

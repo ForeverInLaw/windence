@@ -265,6 +265,17 @@ impl PlaylistPage {
         cx.notify();
     }
 
+    /// Adds the open playlist to the account's library, or takes it out.
+    fn toggle_saved(&mut self, saved: bool, cx: &mut Context<Self>) {
+        let Some(playlist) = self.selected.clone() else {
+            return;
+        };
+        self.library.update(cx, |library, cx| {
+            library.set_playlist_saved(&playlist, !saved, cx)
+        });
+        cx.notify();
+    }
+
     /// The Spotify uri of the open playlist, which playback reports so the
     /// playlist moves to the top of the library list.
     fn context_uri(&self) -> Option<String> {
@@ -787,6 +798,18 @@ impl Render for PlaylistPage {
             .selected
             .as_ref()
             .is_some_and(|playlist| self.library.read(cx).is_playlist_pinned(playlist));
+        let saved = self
+            .selected
+            .as_ref()
+            .is_some_and(|playlist| self.library.read(cx).is_playlist_saved(playlist));
+        // The listener's own playlists are in the library by definition;
+        // taking one out would be deleting it, which is not this button.
+        let own = self.selected.as_ref().is_some_and(|playlist| {
+            services::AppServices::session(cx)
+                .read(cx)
+                .profile()
+                .is_some_and(|profile| profile.display_name == playlist.owner)
+        });
         // The identity drives every page decision: which actions are hidden,
         // the artwork fallback, and whether the header already has a count.
         let source_id = self
@@ -795,6 +818,7 @@ impl Render for PlaylistPage {
             .map(|playlist| playlist.source_id.clone())
             .unwrap_or_default();
         let is_dj = dj::matches(&source_id);
+        let show_save = !is_dj && !own;
         // While the station plays, its page is a window on the live queue:
         // asking the session for a stretch would answer with the one after
         // the songs already queued.
@@ -889,6 +913,29 @@ impl Render for PlaylistPage {
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
                                                     this.play_shuffled(cx);
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .when(show_save, |actions| {
+                                        // "Add to Your Library": the same
+                                        // write the official client makes,
+                                        // so the playlist appears on every
+                                        // device.
+                                        actions.child(
+                                            components::icon_button(
+                                                palette,
+                                                "playlist-save",
+                                                if saved { "circle-check" } else { "plus" },
+                                            )
+                                            .bg(rgb(if saved {
+                                                palette.selection
+                                            } else {
+                                                palette.control
+                                            }))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.toggle_saved(saved, cx);
                                                 }),
                                             ),
                                         )

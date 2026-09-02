@@ -404,6 +404,12 @@ pub enum BackendCommand {
         uri: String,
         pinned: bool,
     },
+    /// Adds a playlist to the account's library or takes it out, so every
+    /// device the listener has shows the change.
+    SetPlaylistSaved {
+        uri: String,
+        saved: bool,
+    },
     /// Moves a pin to where another one sits, which is what dropping a row
     /// on another row in the pinned section means.
     MovePin {
@@ -1276,6 +1282,9 @@ impl Worker {
             } => self.restore_playback(position_ms, playing).await,
             BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
             BackendCommand::SetPinned { uri, pinned } => self.set_pinned(uri, pinned).await,
+            BackendCommand::SetPlaylistSaved { uri, saved } => {
+                self.set_playlist_saved(uri, saved).await
+            }
             BackendCommand::MovePin { uri, target } => self.move_pin(uri, target).await,
             BackendCommand::Resume => self.resume().await,
             BackendCommand::Pause => self.pause().await,
@@ -1879,6 +1888,19 @@ impl Worker {
             self.write_removal(&uri).await
         };
         self.settle_pins(written).await
+    }
+
+    /// Writes a playlist into the account's library, or out of it, then
+    /// reads the library back. The read-back runs whether or not the write
+    /// went through: the window moved the button on the click, and what
+    /// Spotify holds now is what puts it right.
+    async fn set_playlist_saved(&mut self, uri: String, saved: bool) -> Result<()> {
+        let written = match self.connection.player.clone() {
+            Some(playback) => playback.set_playlist_saved(&uri, saved).await,
+            None => Err(anyhow!("Spotify playback is not connected")),
+        };
+        self.refresh_library_order(true);
+        written
     }
 
     /// Moves a pin to where another one sits.

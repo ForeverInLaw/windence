@@ -1,5 +1,7 @@
 use super::*;
 
+use std::collections::HashMap;
+
 /// The pin count the interface warns at. Spotify reports its real limit
 /// only over the Esperanto IPC its own desktop client speaks to itself,
 /// never over the network, so this is a warning and never a rule: the write
@@ -40,6 +42,9 @@ pub(super) struct Library {
     /// Stored on disk, so the section is drawn before the network answers
     /// and still drawn when there is no session to read it with.
     pins: Pins,
+    /// Playlists the listener just saved or removed, as the button showed
+    /// them on the click, until the library is read back from Spotify.
+    pending_saves: HashMap<String, bool>,
     /// The rows the playlist list draws, rebuilt whenever anything above
     /// changes so a render never has to sort.
     rows: Arc<[library_index::LibraryRow]>,
@@ -76,6 +81,7 @@ impl Library {
             expanded_folders,
             expanded_pins: HashSet::new(),
             pins: Pins::default(),
+            pending_saves: HashMap::new(),
             rows: Arc::default(),
             pinned_rows: Arc::default(),
             recently_played: Arc::default(),
@@ -278,6 +284,41 @@ impl Library {
         self.pins.contains(uri)
     }
 
+    /// Whether the playlist is in the account's library: placed by the
+    /// rootlist, or listed by the Web API before the rootlist has arrived.
+    /// A save still on its way answers as the click left it.
+    pub(super) fn is_playlist_saved(&self, playlist: &model::Playlist) -> bool {
+        let uri = library_index::playlist_uri(&playlist.source_id);
+        if let Some(&saved) = self.pending_saves.get(&uri) {
+            return saved;
+        }
+        self.index.entries.iter().any(|entry| entry.uri == uri)
+            || self
+                .playlists
+                .iter()
+                .any(|listed| listed.source_id == playlist.source_id)
+    }
+
+    /// Adds a playlist to the account's library or takes it out.
+    ///
+    /// The button answers the click at once; Spotify is told after, and the
+    /// library read back from it is what settles the list.
+    pub(super) fn set_playlist_saved(
+        &mut self,
+        playlist: &model::Playlist,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if playlist.provider != model::Provider::Spotify {
+            return;
+        }
+        let uri = library_index::playlist_uri(&playlist.source_id);
+        self.pending_saves.insert(uri.clone(), saved);
+        self.backend
+            .send(BackendCommand::SetPlaylistSaved { uri, saved });
+        cx.notify();
+    }
+
     /// Whether one more pin would go past what Spotify is known to accept.
     /// See [`PIN_WARNING_LIMIT`]: the interface warns on this, and nothing
     /// stops the write.
@@ -428,6 +469,9 @@ impl Library {
             } => {
                 if order_generation == generation {
                     self.index = index;
+                    // The library read back is the answer to every save
+                    // still pending, whichever way it went.
+                    self.pending_saves.clear();
                     self.refresh_rows(cx);
                 }
             }

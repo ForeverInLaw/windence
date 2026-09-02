@@ -430,6 +430,63 @@ impl Playback {
         self.pathfinder().await?.home_shelf(shelf_uri, offset).await
     }
 
+    /// Adds a playlist to the account's library, or takes it out again: one
+    /// change to the rootlist, which is what "Add to Your Library" sends in
+    /// the desktop client. A saved playlist goes in first, where the client
+    /// puts a new one. Spotify answers with an empty body.
+    pub(crate) async fn set_playlist_saved(&self, uri: &str, saved: bool) -> Result<()> {
+        use playlist4_external::{Add, Delta, Item, ItemAttributes, ListChanges, Op, Rem, op};
+        let item = Item {
+            uri: Some(uri.to_owned()),
+            attributes: Some(ItemAttributes {
+                timestamp: Some(chrono::Utc::now().timestamp_millis()),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let op = if saved {
+            Op {
+                kind: Some(op::Kind::ADD.into()),
+                add: Some(Add {
+                    add_first: Some(true),
+                    items: vec![item],
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            }
+        } else {
+            Op {
+                kind: Some(op::Kind::REM.into()),
+                rem: Some(Rem {
+                    items: vec![item],
+                    items_as_key: Some(true),
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            }
+        };
+        let changes = ListChanges {
+            deltas: vec![Delta {
+                ops: vec![op],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let endpoint = format!(
+            "/playlist/v2/user/{}/rootlist/changes",
+            self.session.username()
+        );
+        self.session
+            .spclient()
+            .request_with_protobuf(&http::Method::POST, &endpoint, None, &changes)
+            .await
+            .context("Spotify rootlist change failed")?;
+        Ok(())
+    }
+
     /// One page of the pinned set. `page_token` is what the previous page
     /// handed back, or `None` for the first.
     pub(crate) async fn pin_page(
