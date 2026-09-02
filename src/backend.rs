@@ -3237,7 +3237,7 @@ async fn dj_stretch(playback: &Playback, url: &str) -> Result<DjStretch> {
     let page = playback.dj_page(url).await?;
     let uris: Vec<String> = page.tracks.iter().map(|track| track.uri.clone()).collect();
     Ok(DjStretch {
-        tracks: ListedTrack::tracks(&playback.tracks_for_uris(&uris).await),
+        tracks: ListedTrack::tracks(&playback.tracks_for_uris(&uris).await?),
         next_page_url: page.next_page_url,
         lines: page
             .tracks

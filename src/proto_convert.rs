@@ -10,8 +10,10 @@
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use librespot::core::{FileId, SpotifyId, SpotifyUri};
+use librespot::protocol::extended_metadata::BatchedExtensionResponse;
 use librespot::protocol::metadata;
 use librespot::protocol::playlist4_external;
+use protobuf::Message as _;
 
 use crate::model::{AlbumRef, ArtistRef, Provider, Track};
 
@@ -50,6 +52,22 @@ pub fn track(message: &metadata::Track) -> Result<Track> {
         duration_ms,
         artwork_url: album.artwork_url,
     })
+}
+
+/// The tracks a batched metadata answer carries, by the uri each was asked
+/// for. Entries the server could not serve, or that convert to nothing
+/// Cadence can show, are left out.
+pub fn extended_tracks(response: &BatchedExtensionResponse) -> Vec<(String, Track)> {
+    response
+        .extended_metadata
+        .iter()
+        .flat_map(|array| &array.extension_data)
+        .filter_map(|entry| {
+            let message = metadata::Track::parse_from_bytes(&entry.extension_data.value).ok()?;
+            let track = track(&message).ok()?;
+            Some((entry.entity_uri.clone(), track))
+        })
+        .collect()
 }
 
 /// When this listing added the track. Playlist items carry one timestamp per
@@ -157,13 +175,19 @@ fn base62(gid: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        added_at, album_ref, artist_ref, base62, cover_artwork, file_url, is_track_item,
-        playlist_artwork, playlist_entries, track,
+        added_at, album_ref, artist_ref, base62, cover_artwork, extended_tracks, file_url,
+        is_track_item, playlist_artwork, playlist_entries, track,
     };
     use crate::model::{AlbumRef, ArtistRef};
     use librespot::core::FileId;
+    use librespot::protocol::entity_extension_data::EntityExtensionData;
+    use librespot::protocol::extended_metadata::{
+        BatchedExtensionResponse, EntityExtensionDataArray,
+    };
     use librespot::protocol::metadata::{self, Image, ImageGroup};
     use librespot::protocol::playlist4_external::{self, ItemAttributes};
+    use protobuf::Message as _;
+    use protobuf::well_known_types::any::Any;
 
     /// A 16-byte gid; the internal protocol identifies items by raw bytes.
     const GID_A: [u8; 16] = [0x11; 16];
@@ -291,6 +315,39 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(uri, expected)| assert_eq!(is_track_item(uri), expected, "{uri}"));
+    }
+
+    #[test]
+    fn extended_tracks_are_keyed_by_the_uri_they_were_asked_for() {
+        let entry = |uri: &str, value: Vec<u8>| EntityExtensionData {
+            entity_uri: uri.to_owned(),
+            extension_data: Some(Any {
+                value,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let response = BatchedExtensionResponse {
+            extended_metadata: vec![EntityExtensionDataArray {
+                extension_data: vec![
+                    entry(
+                        "spotify:track:good",
+                        track_message().write_to_bytes().unwrap(),
+                    ),
+                    entry("spotify:track:empty", Vec::new()),
+                    entry("spotify:track:junk", vec![0xff, 0xff]),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let tracks = extended_tracks(&response);
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].0, "spotify:track:good");
+        assert_eq!(tracks[0].1.title, "Lineup Star");
     }
 
     #[test]

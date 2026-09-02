@@ -9,14 +9,12 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel as async_chan;
-use futures::StreamExt as _;
 use keyring::Entry;
 use librespot::{
     core::{
         SpotifyId, SpotifyUri, authentication::Credentials, config::SessionConfig,
         dealer::Subscription, dealer::protocol::Message as DealerMessage, session::Session,
     },
-    metadata::Metadata,
     oauth::OAuthClientBuilder,
     playback::{
         SAMPLE_RATE,
@@ -24,7 +22,12 @@ use librespot::{
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
     },
-    protocol::{connect::PutStateReason, playlist4_external},
+    protocol::{
+        connect::PutStateReason,
+        extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery},
+        extension_kind::ExtensionKind,
+        playlist4_external,
+    },
 };
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, EndpointNotSet, EndpointSet,
@@ -61,10 +64,9 @@ const COLLECTION_CONTENT_TYPE: &str = "application/vnd.collection-v2.spotify.pro
 /// header that announcement carries it in.
 const CONNECTION_ID_TOPIC: &str = "hm://pusher/v1/connections/";
 const CONNECTION_ID_HEADER: &str = "Spotify-Connection-Id";
-/// How many internal-protocol track lookups overlap when resolving a DJ
-/// stretch: a whole stretch resolves well inside the catalog timeout
-/// without bursting one access point.
-const DJ_TRACK_CONCURRENCY: usize = 4;
+/// How many tracks one metadata request asks for. The desktop client sends
+/// batches past 250; this stays under what it was seen to send.
+const METADATA_BATCH: usize = 200;
 
 type PlaybackOAuthClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
@@ -701,31 +703,42 @@ impl Playback {
         self.narration_interrupted.store(true, Ordering::Relaxed);
     }
 
-    /// Resolves track uris into the tracks a list can show. DJ sessions
-    /// name songs by uri only, so everything the page and the player bar
-    /// display comes from here.
-    pub(crate) async fn tracks_for_uris(&self, uris: &[String]) -> Vec<model::ListedTrack> {
-        use protobuf::Message as _;
-
-        let fetched = futures::stream::iter(uris.iter().cloned().map(|uri| async move {
-            let result: Result<Option<model::ListedTrack>> = async {
-                let track_uri = SpotifyUri::from_uri(&uri)?;
-                let message = librespot::protocol::metadata::Track::parse_from_bytes(
-                    &librespot::metadata::Track::request(&self.session, &track_uri).await?,
-                )
-                .map_err(anyhow::Error::from)?;
-                Ok(proto_convert::track(&message)
-                    .ok()
-                    .filter(|track| track.is_displayable())
-                    .map(model::ListedTrack::undated))
-            }
-            .await;
-            result
-        }))
-        .buffered(DJ_TRACK_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
-        fetched.into_iter().flatten().flatten().collect()
+    /// Resolves track uris into the tracks a list can show, in the order
+    /// asked, minus any the server does not serve. DJ sessions and the
+    /// internal-protocol playlists name songs by uri only, so everything
+    /// their pages display comes from here. Tracks are fetched in batches
+    /// through the extended-metadata service, as the desktop client does.
+    pub(crate) async fn tracks_for_uris(&self, uris: &[String]) -> Result<Vec<model::ListedTrack>> {
+        let mut found: HashMap<String, model::Track> = HashMap::new();
+        for batch in uris.chunks(METADATA_BATCH) {
+            let request = BatchedEntityRequest {
+                entity_request: batch
+                    .iter()
+                    .map(|uri| EntityRequest {
+                        entity_uri: uri.clone(),
+                        query: vec![ExtensionQuery {
+                            extension_kind: ExtensionKind::TRACK_V4.into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let response = self
+                .session
+                .spclient()
+                .get_extended_metadata(request)
+                .await
+                .context("Spotify track metadata endpoint failed")?;
+            found.extend(proto_convert::extended_tracks(&response));
+        }
+        Ok(uris
+            .iter()
+            .filter_map(|uri| found.remove(uri))
+            .filter(model::Track::is_displayable)
+            .map(model::ListedTrack::undated)
+            .collect())
     }
 
     /// A playlist's tracks over the internal protocol, the way the desktop
@@ -751,7 +764,7 @@ impl Playback {
             .collect();
         Ok(self
             .tracks_for_uris(&uris)
-            .await
+            .await?
             .into_iter()
             .map(|listed| model::ListedTrack {
                 added_at: listed
