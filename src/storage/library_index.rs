@@ -28,7 +28,8 @@ impl Store {
     /// longer one this build knows are skipped rather than failing the read.
     pub fn library_index(&self) -> Result<LibraryIndex> {
         let mut statement = self.connection.prepare(
-            "SELECT uri, kind, folder, position, name, added_at, last_played
+            "SELECT uri, kind, folder, position, name, owner, track_count, artwork_url,
+                    added_at, last_played
              FROM library_index ORDER BY position",
         )?;
         let rows = statement.query_map([], |row| {
@@ -38,19 +39,36 @@ impl Store {
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
             ))
         })?;
         let entries = rows
             .map(|row| {
-                let (uri, kind, folder, position, name, added_at, last_played) = row?;
+                let (
+                    uri,
+                    kind,
+                    folder,
+                    position,
+                    name,
+                    owner,
+                    track_count,
+                    artwork_url,
+                    added_at,
+                    last_played,
+                ) = row?;
                 Ok(EntryKind::parse(&kind).map(|kind| IndexEntry {
                     uri,
                     kind,
                     folder,
                     position: position.clamp(0, i64::from(u32::MAX)) as u32,
                     name,
+                    owner,
+                    track_count: track_count.and_then(|count| u32::try_from(count).ok()),
+                    artwork_url,
                     added_at,
                     last_played,
                 }))
@@ -90,13 +108,17 @@ impl Store {
         for entry in entries {
             let position = i64::from(entry.position);
             transaction.execute(
-                "INSERT INTO library_index (uri, kind, folder, position, name, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO library_index
+                     (uri, kind, folder, position, name, owner, track_count, artwork_url, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (uri) DO UPDATE SET
                      kind = excluded.kind,
                      folder = excluded.folder,
                      position = excluded.position,
                      name = excluded.name,
+                     owner = excluded.owner,
+                     track_count = excluded.track_count,
+                     artwork_url = excluded.artwork_url,
                      added_at = excluded.added_at",
                 params![
                     entry.uri,
@@ -104,6 +126,9 @@ impl Store {
                     entry.folder,
                     position,
                     entry.name,
+                    entry.owner,
+                    entry.track_count,
+                    entry.artwork_url,
                     entry.added_at
                 ],
             )?;
@@ -208,7 +233,17 @@ mod tests {
             kind,
             folder: None,
             position,
-            name: (kind == EntryKind::Folder).then(|| "Mixes".to_owned()),
+            name: Some(
+                if kind == EntryKind::Folder {
+                    "Mixes"
+                } else {
+                    "Daily Mix 1"
+                }
+                .to_owned(),
+            ),
+            owner: (kind == EntryKind::Playlist).then(|| "spotify".to_owned()),
+            track_count: (kind == EntryKind::Playlist).then_some(50),
+            artwork_url: (kind == EntryKind::Playlist).then(|| "https://cdn/mix.jpg".to_owned()),
             added_at,
             last_played: None,
         }

@@ -17,8 +17,9 @@ use std::collections::{HashMap, HashSet};
 
 use librespot::protocol::playlist4_external::SelectedListContent;
 
-use crate::model::Playlist;
+use crate::model::{Playlist, Provider};
 use crate::proto::recently_played_backend::RecentlyPlayed;
+use crate::proto_convert;
 
 /// Liked Songs, which the pinned set holds on most accounts. Cadence gives
 /// it a permanent sidebar row of its own, so the pinned section never draws
@@ -57,10 +58,11 @@ impl EntryKind {
     }
 }
 
-/// One row of the index: everything Cadence knows about where an item sits
-/// in the library, with no reference to what it is called or who made it.
-/// Names, artwork, owners and track counts stay with the Web API load and
-/// are joined by uri.
+/// One row of the index: where an item sits in the library, plus what the
+/// rootlist says it is called and looks like. The Web API load stays the
+/// first source of names, artwork, owners and track counts and is joined
+/// by uri; the rootlist's own copy draws the playlists the Web API does not
+/// list, which is every one Spotify itself made.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexEntry {
     /// Normalised, so the three spellings of one folder are one entry.
@@ -70,12 +72,43 @@ pub struct IndexEntry {
     pub folder: Option<String>,
     /// Where the rootlist listed it, counted across every page.
     pub position: u32,
-    /// Folders name themselves in their group marker; playlists do not.
+    /// Folders name themselves in their group marker; playlists are named
+    /// by the rootlist's decoration.
     pub name: Option<String>,
+    /// The owner's username, as the rootlist reports it.
+    pub owner: Option<String>,
+    pub track_count: Option<u32>,
+    pub artwork_url: Option<String>,
     /// Date Added, in milliseconds since the epoch.
     pub added_at: Option<i64>,
     /// When this context was last played on any device, in milliseconds.
     pub last_played: Option<i64>,
+}
+
+impl IndexEntry {
+    /// The playlist this entry draws as when the Web API has not named it:
+    /// what the rootlist decorated it with. `None` for folders and for an
+    /// entry the rootlist gave no name.
+    pub fn playlist(&self) -> Option<Playlist> {
+        if self.kind != EntryKind::Playlist {
+            return None;
+        }
+        let owner = match self.owner.as_deref() {
+            // The Web API shows display names; the one owner every account
+            // has playlists from is named the way it names itself.
+            Some("spotify") => "Spotify".to_owned(),
+            Some(owner) => owner.to_owned(),
+            None => String::new(),
+        };
+        Some(Playlist {
+            provider: Provider::Spotify,
+            source_id: self.uri.strip_prefix(PLAYLIST_PREFIX)?.to_owned(),
+            name: self.name.clone()?,
+            owner,
+            track_count: self.track_count.unwrap_or_default(),
+            artwork_url: self.artwork_url.clone(),
+        })
+    }
 }
 
 /// The whole index, as the app holds it.
@@ -265,9 +298,12 @@ impl RootlistScan {
             self.revision = Some(hex(page.revision()));
         }
         self.total = self.total.max(page.length().max(0) as u32);
-        for item in &page.contents.items {
+        // The decorated list carries one meta item per item, in step:
+        // the playlist's name, owner, length and cover.
+        for (index, item) in page.contents.items.iter().enumerate() {
             let uri = item.uri();
             let added_at = timestamp(item.attributes.timestamp());
+            let meta = page.contents.meta_items.get(index);
             if let Some(rest) = uri.strip_prefix(START_GROUP_PREFIX) {
                 let (id, name) = group_marker(rest);
                 let folder = format!("{FOLDER_PREFIX}{id}");
@@ -277,6 +313,9 @@ impl RootlistScan {
                     folder: self.open_folders.last().cloned(),
                     position: self.position,
                     name: Some(name),
+                    owner: None,
+                    track_count: None,
+                    artwork_url: None,
                     added_at,
                     last_played: None,
                 });
@@ -290,7 +329,19 @@ impl RootlistScan {
                     kind: EntryKind::Playlist,
                     folder: self.open_folders.last().cloned(),
                     position: self.position,
-                    name: None,
+                    name: meta
+                        .map(|meta| meta.attributes.name())
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned),
+                    owner: meta
+                        .map(|meta| meta.owner_username())
+                        .filter(|owner| !owner.is_empty())
+                        .map(str::to_owned),
+                    track_count: meta
+                        .filter(|meta| meta.has_length())
+                        .and_then(|meta| u32::try_from(meta.length()).ok()),
+                    artwork_url: meta
+                        .and_then(|meta| proto_convert::playlist_artwork(&meta.attributes)),
                     added_at,
                     last_played: None,
                 });
@@ -385,7 +436,8 @@ pub fn rows(
     expanded_pins: &HashSet<String>,
 ) -> LibraryRows {
     let entries = with_unplaced(index, playlists);
-    let ordering = Ordering::new(&entries, playlists, pins, sort);
+    let playlists = with_decorated(&entries, playlists);
+    let ordering = Ordering::new(&entries, &playlists, pins, sort);
     let mut all = ordering.pinned(expanded);
     all.extend(ordering.level(None, 0, expanded));
     LibraryRows {
@@ -421,6 +473,9 @@ fn with_unplaced(index: &LibraryIndex, playlists: &[Playlist]) -> Vec<IndexEntry
             folder: None,
             position,
             name: None,
+            owner: None,
+            track_count: None,
+            artwork_url: None,
             // Nothing is known about when it was added or last played, so
             // the time-ordered modes leave it at the bottom.
             added_at: None,
@@ -429,6 +484,26 @@ fn with_unplaced(index: &LibraryIndex, playlists: &[Playlist]) -> Vec<IndexEntry
         position += 1;
     }
     entries
+}
+
+/// The Web API playlists plus one for every placed entry the Web API did
+/// not list but the rootlist named. The Web API wins where both know a
+/// playlist: its names and covers are the ones every other page shows.
+fn with_decorated(entries: &[IndexEntry], playlists: &[Playlist]) -> Vec<Playlist> {
+    let known: HashSet<String> = playlists
+        .iter()
+        .map(|playlist| playlist_uri(&playlist.source_id))
+        .collect();
+    playlists
+        .iter()
+        .cloned()
+        .chain(
+            entries
+                .iter()
+                .filter(|entry| !known.contains(&entry.uri))
+                .filter_map(IndexEntry::playlist),
+        )
+        .collect()
 }
 
 /// One pass of ordering: the tree, the key every entry sorts by, and what
@@ -710,6 +785,9 @@ mod tests {
             folder: folder.map(str::to_owned),
             position,
             name: (kind == EntryKind::Folder).then(|| "Mixes".to_owned()),
+            owner: None,
+            track_count: None,
+            artwork_url: None,
             added_at: added,
             last_played: played,
         };
@@ -852,6 +930,55 @@ mod tests {
         assert_eq!(entries[2].added_at, None);
         // The end marker still costs a position, so the next page starts right.
         assert_eq!(entries[3].position, 4);
+    }
+
+    #[test]
+    fn a_decorated_page_names_each_playlist_and_says_who_made_it() {
+        use librespot::protocol::playlist4_external::{ListAttributes, MetaItem, PictureSize};
+        let mut content = page(
+            &[0x01],
+            2,
+            vec![
+                item("spotify:playlist:37i9dQZF1E39CQiaB7kkGx", Some(1_000)),
+                item("spotify:start-group:f1:Mixes", None),
+            ],
+        );
+        content.contents.mut_or_insert_default().meta_items = vec![
+            MetaItem {
+                attributes: Some(ListAttributes {
+                    name: Some("Discover Weekly".to_owned()),
+                    picture_size: vec![PictureSize {
+                        target_name: Some("default".to_owned()),
+                        url: Some("https://cdn/discover.jpg".to_owned()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .into(),
+                length: Some(30),
+                owner_username: Some("spotify".to_owned()),
+                ..Default::default()
+            },
+            MetaItem::default(),
+        ];
+        let mut scan = RootlistScan::default();
+        scan.read(&content);
+        let entries = scan.into_entries();
+
+        assert_eq!(entries[0].name.as_deref(), Some("Discover Weekly"));
+        assert_eq!(entries[0].owner.as_deref(), Some("spotify"));
+        assert_eq!(entries[0].track_count, Some(30));
+        assert_eq!(
+            entries[0].artwork_url.as_deref(),
+            Some("https://cdn/discover.jpg")
+        );
+        let playlist = entries[0].playlist().unwrap();
+        assert_eq!(playlist.source_id, "37i9dQZF1E39CQiaB7kkGx");
+        assert_eq!(playlist.owner, "Spotify");
+        assert_eq!(playlist.track_count, 30);
+        // The folder keeps its marker name and draws as no playlist.
+        assert_eq!(entries[1].name.as_deref(), Some("Mixes"));
+        assert_eq!(entries[1].playlist(), None);
     }
 
     #[test]
@@ -1011,6 +1138,41 @@ mod tests {
                 &expanded
             )),
             vec!["Mixes", "Delta", "Alpha"]
+        );
+    }
+
+    #[test]
+    fn a_playlist_the_web_api_does_not_list_draws_from_the_rootlist_name() {
+        let (mut index, playlists) = fixture();
+        index.entries.push(IndexEntry {
+            uri: "spotify:playlist:37i9dQZF1E39CQiaB7kkGx".to_owned(),
+            kind: EntryKind::Playlist,
+            folder: None,
+            position: 9,
+            name: Some("Discover Weekly".to_owned()),
+            owner: Some("spotify".to_owned()),
+            track_count: Some(30),
+            artwork_url: None,
+            added_at: Some(900),
+            last_played: None,
+        });
+
+        let rows = listed(&index, &playlists, PlaylistSort::Recents, &HashSet::new());
+
+        // It sorts in by its Date Added like any other entry.
+        assert_eq!(
+            names(&rows),
+            vec!["Delta", "Mixes", "Discover Weekly", "Alpha"]
+        );
+        let discover = rows.iter().find_map(|row| match row {
+            LibraryRow::Playlist { playlist, .. } if playlist.name == "Discover Weekly" => {
+                Some(playlist)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            discover.map(|playlist| playlist.owner.as_str()),
+            Some("Spotify")
         );
     }
 

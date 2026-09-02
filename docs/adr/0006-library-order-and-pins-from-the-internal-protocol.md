@@ -105,6 +105,17 @@ own.
   rejected: it carries its own queue, context, and shuffle state machine, which
   would fight the one Cadence already has under DJ X and Smart Shuffle.
 
+## Amendment (Cadence 1.2)
+
+The Web API stopped listing the playlists Spotify itself makes (Discover
+Weekly, the Daily Mixes, daylists, radios, blends) for third-party apps, so
+joining by uri left them without a row. The rootlist is asked for decorated
+(`decorate=attributes,length,owner`) and answers with one meta item per
+item: the name, cover, length and owner username. The index now keeps
+those, and a placed playlist the Web API did not name draws from them. The
+Web API still wins where both know a playlist. Their tracks come over the
+internal protocol too; see ADR 0007.
+
 ## Considered Options
 
 - **Approximate the order locally** from Cadence's own play history — rejected:

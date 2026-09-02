@@ -20,7 +20,7 @@ mod pins;
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -363,6 +363,20 @@ impl Store {
                 "BEGIN IMMEDIATE;
                  DROP TABLE IF EXISTS pinned_playlists;
                  PRAGMA user_version = 11;
+                 COMMIT;",
+            )?;
+        }
+        if version < 12 {
+            // What the rootlist says each playlist is called and looks like,
+            // for the ones the Web API stopped listing: every playlist
+            // Spotify itself made. The next refresh fills the columns.
+            self.connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE library_index ADD COLUMN owner TEXT;
+                 ALTER TABLE library_index ADD COLUMN track_count INTEGER;
+                 ALTER TABLE library_index ADD COLUMN artwork_url TEXT;
+                 DELETE FROM preferences WHERE key = 'rootlist_revision';
+                 PRAGMA user_version = 12;
                  COMMIT;",
             )?;
         }
@@ -1850,6 +1864,15 @@ mod tests {
                      CREATE TABLE preferences (
                          key TEXT PRIMARY KEY,
                          value TEXT NOT NULL
+                     );
+                     CREATE TABLE library_index (
+                         uri TEXT PRIMARY KEY,
+                         kind TEXT NOT NULL,
+                         folder TEXT,
+                         position INTEGER NOT NULL,
+                         name TEXT,
+                         added_at INTEGER,
+                         last_played INTEGER
                      );
                      INSERT INTO pinned_playlists (provider, source_id, playlist_json)
                      VALUES ('spotify', 'focus', '{}');
