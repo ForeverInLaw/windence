@@ -18,7 +18,7 @@ use librespot::{
     oauth::OAuthClientBuilder,
     playback::{
         SAMPLE_RATE,
-        config::{AudioFormat, PlayerConfig, VolumeCtrl},
+        config::{PlayerConfig, VolumeCtrl},
         mixer::{self, Mixer, MixerConfig},
         player::{Player, PlayerEventChannel},
     },
@@ -37,7 +37,7 @@ use oauth2::{
 use tokio::net::TcpListener;
 
 use crate::{
-    audio::{NarrationClip, low_latency_sdl_sink},
+    audio::{self, NarrationClip},
     connect, credential_worker, dj, feed, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
@@ -279,8 +279,7 @@ impl Playback {
         let narration_interrupted = Arc::new(AtomicBool::new(false));
         let sink_interrupted = narration_interrupted.clone();
         let player = Player::new(player_config, session.clone(), volume, move || {
-            low_latency_sdl_sink(
-                AudioFormat::default(),
+            audio::open(
                 narration.clone(),
                 sink_mixer.get_soft_volume(),
                 sink_interrupted.clone(),
