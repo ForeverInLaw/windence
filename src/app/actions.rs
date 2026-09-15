@@ -65,12 +65,7 @@ impl Workspace {
         self.seek_by(-(Self::SEEK_STEP_MS as i64), cx);
     }
 
-    pub(super) fn seek_forward(
-        &mut self,
-        _: &SeekForward,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn seek_forward(&mut self, _: &SeekForward, _: &mut Window, cx: &mut Context<Self>) {
         self.seek_by(Self::SEEK_STEP_MS as i64, cx);
     }
 
@@ -100,7 +95,8 @@ impl Workspace {
     }
 
     fn seek_to(&mut self, position_ms: u32, cx: &mut Context<Self>) {
-        self.player.update(cx, |player, cx| player.seek(position_ms, cx));
+        self.player
+            .update(cx, |player, cx| player.seek(position_ms, cx));
     }
 
     pub(super) fn volume_up(&mut self, _: &VolumeUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -116,7 +112,8 @@ impl Workspace {
     }
 
     fn step_volume(&mut self, delta: f32, cx: &mut Context<Self>) {
-        self.player.update(cx, |player, cx| player.step_volume(delta, cx));
+        self.player
+            .update(cx, |player, cx| player.step_volume(delta, cx));
     }
 
     pub(super) fn authenticate(&mut self, cx: &mut Context<Self>) {

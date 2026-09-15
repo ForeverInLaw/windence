@@ -358,6 +358,8 @@ impl PlayerBar {
                                 // track stays a thin line inside it.
                                 div()
                                     .id("progress-slider")
+                                    .test_support()
+                                    .role(gpui_kit::Role::Slider)
                                     .key_context("ProgressSlider")
                                     .track_focus(&self.progress_focus)
                                     .tab_stop(true)
@@ -365,7 +367,6 @@ impl PlayerBar {
                                     .w(px(progress_slider_width))
                                     .flex_none()
                                     .cursor_pointer()
-                                    .test_support()
                                     .focus(|style| {
                                         style
                                             .border_2()
@@ -451,6 +452,8 @@ impl PlayerBar {
                         controls.child(
                             div()
                                 .id("volume-slider")
+                                .test_support()
+                                .role(gpui_kit::Role::Slider)
                                 .key_context("VolumeSlider")
                                 .track_focus(&self.volume_focus)
                                 .tab_stop(true)
@@ -459,7 +462,6 @@ impl PlayerBar {
                                 .flex()
                                 .items_center()
                                 .cursor_pointer()
-                                .test_support()
                                 .focus(|style| {
                                     style
                                         .border_2()

@@ -225,20 +225,17 @@ mod tests {
         let stack = vec![cadence.clone(), progress.clone()];
         for key in ["left", "right", "home", "end"] {
             let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-            let (bindings, _) = keymap.bindings_for_input(
-                std::slice::from_ref(&keystroke),
-                &stack,
-            );
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
             assert_eq!(bindings.len(), 1, "{key} must seek on the progress slider");
         }
         // Up and Down belong to the volume slider, not the progress slider.
         for key in ["up", "down"] {
             let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-            let (bindings, _) = keymap.bindings_for_input(
-                std::slice::from_ref(&keystroke),
-                &stack,
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert!(
+                bindings.is_empty(),
+                "{key} must not act on the progress slider"
             );
-            assert!(bindings.is_empty(), "{key} must not act on the progress slider");
         }
 
         // Focus anywhere else — the volume slider, a text input, or the bare
@@ -250,10 +247,8 @@ mod tests {
         ] {
             for key in ["left", "right", "home", "end"] {
                 let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-                let (bindings, _) = keymap.bindings_for_input(
-                    std::slice::from_ref(&keystroke),
-                    &stack,
-                );
+                let (bindings, _) =
+                    keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
                 assert!(bindings.is_empty(), "{key} must stay dead off the slider");
             }
         }
@@ -270,20 +265,17 @@ mod tests {
         let stack = vec![cadence.clone(), volume.clone()];
         for key in ["up", "down", "m"] {
             let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-            let (bindings, _) = keymap.bindings_for_input(
-                std::slice::from_ref(&keystroke),
-                &stack,
-            );
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
             assert_eq!(bindings.len(), 1, "{key} must step or mute the volume");
         }
         // Left and Right belong to the progress slider, not the volume slider.
         for key in ["left", "right"] {
             let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-            let (bindings, _) = keymap.bindings_for_input(
-                std::slice::from_ref(&keystroke),
-                &stack,
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert!(
+                bindings.is_empty(),
+                "{key} must not act on the volume slider"
             );
-            assert!(bindings.is_empty(), "{key} must not act on the volume slider");
         }
 
         for stack in [
@@ -293,10 +285,8 @@ mod tests {
         ] {
             for key in ["up", "down", "m"] {
                 let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
-                let (bindings, _) = keymap.bindings_for_input(
-                    std::slice::from_ref(&keystroke),
-                    &stack,
-                );
+                let (bindings, _) =
+                    keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
                 assert!(bindings.is_empty(), "{key} must stay dead off the slider");
             }
         }
