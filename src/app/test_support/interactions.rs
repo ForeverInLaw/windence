@@ -1,9 +1,11 @@
 use super::test_support::{BackendProbe, initialize, settle, track, workspace};
-use crate::app::{appearance, assets, onboarding, services};
+use crate::app::{Route, Workspace, appearance, assets, onboarding, services};
+use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    App, AppContext as _, HeadlessAppContext, NoopTextSystem, Window, WindowHandle, px, size,
+    App, AppContext as _, HeadlessAppContext, KeyUpEvent, Keystroke, NoopTextSystem, WeakEntity,
+    Window, WindowHandle, px, size,
 };
 use spotify_gpui_client::backend::{BackendCommand, BackendEvent};
 use spotify_gpui_client::model;
@@ -13,6 +15,7 @@ use std::sync::Arc;
 struct Fixture {
     cx: HeadlessAppContext,
     window: WindowHandle<Root>,
+    workspace: Option<WeakEntity<Workspace>>,
     backend: BackendProbe,
 }
 
@@ -31,7 +34,50 @@ impl Fixture {
         Self {
             cx,
             window,
+            workspace: Some(workspace.downgrade()),
             backend,
+        }
+    }
+
+    fn route(&mut self) -> Route {
+        let workspace = self.workspace.clone().expect("workspace fixture");
+        self.update(|_, cx| {
+            workspace
+                .upgrade()
+                .expect("live workspace")
+                .read(cx)
+                .router
+                .route()
+        })
+    }
+
+    fn play(&mut self, current: model::Track) {
+        self.update(|_, cx| {
+            services::AppServices::player(cx).update(cx, |player, cx| {
+                player.handle_backend_event(
+                    BackendEvent::PlaybackSnapshotLoaded {
+                        current,
+                        next: vec![track(1)],
+                        injected: vec![false; 2],
+                        position_ms: 0,
+                    },
+                    cx,
+                );
+            });
+        });
+    }
+
+    fn requested_artist(&mut self) -> String {
+        match self.backend.commands.try_recv().expect("artist request") {
+            BackendCommand::LoadArtist { source_id, .. } => source_id,
+            other => panic!("expected an artist request, got {other:?}"),
+        }
+    }
+
+    fn requested_album(&mut self) -> String {
+        match self.backend.commands.try_recv().expect("album request") {
+            BackendCommand::LoadAlbum { source_id, .. } => source_id,
+            other => panic!("expected an album request, got {other:?}"),
         }
     }
 
@@ -50,6 +96,39 @@ impl Fixture {
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
     }
+
+    fn press(&mut self, key: &str) {
+        self.update(|window, cx| {
+            let keystroke = Keystroke::parse(key).expect("fixture key");
+            window.dispatch_keystroke(keystroke.clone(), cx);
+            window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+        });
+    }
+}
+
+fn artist_ref(name: &str, source_id: &str) -> model::ArtistRef {
+    model::ArtistRef {
+        name: name.into(),
+        source_id: Some(source_id.into()),
+        spotify_uri: Some(format!("spotify:artist:{source_id}")),
+    }
+}
+
+/// A track Spotify fully described, with two credited artists and an album.
+fn credited_track() -> model::Track {
+    let mut track = track(0);
+    track.artist = "Frankie Valli, The Four Seasons".into();
+    track.artists = vec![
+        artist_ref("Frankie Valli", "artist-valli"),
+        artist_ref("The Four Seasons", "artist-seasons"),
+    ];
+    track.album_ref = Some(model::AlbumRef {
+        name: "Grease".into(),
+        source_id: Some("album-grease".into()),
+        spotify_uri: Some("spotify:album:album-grease".into()),
+        artwork_url: None,
+    });
+    track
 }
 
 #[test]
@@ -77,6 +156,87 @@ fn search_shortcut_focuses_input_and_enter_submits_text_without_toggling_playbac
 }
 
 #[test]
+fn player_bar_opens_each_credited_artist_and_the_album_separately() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(credited_track());
+    fixture.no_commands();
+
+    fixture.update(|window, cx| window.click(("player-artist", 1usize), cx));
+    assert_eq!(fixture.requested_artist(), "artist-seasons");
+    assert_eq!(fixture.route(), Route::Artist);
+
+    fixture.update(|window, cx| window.click(("player-artist", 0usize), cx));
+    assert_eq!(fixture.requested_artist(), "artist-valli");
+    assert_eq!(fixture.route(), Route::Artist);
+
+    fixture.update(|window, cx| window.click("player-artwork", cx));
+    assert_eq!(fixture.requested_album(), "album-grease");
+    assert_eq!(fixture.route(), Route::Album);
+
+    // Dropping the album reply above failed that load, so the title retries it.
+    fixture.update(|window, cx| window.click("player-title", cx));
+    assert_eq!(fixture.requested_album(), "album-grease");
+    assert_eq!(fixture.route(), Route::Album);
+    fixture.no_commands();
+}
+
+#[test]
+fn player_bar_title_opens_the_album_from_the_keyboard() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(credited_track());
+    fixture.press("ctrl-k");
+    assert_eq!(fixture.route(), Route::Search);
+
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        let title = window.find("player-title");
+        assert_eq!(title.focused(), Some(true));
+        assert_eq!(title.role(), Some(gpui_kit::Role::Link));
+    });
+    fixture.press("enter");
+    assert_eq!(fixture.requested_album(), "album-grease");
+    assert_eq!(fixture.route(), Route::Album);
+    fixture.no_commands();
+}
+
+#[test]
+fn player_bar_credits_without_references_stay_plain() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|window, _| {
+        assert!(window.try_find("player-artwork").is_none());
+        assert!(window.try_find("player-title").is_none());
+        assert!(window.try_find(("player-artist", 0usize)).is_none());
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn space_keeps_toggling_playback_and_leaves_the_title_link_alone() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(credited_track());
+    fixture.press("ctrl-k");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("player-title").focused(), Some(true));
+    });
+    fixture.press("space");
+
+    // Space reaches the playback binding, not the focused link: the route is
+    // unchanged and no page load went out.
+    assert_eq!(fixture.route(), Route::Search);
+    match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("playback command")
+    {
+        BackendCommand::Resume => {}
+        other => panic!("expected playback to toggle, got {other:?}"),
+    }
+    fixture.no_commands();
+}
+
+#[test]
 fn client_id_validation_keeps_focus_and_only_submits_valid_input() {
     let mut cx = HeadlessAppContext::with_asset_source(
         Arc::new(NoopTextSystem),
@@ -100,6 +260,7 @@ fn client_id_validation_keeps_focus_and_only_submits_valid_input() {
     let mut fixture = Fixture {
         cx,
         window,
+        workspace: None,
         backend,
     };
     fixture.update(|window, cx| {

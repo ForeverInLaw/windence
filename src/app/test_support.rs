@@ -1,10 +1,11 @@
 use super::*;
 use gpui_kit::{AnyWindowHandle, HeadlessAppContext, WindowHandle};
-
 mod interactions;
 
 pub(super) struct BackendProbe {
     pub commands: tokio::sync::mpsc::Receiver<BackendCommand>,
+    /// Set by the volume slider; the player-bar tests only watch commands.
+    #[allow(dead_code)]
     pub volume: tokio::sync::watch::Receiver<f32>,
 }
 
@@ -55,12 +56,10 @@ pub(super) fn ready(cx: &mut App) {
         library.handle_backend_event(
             BackendEvent::LibraryLoaded {
                 generation: 0,
-                liked_tracks: vec![
-                    model::ListedTrack::undated(track(0)),
-                    model::ListedTrack::undated(track(1)),
-                    model::ListedTrack::undated(track(1)),
-                    model::ListedTrack::undated(track(2)),
-                ],
+                liked_tracks: vec![track(0), track(1), track(1), track(2)]
+                    .into_iter()
+                    .map(model::ListedTrack::undated)
+                    .collect(),
                 playlists: Vec::new(),
             },
             0,
@@ -81,7 +80,6 @@ pub(super) fn ready(cx: &mut App) {
             BackendEvent::PlaybackSnapshotLoaded {
                 current: track(0),
                 next: vec![track(1), track(2)],
-                // The playing track carries entry 0; the rest align with `next`.
                 injected: vec![false; 3],
                 position_ms: 60_000,
             },

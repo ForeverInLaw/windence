@@ -172,6 +172,25 @@ pub(super) fn pill(
         .child(label.into())
 }
 
+/// A link that reads like the copy around it until the pointer or keyboard
+/// focus reaches it, so a line of credits stays quiet at rest.
+///
+/// Built on the base button with the link role because gpui-kit 0.6.1 cannot
+/// observe its base link in tests. The button's neutral line height is set
+/// back to the window's so the text keeps its metrics.
+pub(super) fn link(
+    palette: CadencePalette,
+    id: impl Into<ElementId>,
+    window: &Window,
+) -> gpui_kit::base::Button {
+    gpui_kit::base::Button::new(id)
+        .role(gpui_kit::Role::Link)
+        .line_height(window.text_style().line_height)
+        .cursor_pointer()
+        .hover(|style| style.underline().text_color(rgb(palette.text_primary)))
+        .focus_visible(|style| style.underline().text_color(rgb(palette.text_primary)))
+}
+
 pub(super) fn icon_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,

@@ -1,6 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
+use gpui_kit::TestSupportExt as _;
 
 /// The transport strip pinned to the bottom of the window.
 ///
@@ -18,6 +19,31 @@ pub(super) struct PlayerBar {
 pub(super) struct ToggleQueue;
 
 impl EventEmitter<ToggleQueue> for PlayerBar {}
+
+impl EventEmitter<page::PageEvent> for PlayerBar {}
+
+/// The album the playing track came from, when Spotify knows which it is.
+fn playing_album(track: Option<&model::Track>) -> Option<model::AlbumRef> {
+    track?
+        .album_ref
+        .clone()
+        .filter(|album| album.source_id.is_some())
+}
+
+/// Who the bar credits, one entry per artist. A track stored with only its
+/// joined artist names credits that whole line as a single plain entry.
+fn artist_credits(track: Option<&model::Track>) -> Vec<model::ArtistRef> {
+    let plain = |name: &str| model::ArtistRef {
+        name: name.to_owned(),
+        source_id: None,
+        spotify_uri: None,
+    };
+    match track {
+        Some(track) if !track.artists.is_empty() => track.artists.clone(),
+        Some(track) => vec![plain(&track.artist)],
+        None => vec![plain("")],
+    }
+}
 
 impl PlayerBar {
     pub(super) fn new(cx: &mut App) -> Self {
@@ -40,9 +66,134 @@ impl PlayerBar {
         }
     }
 
+    fn navigate_on_click(
+        event: page::PageEvent,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static {
+        cx.listener(move |_, _, _, cx| cx.emit(event.clone()))
+    }
+
+    /// The artwork opens the album for the pointer only. The title beside it
+    /// reaches the same page from the keyboard, and a focus ring drawn under
+    /// the art would never show.
+    fn artwork_link(
+        &self,
+        palette: CadencePalette,
+        track: Option<&model::Track>,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let Some(track) = track else {
+            return div()
+                .size(px(56.))
+                .rounded(px(12.))
+                .bg(rgb(palette.surface_raised))
+                .border_1()
+                .border_color(palette.media_border)
+                .into_any_element();
+        };
+        let artwork = components::artwork(
+            palette,
+            &self.image_cache,
+            track.artwork_url.as_deref(),
+            56.,
+            12.,
+            CadenceIcon::Music,
+        );
+        match playing_album(Some(track)) {
+            Some(album) => gpui_kit::base::Button::new("player-artwork")
+                .role(gpui_kit::Role::Link)
+                .tab_stop(false)
+                .accessibility_label(album.name.clone())
+                .flex_none()
+                .cursor_pointer()
+                .on_click(Self::navigate_on_click(
+                    page::PageEvent::OpenAlbum(album),
+                    cx,
+                ))
+                .child(artwork)
+                .into_any_element(),
+            None => artwork,
+        }
+    }
+
+    fn title_line(
+        palette: CadencePalette,
+        track: Option<&model::Track>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let title = SharedString::from(
+            track
+                .map_or("Nothing playing", |track| track.title.as_str())
+                .to_owned(),
+        );
+        let text = div()
+            .min_w_0()
+            .truncate()
+            .text_size(px(14.))
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .text_color(rgb(palette.text_primary))
+            .child(title);
+        div().flex().min_w_0().child(match playing_album(track) {
+            Some(album) => components::link(palette, "player-title", window)
+                .min_w_0()
+                .on_click(Self::navigate_on_click(
+                    page::PageEvent::OpenAlbum(album),
+                    cx,
+                ))
+                .child(text)
+                .into_any_element(),
+            None => text.into_any_element(),
+        })
+    }
+
+    fn credits_line(
+        palette: CadencePalette,
+        track: Option<&model::Track>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut credits: Vec<gpui_kit::AnyElement> = Vec::new();
+        for (index, artist) in artist_credits(track).into_iter().enumerate() {
+            if index > 0 {
+                credits.push(div().flex_none().child(", ").into_any_element());
+            }
+            credits.push(Self::artist_link(palette, index, artist, window, cx));
+        }
+        div()
+            .flex()
+            .min_w_0()
+            .text_size(px(12.))
+            .text_color(rgb(palette.text_muted))
+            .children(credits)
+    }
+
+    fn artist_link(
+        palette: CadencePalette,
+        index: usize,
+        artist: model::ArtistRef,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let name = div()
+            .min_w_0()
+            .truncate()
+            .child(SharedString::from(artist.name.clone()));
+        if artist.source_id.is_none() {
+            return name.into_any_element();
+        }
+        components::link(palette, ("player-artist", index), window)
+            .min_w_0()
+            .on_click(Self::navigate_on_click(
+                page::PageEvent::OpenArtist(artist),
+                cx,
+            ))
+            .child(name)
+            .into_any_element()
+    }
+
     fn bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let image_cache = self.image_cache.clone();
         let compact = uses_compact_player_layout(f32::from(window.viewport_size().width));
         let progress_slider_width = if compact {
             (f32::from(window.viewport_size().width) - 500.).max(160.)
@@ -58,25 +209,10 @@ impl PlayerBar {
         let shuffle_mode = player.shuffle_mode();
         let shuffle_supported = player.shuffle_supported();
         let shuffle_smart_supported = player.shuffle_smart_supported();
-        let live_track = now_playing.is_some();
-        let player_artwork = now_playing
-            .as_ref()
-            .and_then(|track| track.artwork_url.as_deref())
-            .map(str::to_owned);
-        let (title, artist, duration, art) = if let Some(track) = &now_playing {
-            (
-                SharedString::from(track.title.clone()),
-                SharedString::from(track.artist.clone()),
-                SharedString::from(format_duration(track.duration_ms)),
-                palette.selection,
-            )
+        let duration = if let Some(track) = &now_playing {
+            SharedString::from(format_duration(track.duration_ms))
         } else {
-            (
-                SharedString::from("Nothing playing"),
-                SharedString::from(""),
-                SharedString::from("0:00"),
-                palette.surface_raised,
-            )
+            SharedString::from("0:00")
         };
         let volume_icon = if volume == 0. {
             CadenceIcon::VolumeX
@@ -111,43 +247,18 @@ impl PlayerBar {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(if live_track {
-                        components::artwork(
-                            palette,
-                            &image_cache,
-                            player_artwork.as_deref(),
-                            56.,
-                            12.,
-                            CadenceIcon::Music,
-                        )
-                    } else {
-                        div()
-                            .size(px(56.))
-                            .rounded(px(12.))
-                            .bg(rgb(art))
-                            .border_1()
-                            .border_color(palette.media_border)
-                            .into_any_element()
-                    })
+                    .child(self.artwork_link(palette, now_playing.as_ref(), cx))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(14.))
-                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                    .text_color(rgb(palette.text_primary))
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .text_color(rgb(palette.text_muted))
-                                    .child(artist),
-                            ),
+                            .child(Self::title_line(palette, now_playing.as_ref(), window, cx))
+                            .child(Self::credits_line(
+                                palette,
+                                now_playing.as_ref(),
+                                window,
+                                cx,
+                            )),
                     )
                     .child(self.liked_toggle(palette, now_playing, cx)),
             )
@@ -296,6 +407,7 @@ impl PlayerBar {
                             CadenceIcon::ListMusic,
                             17.,
                         )
+                        .test_support()
                         .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let open = !this.queue_open;
@@ -304,11 +416,11 @@ impl PlayerBar {
                         })),
                     )
                     .child(
-                        components::icon_button_with(palette, "volume", volume_icon, 17.).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        components::icon_button_with(palette, "volume", volume_icon, 17.)
+                            .test_support()
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
-                            }),
-                        ),
+                            })),
                     )
                     .when(!compact, |controls| {
                         controls.child(
@@ -493,6 +605,7 @@ impl QueueDrawer {
                     )
                     .child(
                         components::icon_button(palette, "close-queue", CadenceIcon::Close)
+                            .test_support()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )

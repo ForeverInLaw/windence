@@ -4610,8 +4610,8 @@ mod tests {
     use super::{
         BackendCommand, BackendEvent, BlockingStore, LibraryContents, PIN_WRITE_SETTLE, Pins,
         PlayQueue, PlaybackConnection, SharedFingerprint, ShuffleState, boot_cache_is_plausible,
-        build_radio_context, commit_fingerprint, injected_flags, next_injection_seed,
-        send_command, serve_cached_library, settled_base,
+        build_radio_context, commit_fingerprint, injected_flags, next_injection_seed, send_command,
+        serve_cached_library, settled_base,
     };
     use crate::model::{ListedTrack, Playlist, Provider, Track};
     use crate::shuffle::{ContextKind, Origin};

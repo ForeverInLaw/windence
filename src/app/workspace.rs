@@ -170,6 +170,8 @@ impl Workspace {
             cx.notify();
         })
         .detach();
+        cx.subscribe(&player_bar, Workspace::handle_page_event)
+            .detach();
         let queue_drawer = cx.new(|cx| player_bar::QueueDrawer::new(cx));
         cx.subscribe(&queue_drawer, |this, _, _: &player_bar::CloseQueue, cx| {
             this.close_queue(cx);

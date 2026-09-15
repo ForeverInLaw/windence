@@ -7,11 +7,16 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt as _, future::Shared};
+use futures::FutureExt as _;
 use gpui_kit::{
     App, AppContext as _, Asset, AssetLogger, Entity, ImageAssetLoader, ImageCache,
     ImageCacheError, RenderImage, Resource, Task, Window,
 };
+
+/// An image loading task associated with an image cache. gpui-pre dropped the
+/// old kit's alias; the shape it named (`Shared<Task<..>>`) is what our miss
+/// path still spawns, so it lives here now.
+type ImageLoadingTask = futures::future::Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>;
 
 const MAX_IMAGES: usize = 48;
 const MAX_DECODED_BYTES: usize = 32 * 1024 * 1024;
@@ -19,7 +24,7 @@ const FAILURE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 enum CacheEntry {
     Loading {
-        image: Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>,
+        image: ImageLoadingTask,
         retry_ready: Arc<AtomicBool>,
         notification: Option<Task<()>>,
     },
