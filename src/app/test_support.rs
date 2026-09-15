@@ -111,6 +111,7 @@ pub(super) fn workspace_collapsed(
     let window = cx
         .open_window(size(px(width), px(height)), |window, cx| {
             let view = cx.new(|cx| Workspace::new(window, cx));
+            services::AppServices::set_root(view.downgrade(), cx);
             workspace = Some(view.clone());
             cx.new(|cx| Root::new(view, window, cx))
         })

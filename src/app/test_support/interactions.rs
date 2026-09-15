@@ -578,3 +578,50 @@ fn a_cached_library_from_a_superseded_account_is_dropped_without_setting_boot_re
     });
     fixture.no_commands();
 }
+
+/// Folding the rail on the running window re-derives the tiers without any
+/// resize: the sidebar observer pushes the new content width, and the bar
+/// follows it in the same frame. At 1280 the timeline stays through the
+/// fold (the content grows past the floor either way), and the compact
+/// player tier's slider width tracks the rail's share.
+#[test]
+fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
+    let mut fixture = Fixture::new(false);
+    // At 1280 with the rail expanded the full tier shows the timeline.
+    fixture.update(|window, _| {
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the full tier must show the timeline before the rail folds");
+        let expanded_slider = f32::from(slider.bounds().size.width);
+        assert!(expanded_slider > 160., "expanded slider was {expanded_slider}");
+    });
+    fixture.update(|_, cx| {
+        fixture_workspace(cx).update(cx, |workspace, cx| {
+            workspace
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.set_collapsed(true, cx));
+        });
+    });
+    fixture.update(|window, _| {
+        // The rail's share went to the content: the slider grew with it.
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the timeline must survive the fold here");
+        let collapsed_slider = f32::from(slider.bounds().size.width);
+        assert_eq!(
+            collapsed_slider, 606.,
+            "the collapsed rail's slider must take the rail's share"
+        );
+        let play = window.find("play-toggle");
+        assert!(play.visible(), "the transport must survive the fold");
+    });
+    fixture.no_commands();
+}
+
+/// The fixture's workspace entity, through the weak handle the fixture
+/// holds.
+fn fixture_workspace(cx: &mut App) -> gpui_kit::Entity<Workspace> {
+    // The test keeps one workspace alive in this context; reach it through
+    // the services root the workspace registers at construction.
+    services::AppServices::root_workspace(cx).expect("fixture workspace")
+}
