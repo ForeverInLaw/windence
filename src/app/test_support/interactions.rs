@@ -413,9 +413,9 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
 
 /// The window sizes and rail states the interface has to survive. Widths
 /// sit at the tier boundaries: the window minimum (720) and the
-/// compact-content breakpoint (960), each with the rail expanded and
-/// collapsed, plus the default 1280 window where the expanded rail's
-/// content clears the timeline floor and the full tier shows the slider.
+/// compact-content window boundary (960), each with the rail expanded and
+/// collapsed, plus the default 1280 window where the full tier shows the
+/// timeline with the volume slider beside it.
 const MATRIX: [(f32, bool); 5] = [
     (720., false),
     (720., true),

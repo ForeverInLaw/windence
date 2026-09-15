@@ -184,8 +184,13 @@ const PLAYER_RIGHT_WIDTH: f32 = 240.;
 const PROGRESS_SLIDER_WIDTH: f32 = 340.;
 const PROGRESS_TIME_WIDTH: f32 = 36.;
 const PROGRESS_GAP: f32 = 8.;
-const COMPACT_BREAKPOINT: f32 = 960.;
-const COMPACT_PLAYER_BREAKPOINT: f32 = 1136.;
+/// The compact-content breakpoint, against the content width: the window
+/// breakpoint (960) minus the full rail (232), so a window lands in the
+/// same tier it did when the tiers were keyed on the window itself.
+const COMPACT_BREAKPOINT: f32 = 960. - 232.;
+/// The compact-player breakpoint against the content width, converted the
+/// same way from the window breakpoint (1136).
+const COMPACT_PLAYER_BREAKPOINT: f32 = 1136. - 232.;
 /// Track-table breakpoints, against the content width. Below the first the
 /// date-added column folds away; below the second the album column follows,
 /// leaving `#`, title, and time. The heart and row actions survive every
@@ -658,10 +663,10 @@ mod tests {
 
     #[test]
     fn responsive_breakpoints_are_exclusive() {
-        assert!(uses_compact_content_layout(959.));
-        assert!(!uses_compact_content_layout(960.));
-        assert!(uses_compact_player_layout(1135.));
-        assert!(!uses_compact_player_layout(1136.));
+        assert!(uses_compact_content_layout(727.));
+        assert!(!uses_compact_content_layout(728.));
+        assert!(uses_compact_player_layout(903.));
+        assert!(!uses_compact_player_layout(904.));
     }
 
     #[test]
