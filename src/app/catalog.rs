@@ -255,9 +255,12 @@ impl PlaylistPage {
             return;
         };
         if !pinned && self.library.read(cx).pins_at_limit() {
-            cx.emit(PageEvent::Notice(format!(
-                "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
-                library::PIN_WARNING_LIMIT
+            cx.emit(PageEvent::Notice((
+                format!(
+                    "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
+                    library::PIN_WARNING_LIMIT
+                ),
+                NoticeSeverity::Confirmation,
             )));
         }
         self.library.update(cx, |library, cx| {
@@ -719,8 +722,9 @@ impl Render for SearchPage {
         let playlists = self.playlists.clone();
         let searching = self.searching;
         let loaded = self.loaded;
-        let results = if self.error.is_some() {
-            components::empty_state(palette, "Unable to search Spotify").into_any_element()
+        let results = if let Some(error) = self.error.as_deref() {
+            components::empty_state(palette, format!("Unable to search Spotify: {error}"))
+                .into_any_element()
         } else if kind == SearchKind::Tracks && !tracks.is_empty() {
             let list_id = (ElementId::from("search-tracks"), self.results_query.clone());
             self.track_list.update(cx, |list, cx| {
@@ -744,7 +748,7 @@ impl Render for SearchPage {
             let message = match (loaded, searching) {
                 (true, _) if kind == SearchKind::Tracks => "No tracks found",
                 (true, _) => "No playlists found",
-                (_, true) => "Searching Spotify…",
+                (_, true) => "Searching…",
                 _ => "Press Return to search",
             };
             components::empty_state(palette, message).into_any_element()
@@ -865,11 +869,11 @@ impl Render for PlaylistPage {
             });
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
-            components::empty_state(palette, "No playlist selected").into_any_element()
+            components::empty_state(palette, "No playlist open").into_any_element()
         } else if live_station {
             components::empty_state(palette, "Waiting for the DJ…").into_any_element()
         } else if loaded {
-            components::empty_state(palette, "This playlist is empty").into_any_element()
+            components::empty_state(palette, "No tracks in this playlist").into_any_element()
         } else {
             components::empty_state(palette, "Loading playlist…").into_any_element()
         };
@@ -1026,9 +1030,9 @@ impl Render for ArtistPage {
             });
             self.track_list.clone().into_any_element()
         } else if section == ArtistSection::Popular {
-            components::empty_state(palette, "No popular tracks available").into_any_element()
+            components::empty_state(palette, "No popular tracks yet").into_any_element()
         } else if albums.is_empty() {
-            components::empty_state(palette, "No releases available").into_any_element()
+            components::empty_state(palette, "No releases yet").into_any_element()
         } else {
             self.discography(albums, window, cx).into_any_element()
         };
@@ -1149,7 +1153,7 @@ impl Render for AlbumPage {
             });
             self.track_list.clone().into_any_element()
         } else if loaded {
-            components::empty_state(palette, "This album has no playable tracks").into_any_element()
+            components::empty_state(palette, "No playable tracks in this album").into_any_element()
         } else {
             components::empty_state(palette, "Loading album…").into_any_element()
         };

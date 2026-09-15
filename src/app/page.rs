@@ -12,7 +12,7 @@ pub(super) enum PageEvent {
     Failed(String),
     /// Something worth saying that is not a failure, shown as a banner the
     /// listener can dismiss.
-    Notice(String),
+    Notice((String, NoticeSeverity)),
     OpenPlaylist(model::Playlist),
     OpenArtist(model::ArtistRef),
     OpenAlbum(model::AlbumRef),

@@ -108,9 +108,8 @@ impl Workspace {
                 self.last_error = Some(error.clone());
                 cx.notify();
             }
-            session::SessionEvent::Notice(notice) => {
-                self.action_notice = Some(notice.clone());
-                cx.notify();
+            session::SessionEvent::Notice((message, severity)) => {
+                self.show_notice(message.clone(), *severity, cx);
             }
         }
     }
@@ -133,6 +132,7 @@ impl Workspace {
         self.player.update(cx, |player, cx| player.clear(cx));
         self.last_error = None;
         self.action_notice = None;
+        self.notice_timer_armed_for = None;
         cx.notify();
     }
 
@@ -268,7 +268,9 @@ impl Workspace {
         match event {
             page::PageEvent::Loaded => self.last_error = None,
             page::PageEvent::Failed(error) => self.last_error = Some(error.clone()),
-            page::PageEvent::Notice(notice) => self.action_notice = Some(notice.clone()),
+            page::PageEvent::Notice((message, severity)) => {
+                self.show_notice(message.clone(), *severity, cx);
+            }
             page::PageEvent::OpenPlaylist(playlist) => {
                 self.load_playlist(playlist.clone(), cx);
                 self.open_playlist(origin, cx);
@@ -283,7 +285,7 @@ impl Workspace {
     /// Queues a radio seeded from `track`, tracking the request so a later
     /// failure or cancellation can clear the notice it puts up.
     fn start_track_radio(&mut self, track: model::Track, cx: &mut Context<Self>) {
-        self.action_notice = Some("Starting track radio…".to_owned());
+        self.set_notice(Notice::RadioPending, cx);
         let request_id = next_request_id(&mut self.radio_request_id);
         self.pending_radio_request = Some(request_id);
         let started = self
@@ -291,7 +293,11 @@ impl Workspace {
             .update(cx, |player, cx| player.start_radio(request_id, track, cx));
         if !started {
             self.pending_radio_request = None;
-            self.action_notice = Some("Unable to start track radio".to_owned());
+            self.show_notice(
+                "Unable to start track radio".to_owned(),
+                NoticeSeverity::Failure,
+                cx,
+            );
         }
     }
 }

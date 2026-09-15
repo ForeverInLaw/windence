@@ -246,6 +246,8 @@ const SIDEBAR_FILL_COLLAPSED: f32 = 42.;
 /// How far the collapsed pill sits in from the row's left edge.
 const SIDEBAR_FILL_INSET: f32 = 2.;
 const CATALOG_STALE_TIME: Duration = Duration::from_secs(5 * 60);
+/// How long a confirmation notice stays before it dismisses itself.
+const NOTICE_CONFIRMATION_LIFETIME: Duration = Duration::from_secs(4);
 const COMPACT_PLAYER_LEFT_WIDTH: f32 = 220.;
 const COMPACT_PLAYER_RIGHT_WIDTH: f32 = 96.;
 
@@ -334,6 +336,71 @@ enum ConnectionState {
     Connecting,
     Ready,
 }
+
+/// How a notice talks: what happened went well, or it did not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoticeSeverity {
+    /// A small win the listener only needed to hear once.
+    Confirmation,
+    /// Something went wrong and stays wrong until the listener dismisses it.
+    Failure,
+}
+
+/// One line of news in the banner, plus who owns its going away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Notice {
+    /// A radio request is walking its way through the backend, and a later
+    /// event resolves it: RadioStarted, RadioFailed or RadioCancelled.
+    /// Nothing here may time the notice out.
+    RadioPending,
+    /// Tied to no later event, so the banner itself has to let it go.
+    Timed(NoticeItem),
+}
+
+/// The words and severity of a notice that no event will resolve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NoticeItem {
+    message: String,
+    severity: NoticeSeverity,
+}
+
+impl NoticeItem {
+    fn severity(&self) -> NoticeSeverity {
+        self.severity
+    }
+}
+
+impl Notice {
+    fn item(&self) -> Option<&NoticeItem> {
+        match self {
+            Notice::RadioPending => None,
+            Notice::Timed(item) => Some(item),
+        }
+    }
+
+    /// The banner text, whichever way the notice is held.
+    fn message(&self) -> &str {
+        match self {
+            Notice::RadioPending => STARTING_RADIO_MESSAGE,
+            Notice::Timed(item) => &item.message,
+        }
+    }
+
+    /// Confirmations dismiss themselves after a short while; failures and
+    /// the radio pending state stay until resolved or replaced.
+    fn auto_dismisses(&self) -> bool {
+        matches!(
+            self.item(),
+            Some(NoticeItem {
+                severity: NoticeSeverity::Confirmation,
+                ..
+            })
+        )
+    }
+}
+
+/// What the radio request notice says while the backend works on it.
+const STARTING_RADIO_MESSAGE: &str = "Starting track radio…";
 
 fn volume_for_pointer(pointer_x: f32, window_width: f32) -> f32 {
     ((pointer_x - (window_width - VOLUME_SLIDER_RIGHT_INSET)) / VOLUME_SLIDER_WIDTH).clamp(0., 1.)

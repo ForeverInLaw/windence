@@ -36,7 +36,7 @@ pub(super) enum SessionEvent {
     /// A new account is being loaded, so navigation should start from the top.
     Restarted,
     Failed(String),
-    Notice(String),
+    Notice((String, NoticeSeverity)),
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -254,8 +254,11 @@ impl Session {
                 if let Some(previous) = self.state_before_app_change.take() {
                     self.state = previous;
                 }
-                cx.emit(SessionEvent::Notice(format!(
-                    "Unable to restart Spotify setup. Check your connection and try again. {error}"
+                cx.emit(SessionEvent::Notice((
+                    format!(
+                        "Unable to restart Spotify setup. Check your connection and try again. {error}"
+                    ),
+                    NoticeSeverity::Failure,
                 )));
             }
             BackendEvent::AuthorizationRequired => {

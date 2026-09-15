@@ -95,11 +95,20 @@ pub(super) fn draggable_pin(
 }
 
 /// The transient banner for things that finished without a page to say so.
+/// A failure keeps its border in the danger color until dismissed; a
+/// confirmation keeps the neutral border and goes away on its own.
 pub(super) fn action_notice_banner(
     palette: CadencePalette,
     message: String,
+    severity: Option<NoticeSeverity>,
     on_dismiss: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let failure = severity == Some(NoticeSeverity::Failure);
+    let border = if failure {
+        palette.danger
+    } else {
+        palette.border
+    };
     deferred(
         div()
             .occlude()
@@ -111,8 +120,9 @@ pub(super) fn action_notice_banner(
             .px(px(14.))
             .py(px(8.))
             .rounded(px(14.))
-            .border_1()
-            .border_color(rgb(palette.border))
+            .border_color(rgb(border))
+            .when(failure, |banner| banner.border_l_4())
+            .when(!failure, |banner| banner.border_1())
             .bg(rgb(palette.surface_raised))
             .shadow_lg()
             .flex()

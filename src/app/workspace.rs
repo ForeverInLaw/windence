@@ -9,7 +9,14 @@ use router::Router;
 pub(super) struct Workspace {
     pub(super) router: Router,
     pub(super) last_error: Option<String>,
-    pub(super) action_notice: Option<String>,
+    /// The banner's current notice. A radio request's notice is answered by a
+    /// backend event; every other one carries its own severity and, for a
+    /// confirmation, the moment it should dismiss itself.
+    pub(super) action_notice: Option<Notice>,
+    /// Marks the notice a dismiss timer was armed for. The timer only fires
+    /// the dismissal while this is still the notice it was set for, so a
+    /// notice that arrived later is never closed by an earlier timer.
+    pub(super) notice_timer_armed_for: Option<Notice>,
     pub(super) radio_request_id: u64,
     pub(super) pending_radio_request: Option<u64>,
     pub(super) player: Entity<player::Player>,
@@ -181,6 +188,7 @@ impl Workspace {
             router: Router::new(),
             last_error: None,
             action_notice: None,
+            notice_timer_armed_for: None,
             radio_request_id: 0,
             pending_radio_request: None,
             player,
@@ -240,17 +248,66 @@ impl Workspace {
         }
     }
 
+    /// Shows a notice that no backend event will resolve. A confirmation
+    /// arms a timer that dismisses it; the timer only ever closes the exact
+    /// notice it was armed for, so a notice that replaces it is safe.
+    pub(super) fn show_notice(
+        &mut self,
+        message: String,
+        severity: NoticeSeverity,
+        cx: &mut Context<Self>,
+    ) {
+        let notice = Notice::Timed(NoticeItem { message, severity });
+        self.set_notice(notice, cx);
+    }
+
+    /// Puts `notice` up, cancel-safe against an already-armed timer: the
+    /// armed-for mark moves to the new notice, so the old timer firing later
+    /// finds nothing it is allowed to dismiss.
+    pub(super) fn set_notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        self.notice_timer_armed_for = self
+            .notice_timer_armed_for
+            .take()
+            .filter(|_| notice.auto_dismisses());
+        self.action_notice = Some(notice.clone());
+        if notice.auto_dismisses() {
+            self.notice_timer_armed_for = Some(notice);
+            let task = cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(NOTICE_CONFIRMATION_LIFETIME)
+                    .await;
+                this.update(cx, |this, _| this.dismiss_expired_notice())
+                    .ok();
+            });
+            task.detach();
+        }
+        cx.notify();
+    }
+
+    /// The timer's callback: clears the notice only when it is still the one
+    /// the timer was set for.
+    fn dismiss_expired_notice(&mut self) {
+        if self.notice_timer_armed_for.is_some()
+            && self.action_notice == self.notice_timer_armed_for
+        {
+            self.action_notice = None;
+        }
+        self.notice_timer_armed_for = None;
+    }
+
     fn action_notice_banner(
         &self,
         palette: CadencePalette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let message = self.action_notice.clone()?;
+        let notice = self.action_notice.as_ref()?;
         Some(components::action_notice_banner(
             palette,
-            message,
+            notice.message().to_owned(),
+            notice.item().map(NoticeItem::severity),
             cx.listener(|this, _, _, cx| {
                 this.action_notice = None;
+                this.notice_timer_armed_for = None;
                 cx.notify();
             }),
         ))

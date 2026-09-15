@@ -39,7 +39,7 @@ impl LibrarySection {
 
     fn empty_message(self) -> &'static str {
         match self {
-            Self::LikedSongs => "No liked songs",
+            Self::LikedSongs => "No liked songs yet",
             Self::Recent => "No listening history yet",
         }
     }
@@ -275,7 +275,7 @@ impl Render for PlaylistsPage {
         };
         let content = if rows.is_empty() {
             let message = if loaded {
-                "No Spotify playlists"
+                "No playlists yet"
             } else {
                 "Loading playlists…"
             };
