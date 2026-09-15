@@ -390,7 +390,16 @@ impl RenderOnce for TrackRow {
                 })
             })
             .child(
-                components::liked_heart(palette, ("spotify-liked", index), self.liked)
+                components::liked_heart(
+                    palette,
+                    ("spotify-liked", index),
+                    self.liked,
+                    if self.liked {
+                        "Remove from Liked Songs"
+                    } else {
+                        "Add to Liked Songs"
+                    },
+                )
                     .test_support()
                     // Reachable on the row under the pointer and nowhere
                     // else: the column keeps its width so the ones beside
@@ -425,6 +434,7 @@ impl RenderOnce for TrackRow {
                     .child(
                         components::button(palette, ("track-actions", index))
                             .test_support()
+                            .aria_label("More actions")
                             .size(px(ACTIONS_COLUMN_WIDTH))
                             .rounded(px(18.))
                             .hover(|style| style.bg(rgb(palette.control)))

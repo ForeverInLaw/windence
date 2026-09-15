@@ -122,7 +122,7 @@ pub(super) fn action_notice_banner(
             .text_color(rgb(palette.text_primary))
             .child(div().flex_1().child(message))
             .child(
-                icon_button(palette, "dismiss-action-notice", CadenceIcon::Close)
+                icon_button(palette, "dismiss-action-notice", CadenceIcon::Close, "Dismiss")
                     .size(px(32.))
                     .on_click(on_dismiss),
             ),
@@ -191,19 +191,25 @@ pub(super) fn link(
         .focus_visible(|style| style.underline().text_color(rgb(palette.text_primary)))
 }
 
+/// An icon-only button. The caller names the action in human words: an
+/// icon alone says nothing to a screen reader, so a call without a label
+/// does not compile.
 pub(super) fn icon_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     name: CadenceIcon,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
-    icon_button_with(palette, id, name, 17.)
+    icon_button_with(palette, id, name, 17., label)
 }
 
+/// The same icon-only button with a size of its own.
 pub(super) fn icon_button_with(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     name: CadenceIcon,
     size: f32,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
     button(palette, id)
         .size(px(40.))
@@ -212,22 +218,26 @@ pub(super) fn icon_button_with(
         .text_color(rgb(palette.text_primary))
         .hover(|style| style.bg(rgb(palette.control)))
         .active(|style| style.bg(rgb(palette.control_hover)))
+        .aria_label(label.into())
         .child(icon(name, size, palette.text_primary))
 }
 
 /// The heart that adds a track to Spotify's Liked Songs. The player bar
 /// and the track rows both show one, and they are the same action, so they
-/// are the same control. The caller supplies the click; without one the
-/// heart is inert.
+/// are the same control. The caller supplies the click and the name the
+/// heart announces, which can follow the state the caller already knows.
+/// Without a name the heart is inert.
 pub(super) fn liked_heart(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     liked: bool,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
     button(palette, id)
         .size(px(LIKED_HEART_SIZE))
         .flex_none()
         .rounded(px(LIKED_HEART_SIZE / 2.))
+        .aria_label(label.into())
         .child(icon(
             if liked {
                 CadenceIcon::HeartFill

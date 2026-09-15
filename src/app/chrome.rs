@@ -282,6 +282,7 @@ impl Render for Toolbar {
                                 palette,
                                 "detail-back",
                                 CadenceIcon::ChevronLeft,
+                                "Back",
                             )
                             .on_click(cx.listener(
                                 move |_, _, _, cx| {
