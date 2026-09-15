@@ -13,6 +13,10 @@ pub(super) struct PlayerBar {
     library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     queue_open: bool,
+    /// Keyboard focus for the progress bar and the volume slider, so both
+    /// accept the transport keys once tabbed to.
+    progress_focus: FocusHandle,
+    volume_focus: FocusHandle,
 }
 
 /// Raised when the listener asks to see or hide the queue.
@@ -52,6 +56,8 @@ impl PlayerBar {
             library: services::AppServices::library(cx),
             image_cache: services::AppServices::image_cache(cx),
             queue_open: false,
+            progress_focus: cx.focus_handle().tab_stop(true),
+            volume_focus: cx.focus_handle().tab_stop(true),
         }
     }
 
@@ -346,14 +352,26 @@ impl PlayerBar {
                                     .child(format_duration(position_ms)),
                             )
                             .child(
+                                // The whole band is the hit zone: pointer
+                                // clicks and keyboard focus land on the
+                                // same generous area, while the drawn
+                                // track stays a thin line inside it.
                                 div()
                                     .id("progress-slider")
-                                    .h(px(5.))
+                                    .key_context("ProgressSlider")
+                                    .track_focus(&self.progress_focus)
+                                    .tab_stop(true)
+                                    .h(px(20.))
                                     .w(px(progress_slider_width))
                                     .flex_none()
-                                    .rounded(px(3.))
-                                    .bg(rgb(palette.surface_raised))
                                     .cursor_pointer()
+                                    .test_support()
+                                    .focus(|style| {
+                                        style
+                                            .border_2()
+                                            .border_color(rgb(palette.focus_ring))
+                                            .rounded(px(6.))
+                                    })
                                     .on_mouse_down(
                                         gpui_kit::MouseButton::Left,
                                         cx.listener(
@@ -380,10 +398,17 @@ impl PlayerBar {
                                     )
                                     .child(
                                         div()
-                                            .w(relative(progress))
-                                            .h_full()
+                                            .w_full()
+                                            .h(px(5.))
                                             .rounded(px(3.))
-                                            .bg(rgb(palette.text_primary)),
+                                            .bg(rgb(palette.surface_raised))
+                                            .child(
+                                                div()
+                                                    .w(relative(progress))
+                                                    .h_full()
+                                                    .rounded(px(3.))
+                                                    .bg(rgb(palette.text_primary)),
+                                            ),
                                     ),
                             )
                             .child(div().w(px(PROGRESS_TIME_WIDTH)).flex_none().child(duration)),
@@ -426,11 +451,21 @@ impl PlayerBar {
                         controls.child(
                             div()
                                 .id("volume-slider")
+                                .key_context("VolumeSlider")
+                                .track_focus(&self.volume_focus)
+                                .tab_stop(true)
                                 .w(px(VOLUME_SLIDER_WIDTH))
                                 .h(px(24.))
                                 .flex()
                                 .items_center()
                                 .cursor_pointer()
+                                .test_support()
+                                .focus(|style| {
+                                    style
+                                        .border_2()
+                                        .border_color(rgb(palette.focus_ring))
+                                        .rounded(px(8.))
+                                })
                                 .on_mouse_down(
                                     gpui_kit::MouseButton::Left,
                                     cx.listener(
