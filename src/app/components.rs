@@ -1,6 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::IconNamed as _;
 
 /// Shared building blocks for Cadence views.
@@ -95,13 +96,23 @@ pub(super) fn draggable_pin(
 }
 
 /// The transient banner for things that finished without a page to say so.
+/// A failure keeps its border in the danger color until dismissed; a
+/// confirmation keeps the neutral border and goes away on its own.
 pub(super) fn action_notice_banner(
     palette: CadencePalette,
     message: String,
+    severity: Option<NoticeSeverity>,
     on_dismiss: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let failure = severity == Some(NoticeSeverity::Failure);
+    let border = if failure {
+        palette.danger
+    } else {
+        palette.border
+    };
     deferred(
         div()
+            .id("action-notice")
             .occlude()
             .absolute()
             .top(px(76.))
@@ -111,8 +122,9 @@ pub(super) fn action_notice_banner(
             .px(px(14.))
             .py(px(8.))
             .rounded(px(14.))
-            .border_1()
-            .border_color(rgb(palette.border))
+            .border_color(rgb(border))
+            .when(failure, |banner| banner.border_l_4())
+            .when(!failure, |banner| banner.border_1())
             .bg(rgb(palette.surface_raised))
             .shadow_lg()
             .flex()
@@ -120,9 +132,12 @@ pub(super) fn action_notice_banner(
             .gap(px(10.))
             .text_size(px(13.))
             .text_color(rgb(palette.text_primary))
+            .test_support()
+            .aria_label(message.clone())
             .child(div().flex_1().child(message))
             .child(
                 icon_button(palette, "dismiss-action-notice", CadenceIcon::Close)
+                    .test_support()
                     .size(px(32.))
                     .on_click(on_dismiss),
             ),

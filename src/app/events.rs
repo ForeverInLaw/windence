@@ -26,13 +26,18 @@ impl Workspace {
                         self.pending_radio_request = None;
                         self.player
                             .update(cx, |player, cx| player.set_loading(false, cx));
-                        self.action_notice = Some(format!("Track radio unavailable: {error}"));
+                        self.show_notice(
+                            format!("Track radio unavailable: {error}"),
+                            NoticeSeverity::Failure,
+                            cx,
+                        );
                     }
                 }
                 BackendEvent::RadioStarted { request_id } => {
                     if self.pending_radio_request == Some(request_id) {
                         self.pending_radio_request = None;
                         self.action_notice = None;
+                        self.notice_timer_armed_for = None;
                     }
                 }
                 BackendEvent::RadioCancelled { request_id } => {
@@ -41,6 +46,7 @@ impl Workspace {
                         self.player
                             .update(cx, |player, cx| player.set_loading(false, cx));
                         self.action_notice = None;
+                        self.notice_timer_armed_for = None;
                     }
                 }
                 BackendEvent::Error(error) => {

@@ -275,11 +275,47 @@ pub(super) struct OnboardingWindow {
     onboarding: Entity<onboarding::Onboarding>,
     session: Entity<session::Session>,
     last_error: Option<String>,
-    action_notice: Option<String>,
+    action_notice: Option<Notice>,
+    /// Marks the notice a dismiss timer was armed for; see Workspace's field
+    /// of the same name for why the pair keeps the dismissal honest.
+    notice_timer_armed_for: Option<Notice>,
     _appearance_subscription: Subscription,
 }
 
 impl OnboardingWindow {
+    /// Shows a notice that no backend event will resolve, arming the dismiss
+    /// timer for a confirmation. Mirrors the workspace's notice methods.
+    fn show_notice(&mut self, message: String, severity: NoticeSeverity, cx: &mut Context<Self>) {
+        let notice = Notice::Timed(NoticeItem { message, severity });
+        self.notice_timer_armed_for = self
+            .notice_timer_armed_for
+            .take()
+            .filter(|_| notice.auto_dismisses());
+        self.action_notice = Some(notice.clone());
+        if notice.auto_dismisses() {
+            self.notice_timer_armed_for = Some(notice);
+            let task = cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(NOTICE_CONFIRMATION_LIFETIME)
+                    .await;
+                this.update(cx, |this, _| this.dismiss_expired_notice())
+                    .ok();
+            });
+            task.detach();
+        }
+    }
+
+    /// The timer's callback: clears the notice only when it is still the one
+    /// the timer was set for.
+    fn dismiss_expired_notice(&mut self) {
+        if self.notice_timer_armed_for.is_some()
+            && self.action_notice == self.notice_timer_armed_for
+        {
+            self.action_notice = None;
+        }
+        self.notice_timer_armed_for = None;
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         appearance::Appearance::attach(window, cx);
         let appearance_subscription = cx.observe_window_appearance(window, |_, window, cx| {
@@ -292,7 +328,9 @@ impl OnboardingWindow {
             match event {
                 session::SessionEvent::Failed(error) => this.last_error = Some(error.clone()),
                 session::SessionEvent::Ready => this.last_error = None,
-                session::SessionEvent::Notice(notice) => this.action_notice = Some(notice.clone()),
+                session::SessionEvent::Notice((message, severity)) => {
+                    this.show_notice(message.clone(), *severity, cx)
+                }
                 session::SessionEvent::Restarted | session::SessionEvent::LoggedOut => {}
             }
             cx.notify();
@@ -320,8 +358,8 @@ impl OnboardingWindow {
                             .update(cx, |session, cx| session.cancel_app_change(cx));
                     }
                     onboarding::OnboardingEvent::ClearError => this.last_error = None,
-                    onboarding::OnboardingEvent::Notice(notice) => {
-                        this.action_notice = Some(notice.clone())
+                    onboarding::OnboardingEvent::Notice((message, severity)) => {
+                        this.show_notice(message.clone(), *severity, cx)
                     }
                 }
                 cx.notify();
@@ -336,6 +374,7 @@ impl OnboardingWindow {
             session,
             last_error,
             action_notice: None,
+            notice_timer_armed_for: None,
             _appearance_subscription: appearance_subscription,
         }
     }
@@ -350,12 +389,14 @@ impl Render for OnboardingWindow {
             onboarding.focus_setup_field(window, cx);
         });
         let app_change_open = self.session.read(cx).app_change_confirmation_open();
-        let notice = self.action_notice.clone().map(|message| {
+        let notice = self.action_notice.as_ref().map(|notice| {
             components::action_notice_banner(
                 palette,
-                message,
+                notice.message().to_owned(),
+                notice.item().map(NoticeItem::severity),
                 cx.listener(|this, _, _, cx| {
                     this.action_notice = None;
+                    this.notice_timer_armed_for = None;
                     cx.notify();
                 }),
             )

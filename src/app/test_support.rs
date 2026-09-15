@@ -1,6 +1,7 @@
 use super::*;
 use gpui_kit::{AnyWindowHandle, HeadlessAppContext, WindowHandle};
 mod interactions;
+mod notices;
 
 pub(super) struct BackendProbe {
     pub commands: tokio::sync::mpsc::Receiver<BackendCommand>,

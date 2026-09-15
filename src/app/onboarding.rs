@@ -28,7 +28,7 @@ fn onboarding_drag_strips() -> [Div; 2] {
 pub(super) enum OnboardingEvent {
     Authenticate,
     DismissOverlay,
-    Notice(String),
+    Notice((String, NoticeSeverity)),
     ChangeSpotifyApp,
     RetryBackend,
     ClearError,
@@ -438,9 +438,10 @@ impl Onboarding {
                                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                                     SPOTIFY_REDIRECT_URI.to_owned(),
                                                 ));
-                                                cx.emit(OnboardingEvent::Notice(
+                                                cx.emit(OnboardingEvent::Notice((
                                                     "Redirect URI copied".to_owned(),
-                                                ));
+                                                    NoticeSeverity::Confirmation,
+                                                )));
                                             })),
                                     ),
                             ),
