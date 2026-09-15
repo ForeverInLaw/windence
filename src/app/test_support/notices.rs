@@ -1,14 +1,14 @@
 use super::test_support::{initialize, settle, workspace};
-use crate::app::{BackendEvent, Notice, NoticeSeverity, Workspace, assets, next_request_id};
+use crate::app::{
+    BackendEvent, NOTICE_CONFIRMATION_LIFETIME, Notice, NoticeSeverity, Workspace, assets,
+    next_request_id,
+};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{HeadlessAppContext, NoopTextSystem, WeakEntity};
 use spotify_gpui_client::storage::ThemePreference;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// How long a confirmation notice is allowed to stay, mirrored from the app.
-const CONFIRMATION_LIFETIME: Duration = Duration::from_secs(4);
 
 struct Fixture {
     cx: HeadlessAppContext,
@@ -98,7 +98,7 @@ fn a_confirmation_dismisses_itself_after_its_window() {
     // Just before the window closes the notice must still be there.
     fixture
         .cx
-        .advance_clock(CONFIRMATION_LIFETIME - Duration::from_millis(1));
+        .advance_clock(NOTICE_CONFIRMATION_LIFETIME - Duration::from_millis(1));
     assert_eq!(
         fixture.banner_label().as_deref(),
         Some("Redirect URI copied")
@@ -122,7 +122,7 @@ fn a_failure_outlives_the_same_advance_and_leaves_on_dismiss() {
         )
     });
 
-    fixture.cx.advance_clock(CONFIRMATION_LIFETIME);
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
     fixture.cx.run_until_parked();
     assert_eq!(
         fixture.banner_label().as_deref(),
@@ -151,7 +151,7 @@ fn a_replacing_notice_is_safe_from_the_previous_timer() {
         );
     });
 
-    fixture.cx.advance_clock(CONFIRMATION_LIFETIME);
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
     fixture.cx.run_until_parked();
     assert_eq!(
         fixture.banner_label().as_deref(),
@@ -166,7 +166,7 @@ fn the_radio_pending_notice_is_never_timed() {
     let mut fixture = Fixture::new();
     fixture.workspace(|workspace, _, cx| workspace.set_notice(Notice::RadioPending, cx));
 
-    fixture.cx.advance_clock(CONFIRMATION_LIFETIME);
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
     fixture.cx.run_until_parked();
     assert_eq!(
         fixture.banner_label().as_deref(),
@@ -215,7 +215,7 @@ fn radio_failed_swaps_the_pending_banner_for_a_failure() {
     );
 
     // The failure is not on a timer either.
-    fixture.cx.advance_clock(CONFIRMATION_LIFETIME);
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
     fixture.cx.run_until_parked();
     assert_eq!(
         fixture.banner_label().as_deref(),
@@ -255,7 +255,7 @@ fn a_confirmation_over_the_radio_pending_banner_is_timed_and_not_resurrected() {
         request_id
     });
 
-    fixture.cx.advance_clock(CONFIRMATION_LIFETIME);
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
     fixture.cx.run_until_parked();
     assert_eq!(
         fixture.banner_label(),
