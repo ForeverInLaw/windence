@@ -83,6 +83,11 @@ impl SearchPage {
         cx.notify();
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     pub(super) fn set_kind(&mut self, kind: SearchKind, cx: &mut Context<Self>) {
         self.kind = kind;
         cx.notify();
@@ -209,6 +214,11 @@ impl PlaylistPage {
         self.selected
             .as_ref()
             .map(|playlist| playlist.source_id.as_str())
+    }
+
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
     }
 
     /// Takes down any open row menu, for a route change no click drove.
@@ -385,6 +395,11 @@ impl ArtistPage {
         cx.notify();
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     /// Takes down any open row menu, for a route change no click drove.
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.track_list.update(cx, |list, cx| list.close_menu(cx));
@@ -468,10 +483,11 @@ impl ArtistPage {
     fn discography(
         &mut self,
         albums: Arc<[model::Album]>,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let columns = if uses_compact_content_layout(f32::from(window.viewport_size().width)) {
+        let columns = if uses_compact_content_layout(
+            self.track_list.read(cx).content_width(),
+        ) {
             3
         } else {
             4
@@ -607,6 +623,11 @@ impl AlbumPage {
     /// Takes down any open row menu, for a route change no click drove.
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.track_list.update(cx, |list, cx| list.close_menu(cx));
+    }
+
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
     }
 
     /// Starts the page's contents from the top, if there is anything to play.
@@ -984,7 +1005,7 @@ impl Render for PlaylistPage {
 }
 
 impl Render for ArtistPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let name = self
             .artist
@@ -1030,7 +1051,7 @@ impl Render for ArtistPage {
         } else if albums.is_empty() {
             components::empty_state(palette, "No releases available").into_any_element()
         } else {
-            self.discography(albums, window, cx).into_any_element()
+            self.discography(albums, cx).into_any_element()
         };
 
         components::page("artist-page")

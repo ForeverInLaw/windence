@@ -31,6 +31,10 @@ pub(super) struct Workspace {
     pub(super) focus_handle: FocusHandle,
     pub(super) _appearance_subscription: Subscription,
     pub(super) _activation_subscription: Subscription,
+    /// The window width from the most recent render. The sidebar observer
+    /// uses it to re-derive the tiers while the rail moves.
+    last_window_width: f32,
+    _layout_subscription: Subscription,
 }
 
 impl Workspace {
@@ -128,6 +132,7 @@ impl Workspace {
         )
         .detach();
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(preferences.sidebar_collapsed, cx));
+        let layout_subscription = cx.observe(&sidebar, |this, _, cx| this.sync_layout(cx));
         cx.subscribe(
             &sidebar,
             |this, _, event: &sidebar::SidebarEvent, cx| match event {
@@ -202,6 +207,8 @@ impl Workspace {
             focus_handle,
             _appearance_subscription: appearance_subscription,
             _activation_subscription: activation_subscription,
+            last_window_width: 0.,
+            _layout_subscription: layout_subscription,
         }
     }
 
@@ -327,6 +334,37 @@ impl Workspace {
             cx.listener(|this, _, _, cx| this.confirm_spotify_app_change(cx)),
         )
     }
+
+    /// Re-derives the layout tiers from the window's last width and the
+    /// sidebar's settled width, and pushes the content width to the views
+    /// that key on it. Runs on every render and whenever the sidebar moves.
+    fn sync_layout(&mut self, cx: &mut Context<Self>) {
+        let window_width = self.last_window_width;
+        let compact_layout = sidebar_wants_compact_layout(window_width);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_compact_layout(compact_layout, cx)
+        });
+        let content = content_width(window_width, self.sidebar.read(cx).target_width());
+        self.player_bar
+            .update(cx, |bar, cx| bar.set_content_width(content, cx));
+        self.toolbar
+            .update(cx, |toolbar, cx| toolbar.set_content_width(content, cx));
+        for list in self.track_lists(cx) {
+            list.update(cx, |list, cx| list.set_content_width(content, cx));
+        }
+    }
+
+    /// Every track list the workspace's pages can show.
+    fn track_lists(&self, cx: &App) -> Vec<Entity<track_list::TrackList>> {
+        vec![
+            self.liked_songs.read(cx).track_list_entity(),
+            self.recent.read(cx).track_list_entity(),
+            self.search.read(cx).track_list_entity(),
+            self.playlist.read(cx).track_list_entity(),
+            self.artist.read(cx).track_list_entity(),
+            self.album.read(cx).track_list_entity(),
+        ]
+    }
 }
 
 // Render derives the window from memory; all I/O stays behind the backend or
@@ -334,7 +372,8 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact_layout = uses_compact_content_layout(f32::from(window.viewport_size().width));
+        self.last_window_width = f32::from(window.viewport_size().width);
+        self.sync_layout(cx);
         // While the session is not ready the sign-in window shows this
         // confirmation; rendering it here too would double the modal.
         let app_change_open = self.session.read(cx).app_change_confirmation_open()
@@ -342,9 +381,6 @@ impl Render for Workspace {
         let action_notice = self.action_notice_banner(palette, cx);
 
         let scrim = self.signed_out_scrim(palette, cx);
-        self.sidebar.update(cx, |sidebar, cx| {
-            sidebar.set_compact_layout(compact_layout, cx)
-        });
         let route = self.router.route();
         let back_target = self.router.back_target();
         let error = self.last_error.clone();

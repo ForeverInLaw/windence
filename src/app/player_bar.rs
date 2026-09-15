@@ -13,6 +13,9 @@ pub(super) struct PlayerBar {
     library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     queue_open: bool,
+    /// The width the bar's content spans: the window minus the sidebar.
+    /// The workspace keeps it current every frame.
+    content_width: f32,
 }
 
 /// Raised when the listener asks to see or hide the queue.
@@ -52,6 +55,9 @@ impl PlayerBar {
             library: services::AppServices::library(cx),
             image_cache: services::AppServices::image_cache(cx),
             queue_open: false,
+            // Replaced with the real value before the first paint; the
+            // default only has to keep the layout math sane.
+            content_width: 0.,
         }
     }
 
@@ -62,6 +68,16 @@ impl PlayerBar {
     pub(super) fn set_queue_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if self.queue_open != open {
             self.queue_open = open;
+            cx.notify();
+        }
+    }
+
+    /// Takes the content width the workspace derived for this frame. The
+    /// bar's tiers and its timeline fold read it instead of the window
+    /// bounds, so a rail collapse or window resize lands in the same frame.
+    pub(super) fn set_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.content_width != width {
+            self.content_width = width;
             cx.notify();
         }
     }
@@ -194,12 +210,9 @@ impl PlayerBar {
 
     fn bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact = uses_compact_player_layout(f32::from(window.viewport_size().width));
-        let progress_slider_width = if compact {
-            (f32::from(window.viewport_size().width) - 500.).max(160.)
-        } else {
-            PROGRESS_SLIDER_WIDTH
-        };
+        let content_width = self.content_width;
+        let compact = uses_compact_player_layout(content_width);
+        let timeline = compact_progress_slider_width(content_width);
         let player = self.player.read(cx);
         let now_playing = player.now_playing().cloned();
         let playing = player.playing();
@@ -232,8 +245,8 @@ impl PlayerBar {
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(24.))
-            .px(px(24.))
+            .gap(px(PLAYER_BAR_GAP))
+            .px(px(PLAYER_BAR_PADDING))
             .bg(rgb(palette.surface))
             .border_t_1()
             .border_color(rgb(palette.border))
@@ -244,6 +257,7 @@ impl PlayerBar {
                     } else {
                         PLAYER_LEFT_WIDTH
                     }))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .gap(px(12.))
@@ -264,10 +278,14 @@ impl PlayerBar {
             )
             .child(
                 div()
-                    .w(px(if compact {
-                        progress_slider_width + 2. * PROGRESS_TIME_WIDTH + 2. * PROGRESS_GAP
-                    } else {
-                        PLAYER_CENTER_WIDTH
+                    .w(px(match timeline {
+                        Some(slider_width) if compact => {
+                            slider_width + 2. * PROGRESS_TIME_WIDTH + 2. * PROGRESS_GAP
+                        }
+                        Some(_) => PLAYER_CENTER_WIDTH,
+                        // The timeline folded away: the transport stands
+                        // alone at its own width.
+                        None => TRANSPORT_CLUSTER_WIDTH,
                     }))
                     .flex()
                     .flex_col()
@@ -300,8 +318,9 @@ impl PlayerBar {
                             )
                             .child(
                                 components::button(palette, "play-toggle")
-                                    .size(px(40.))
-                                    .rounded(px(20.))
+                                    .test_support()
+                                    .size(px(TRANSPORT_BUTTON_SIZE))
+                                    .rounded(px(TRANSPORT_BUTTON_SIZE / 2.))
                                     .bg(rgb(palette.text_primary))
                                     .child(if loading {
                                         Spinner::new()
@@ -330,64 +349,79 @@ impl PlayerBar {
                                     })),
                             ),
                     )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .text_size(px(11.))
-                            .text_color(rgb(palette.text_muted))
-                            .child(
-                                div()
-                                    .w(px(PROGRESS_TIME_WIDTH))
-                                    .flex_none()
-                                    .text_right()
-                                    .child(format_duration(position_ms)),
-                            )
-                            .child(
-                                div()
-                                    .id("progress-slider")
-                                    .h(px(5.))
-                                    .w(px(progress_slider_width))
-                                    .flex_none()
-                                    .rounded(px(3.))
-                                    .bg(rgb(palette.surface_raised))
-                                    .cursor_pointer()
-                                    .on_mouse_down(
-                                        gpui_kit::MouseButton::Left,
-                                        cx.listener(
-                                            |this, event: &gpui_kit::MouseDownEvent, window, cx| {
-                                                let window_width = f32::from(
-                                                    window.window_bounds().get_bounds().size.width,
-                                                );
-                                                this.player.update(cx, |player, cx| {
-                                                    let Some(duration_ms) = player
-                                                        .now_playing()
-                                                        .map(|track| track.duration_ms)
-                                                    else {
-                                                        return;
-                                                    };
-                                                    let position = seek_for_pointer(
-                                                        f32::from(event.position.x),
-                                                        window_width,
-                                                        duration_ms,
-                                                    );
-                                                    player.seek(position, cx);
-                                                });
-                                            },
+                    .when_some(timeline, |centre, slider_width| {
+                        centre.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_size(px(11.))
+                                .text_color(rgb(palette.text_muted))
+                                .child(
+                                    div()
+                                        .w(px(PROGRESS_TIME_WIDTH))
+                                        .flex_none()
+                                        .text_right()
+                                        .child(format_duration(position_ms)),
+                                )
+                                .child(
+                                    div()
+                                        .id("progress-slider")
+                                        .test_support()
+                                        .h(px(5.))
+                                        .w(px(slider_width))
+                                        .flex_none()
+                                        .rounded(px(3.))
+                                        .bg(rgb(palette.surface_raised))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            cx.listener(
+                                                |this,
+                                                 event: &gpui_kit::MouseDownEvent,
+                                                 window,
+                                                 cx| {
+                                                    this.player.update(cx, |player, cx| {
+                                                        let Some(duration_ms) = player
+                                                            .now_playing()
+                                                            .map(|track| track.duration_ms)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let position = seek_for_pointer(
+                                                            f32::from(event.position.x),
+                                                            f32::from(
+                                                                window
+                                                                    .window_bounds()
+                                                                    .get_bounds()
+                                                                    .size
+                                                                    .width,
+                                                            ),
+                                                            this.content_width,
+                                                            duration_ms,
+                                                        );
+                                                        player.seek(position, cx);
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(relative(progress))
+                                                .h_full()
+                                                .rounded(px(3.))
+                                                .bg(rgb(palette.text_primary)),
                                         ),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(relative(progress))
-                                            .h_full()
-                                            .rounded(px(3.))
-                                            .bg(rgb(palette.text_primary)),
-                                    ),
-                            )
-                            .child(div().w(px(PROGRESS_TIME_WIDTH)).flex_none().child(duration)),
-                    ),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(PROGRESS_TIME_WIDTH))
+                                        .flex_none()
+                                        .child(duration),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()

@@ -51,10 +51,6 @@ fn row_label(text: impl Into<SharedString>) -> Div {
     div().min_w_0().flex_1().truncate().child(text.into())
 }
 
-fn expanded_sidebar_width(compact_layout: bool) -> f32 {
-    if compact_layout { 200. } else { 232. }
-}
-
 impl Sidebar {
     pub(super) fn new(collapsed: bool, cx: &mut App) -> Self {
         let width = if collapsed {
@@ -96,6 +92,18 @@ impl Sidebar {
         if self.compact_layout != compact {
             self.compact_layout = compact;
             cx.notify();
+        }
+    }
+
+    /// The width the rail occupies at rest: the collapsed rail while it is
+    /// collapsed, the expanded width its tier arms otherwise. The
+    /// transition's painted width moves through this on its way, so tiers
+    /// keyed on it stay stable while the animation runs.
+    pub(super) fn target_width(&self) -> f32 {
+        if self.collapsed {
+            COLLAPSED_SIDEBAR_WIDTH
+        } else {
+            expanded_sidebar_width(self.compact_layout)
         }
     }
 

@@ -116,6 +116,11 @@ impl LibraryTracksPage {
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.tracks.update(cx, |list, cx| list.close_menu(cx));
     }
+
+    /// The list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.tracks.clone()
+    }
 }
 
 impl Render for LibraryTracksPage {
