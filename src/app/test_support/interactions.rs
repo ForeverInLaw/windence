@@ -1,5 +1,8 @@
 use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
-use crate::app::{Route, Workspace, appearance, assets, compact_progress_slider_width, onboarding, services};
+use crate::app::{
+    Route, Workspace, appearance, assets, compact_progress_slider_width, onboarding, services,
+    windows,
+};
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
@@ -487,6 +490,56 @@ fn mute_sends_volume_and_restores_the_previous_level() {
     assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
     fixture.update(|window, cx| window.click("volume", cx));
     assert_eq!(*fixture.backend.volume.borrow_and_update(), initial);
+    fixture.no_commands();
+}
+
+/// At the fixed sign-in window's size, the setup form keeps air between the
+/// rail and its own edges: the form column's widest layout plus the rail
+/// never reach the window's width.
+#[test]
+fn sign_in_forms_render_with_headroom_at_the_fixed_size() {
+    let mut cx = HeadlessAppContext::with_asset_source(
+        Arc::new(NoopTextSystem),
+        Arc::new(assets::AppAssets),
+    );
+    let backend = cx.update(|cx| {
+        let backend = initialize(cx, ThemePreference::Light);
+        services::AppServices::session(cx).update(cx, |session, cx| {
+            session.handle_backend_event(BackendEvent::SetupRequired, cx);
+        });
+        backend
+    });
+    let window_width = windows::onboarding_window_width();
+    let window = cx
+        .open_window(size(px(window_width), px(720.)), |window, cx| {
+            appearance::Appearance::attach(window, cx);
+            let onboarding = cx.new(|cx| onboarding::Onboarding::new(window, cx));
+            cx.new(|cx| Root::new(onboarding, window, cx))
+        })
+        .expect("setup window");
+    settle(&mut cx, window.into());
+    let mut fixture = Fixture {
+        cx,
+        window,
+        workspace: None,
+        backend,
+    };
+    fixture.update(|window, _| {
+        let form = window.find("client-id-input");
+        let bounds = form.bounds();
+        // The input sits inside the form column: a margin off the rail and
+        // off the window's edge on both sides means no edge-to-edge contact.
+        assert!(
+            bounds.left() >= px(onboarding::ONBOARDING_RAIL_WIDTH + 24.),
+            "form starts {:?} from the left; the rail must keep air before it",
+            bounds
+        );
+        assert!(
+            bounds.right() <= px(window_width - 24.),
+            "form ends {:?}; the window must keep air after it",
+            bounds
+        );
+    });
     fixture.no_commands();
 }
 

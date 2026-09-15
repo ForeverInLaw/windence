@@ -133,6 +133,12 @@ const ONBOARDING_WINDOW_WIDTH: f32 = onboarding::ONBOARDING_RAIL_WIDTH
     + onboarding::ONBOARDING_FORM_HEADROOM;
 const ONBOARDING_WINDOW_HEIGHT: f32 = 720.;
 
+/// The width the sign-in window opens at, for tests that render it at its
+/// fixed size.
+pub(super) fn onboarding_window_width() -> f32 {
+    ONBOARDING_WINDOW_WIDTH
+}
+
 /// Opens the fixed-size sign-in window, or brings the open one forward. The
 /// size fits the onboarding layout (420px rail + content) above the compact
 /// breakpoint; the window is not resizable, so that is the only layout.
