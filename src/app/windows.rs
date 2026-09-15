@@ -279,6 +279,8 @@ pub(super) struct OnboardingWindow {
     /// Marks the notice a dismiss timer was armed for; see Workspace's field
     /// of the same name for why the pair keeps the dismissal honest.
     notice_timer_armed_for: Option<Notice>,
+    /// How many notices have gone up. Keys the banner's arrival animation.
+    notice_generation: usize,
     _appearance_subscription: Subscription,
 }
 
@@ -291,6 +293,7 @@ impl OnboardingWindow {
             .notice_timer_armed_for
             .take()
             .filter(|_| notice.auto_dismisses());
+        self.notice_generation += 1;
         self.action_notice = Some(notice.clone());
         if notice.auto_dismisses() {
             self.notice_timer_armed_for = Some(notice);
@@ -375,6 +378,7 @@ impl OnboardingWindow {
             last_error,
             action_notice: None,
             notice_timer_armed_for: None,
+            notice_generation: 0,
             _appearance_subscription: appearance_subscription,
         }
     }
@@ -394,6 +398,7 @@ impl Render for OnboardingWindow {
                 palette,
                 notice.message().to_owned(),
                 notice.item().map(NoticeItem::severity),
+                self.notice_generation,
                 cx.listener(|this, _, _, cx| {
                     this.action_notice = None;
                     this.notice_timer_armed_for = None;

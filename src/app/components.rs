@@ -98,10 +98,18 @@ pub(super) fn draggable_pin(
 /// The transient banner for things that finished without a page to say so.
 /// A failure keeps its border in the danger color until dismissed; a
 /// confirmation keeps the neutral border and goes away on its own.
+///
+/// The arrival is a rise and fade: the banner starts `RISE_DISTANCE` under
+/// its place, transparent, and comes up on `MEDIUM`. `generation` keys the
+/// animation, so a notice replacing the one on screen starts its own
+/// entrance instead of inheriting the replaced one's progress. There is no
+/// exit animation: the banner unmounts the moment its state clears, which
+/// is what keeps the dismiss timer exact (see `Notice`).
 pub(super) fn action_notice_banner(
     palette: CadencePalette,
     message: String,
     severity: Option<NoticeSeverity>,
+    generation: usize,
     on_dismiss: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let failure = severity == Some(NoticeSeverity::Failure);
@@ -145,6 +153,15 @@ pub(super) fn action_notice_banner(
                 .test_support()
                 .size(px(32.))
                 .on_click(on_dismiss),
+            )
+            .with_animation(
+                animation_id("action-notice-arrival", generation),
+                Animation::new(MEDIUM).with_easing(smooth_out()),
+                move |banner, delta| {
+                    banner
+                        .top(px(76. + RISE_DISTANCE * (1. - delta)))
+                        .opacity(delta)
+                },
             ),
     )
     .into_any_element()

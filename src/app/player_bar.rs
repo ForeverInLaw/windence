@@ -631,6 +631,13 @@ impl QueueDrawer {
         }
     }
 
+    /// The slide-over queue panel. It slides in from the right edge on
+    /// `FAST`, smooth-out: the panel starts `RISE_DISTANCE` into the window
+    /// (never fully off-screen, so the slide reads as a move, not a pop)
+    /// and finishes at its rest position. Offsets and opacity only — the
+    /// drawer is absolutely positioned and occludes, so nothing beside it
+    /// shifts. Closing is an unmount via `queue_open`; there is no close
+    /// animation to tear down.
     fn drawer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let player = self.player.read(cx);
@@ -655,6 +662,15 @@ impl QueueDrawer {
             .shadow_xl()
             .flex()
             .flex_col()
+            .with_animation(
+                "queue-drawer-open",
+                Animation::new(FAST).with_easing(smooth_out()),
+                move |drawer, delta| {
+                    drawer
+                        .right(px(RISE_DISTANCE * (1. - delta)))
+                        .opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                },
+            )
             .child(
                 div()
                     .flex()
