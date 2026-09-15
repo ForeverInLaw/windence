@@ -53,7 +53,7 @@ pub(super) struct Library {
     pinned_rows: Arc<[library_index::LibraryRow]>,
     recently_played: Arc<[model::ListedTrack]>,
     local_loaded: bool,
-    reload: Option<gpui::Task<()>>,
+    reload: Option<gpui_kit::Task<()>>,
     /// When the contents last arrived, so returning to the window repeatedly
     /// does not refetch the whole library every time.
     refreshed_at: Option<SystemTime>,

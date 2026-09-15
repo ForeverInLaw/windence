@@ -2,7 +2,7 @@ use super::*;
 
 use std::collections::HashMap;
 
-use gpui::ScrollHandle;
+use gpui_kit::ScrollHandle;
 use page::PageEvent;
 
 /// How long a loaded feed counts as current. Spotify rebuilds the page by
@@ -29,12 +29,12 @@ pub(super) struct HomePage {
     loaded_at: Option<SystemTime>,
     /// Why there is no feed to show. Cleared by the next attempt.
     error: Option<String>,
-    request: Option<gpui::Task<()>>,
+    request: Option<gpui_kit::Task<()>>,
     /// One per shelf, in feed order: the row's scroll position, which the
     /// shelf's arrows page through.
     shelf_scrolls: Vec<ScrollHandle>,
     /// Shelves whose next page is on its way, by index in the feed.
-    shelf_requests: HashMap<usize, gpui::Task<()>>,
+    shelf_requests: HashMap<usize, gpui_kit::Task<()>>,
 }
 
 impl EventEmitter<PageEvent> for HomePage {}
@@ -206,7 +206,7 @@ impl HomePage {
                     .min_w_0()
                     .truncate()
                     .text_size(px(20.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .text_color(rgb(palette.text_primary))
                     // A shelf Spotify draws without a heading keeps the
                     // arrows and an empty title.
@@ -312,7 +312,7 @@ impl HomePage {
                         .w_full()
                         .truncate()
                         .text_size(px(14.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .text_color(rgb(palette.text_primary))
                         .child(card.name.clone()),
                 )
@@ -348,7 +348,7 @@ impl HomePage {
             .bg(rgb(palette.control))
             .hover(|style| style.bg(rgb(palette.control_hover)))
             .text_size(px(13.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
             .text_color(rgb(palette.text_primary))
             .child(if loading {
                 Spinner::new().into_any_element()

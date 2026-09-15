@@ -15,25 +15,25 @@ pub(super) struct AppServices {
     session: Entity<session::Session>,
     library: Entity<library::Library>,
     image_cache: Entity<image_cache::BoundedImageCache>,
-    brand_mark: Arc<gpui::Image>,
+    brand_mark: Arc<gpui_kit::Image>,
     /// The system media controls. Where they bind to a window (Windows),
     /// `media_controls_window` names it: when that window closes the binding
     /// dies with it, so both drop together and a reopened window re-attaches.
     media_controls: Option<media_controls::SystemMediaControls>,
-    media_controls_window: Option<gpui::AnyWindowHandle>,
+    media_controls_window: Option<gpui_kit::AnyWindowHandle>,
     /// The window currently showing these services, if one is open.
-    root: Option<gpui::WeakEntity<Workspace>>,
+    root: Option<gpui_kit::WeakEntity<Workspace>>,
     /// The open main and sign-in windows. Slots are cleared when gpui reports
     /// a window closed, so they are the authority on what is on screen.
-    main_window: Option<gpui::AnyWindowHandle>,
-    onboarding_window: Option<gpui::AnyWindowHandle>,
+    main_window: Option<gpui_kit::AnyWindowHandle>,
+    onboarding_window: Option<gpui_kit::AnyWindowHandle>,
     /// The last session state the window sync acted on.
     last_connection_state: ConnectionState,
     /// Once the session has been ready, the main window is the listener's home
     /// and losing the session no longer tears it down.
     has_been_ready: bool,
     /// Drains backend events for the whole process, not just for a window.
-    event_pump: Option<gpui::Task<()>>,
+    event_pump: Option<gpui_kit::Task<()>>,
     lifecycle: Arc<InstanceLifecycle>,
     store: Option<Store>,
     /// The live preference values, so a window opened later starts from what
@@ -41,7 +41,7 @@ pub(super) struct AppServices {
     preferences: AppPreferences,
 }
 
-impl gpui::Global for AppServices {}
+impl gpui_kit::Global for AppServices {}
 
 impl AppServices {
     pub(super) fn init(
@@ -66,8 +66,8 @@ impl AppServices {
             .collect();
         let library = cx.new(|_| library::Library::new(handle.clone(), sort, expanded_folders));
         let image_cache = image_cache::BoundedImageCache::new(cx);
-        let brand_mark = Arc::new(gpui::Image::from_bytes(
-            gpui::ImageFormat::Png,
+        let brand_mark = Arc::new(gpui_kit::Image::from_bytes(
+            gpui_kit::ImageFormat::Png,
             include_bytes!("../../assets/cadence-mark.png").to_vec(),
         ));
         let player_for_media = player.clone();
@@ -145,7 +145,7 @@ impl AppServices {
     }
 
     /// The Cadence mark, drawn by both the sidebar and the setup screen.
-    pub(super) fn brand_mark(cx: &App) -> Arc<gpui::Image> {
+    pub(super) fn brand_mark(cx: &App) -> Arc<gpui_kit::Image> {
         cx.global::<Self>().brand_mark.clone()
     }
 
@@ -275,31 +275,31 @@ impl AppServices {
     }
 
     /// Notes which window should receive the events the services do not consume.
-    pub(super) fn set_root(root: gpui::WeakEntity<Workspace>, cx: &mut App) {
+    pub(super) fn set_root(root: gpui_kit::WeakEntity<Workspace>, cx: &mut App) {
         cx.global_mut::<Self>().root = Some(root);
     }
 
-    pub(super) fn main_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
+    pub(super) fn main_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {
         cx.global::<Self>().main_window
     }
 
-    pub(super) fn onboarding_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
+    pub(super) fn onboarding_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {
         cx.global::<Self>().onboarding_window
     }
 
-    pub(super) fn set_main_window(handle: Option<gpui::AnyWindowHandle>, cx: &mut App) {
+    pub(super) fn set_main_window(handle: Option<gpui_kit::AnyWindowHandle>, cx: &mut App) {
         cx.global_mut::<Self>().main_window = handle;
     }
 
-    pub(super) fn set_onboarding_window(handle: Option<gpui::AnyWindowHandle>, cx: &mut App) {
+    pub(super) fn set_onboarding_window(handle: Option<gpui_kit::AnyWindowHandle>, cx: &mut App) {
         cx.global_mut::<Self>().onboarding_window = handle;
     }
 
-    pub(super) fn take_main_window(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+    pub(super) fn take_main_window(cx: &mut App) -> Option<gpui_kit::AnyWindowHandle> {
         cx.global_mut::<Self>().main_window.take()
     }
 
-    pub(super) fn take_onboarding_window(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+    pub(super) fn take_onboarding_window(cx: &mut App) -> Option<gpui_kit::AnyWindowHandle> {
         cx.global_mut::<Self>().onboarding_window.take()
     }
 
@@ -326,7 +326,7 @@ impl AppServices {
     /// once attached; where the controls attached without a window at startup
     /// (macOS) there is nothing to bind, so this is never called.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-    pub(super) fn attach_media_controls(handle: gpui::AnyWindowHandle, cx: &mut App) {
+    pub(super) fn attach_media_controls(handle: gpui_kit::AnyWindowHandle, cx: &mut App) {
         if cx.global::<Self>().media_controls.is_some() {
             #[cfg(target_os = "windows")]
             {

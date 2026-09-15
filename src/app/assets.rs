@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Result, SharedString};
 
 /// The asset path an icon name resolves to: `music` renders
 /// `icons/music.svg`, first from Cadence's own set, then from the component
@@ -11,7 +11,7 @@ pub(super) fn icon_path(name: &str) -> String {
 
 /// Icons Cadence ships itself: glyphs the component library's asset set does
 /// not include (transport, volume, music notes). Everything else resolves
-/// through `gpui_component_assets`.
+/// through `gpui_kit::assets`.
 const CADENCE_ICONS: &[(&str, &[u8])] = &[
     (
         "icons/arrow-down.svg",
@@ -97,8 +97,8 @@ pub(super) const FONT_FILES: &[&[u8]] = &[
     include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
 ];
 
-/// The app's asset source: gpui-component's embedded set with Cadence's own
-/// icons layered on top.
+/// The app's asset source: the kit's embedded set with Cadence's own icons
+/// layered on top.
 pub(super) struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -106,11 +106,11 @@ impl AssetSource for AppAssets {
         if let Some((_, bytes)) = CADENCE_ICONS.iter().find(|(known, _)| *known == path) {
             return Ok(Some(Cow::Borrowed(*bytes)));
         }
-        gpui_component_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut listed = gpui_component_assets::Assets.list(path)?;
+        let mut listed = gpui_kit::assets::Assets.list(path)?;
         listed.extend(
             CADENCE_ICONS
                 .iter()

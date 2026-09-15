@@ -1,6 +1,6 @@
 use super::*;
 
-use gpui::ClickEvent;
+use gpui_kit::ClickEvent;
 
 /// Breathing room between the Title column and whatever follows it.
 const COLUMN_GUTTER: f32 = 16.;
@@ -103,7 +103,7 @@ pub(super) fn track_list_header(
         .rounded_t(px(LIST_CORNER_RADIUS))
         .bg(rgb(palette.canvas))
         .text_size(px(11.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .text_color(rgb(palette.text_muted))
         .child(div().w(px(INDEX_COLUMN_WIDTH)).flex_none().child("#"))
         .child(
@@ -353,7 +353,7 @@ impl RenderOnce for TrackRow {
                             .flex_col()
                             .child(
                                 ellipsized_line(13.)
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(rgb(palette.text_primary))
                                     .child(self.track.title.clone()),
                             )
@@ -603,7 +603,7 @@ impl RenderOnce for PlaylistRow {
                 .child(
                     div()
                         .text_size(px(14.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         .text_color(rgb(palette.text_primary))
                         .child(self.playlist.name.clone()),
                 )
@@ -721,7 +721,7 @@ impl RenderOnce for FolderRow {
                 .child(
                     div()
                         .text_size(px(14.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         .text_color(rgb(palette.text_primary))
                         .child(self.name),
                 )

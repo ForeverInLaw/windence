@@ -41,7 +41,7 @@ impl SystemMediaControls {
     #[cfg(target_os = "windows")]
     pub(super) fn attach_to_window(
         player: Entity<player::Player>,
-        window: &gpui::Window,
+        window: &gpui_kit::Window,
         cx: &mut App,
     ) -> Option<Self> {
         let hwnd = window_hwnd(window)?;
@@ -140,7 +140,7 @@ impl SystemMediaControls {
 /// The HWND behind a GPUI window, or `None` when the window handle is
 /// unavailable or not a Win32 one.
 #[cfg(target_os = "windows")]
-fn window_hwnd(window: &gpui::Window) -> Option<*mut std::ffi::c_void> {
+fn window_hwnd(window: &gpui_kit::Window) -> Option<*mut std::ffi::c_void> {
     use raw_window_handle::RawWindowHandle;
     let handle = raw_window_handle::HasWindowHandle::window_handle(window).ok()?;
     match handle.as_raw() {

@@ -45,7 +45,7 @@ pub(super) struct SearchPage {
     loaded: bool,
     searching: bool,
     error: Option<String>,
-    request: Option<gpui::Task<()>>,
+    request: Option<gpui_kit::Task<()>>,
     track_list: Entity<TrackList>,
     playlist_list: Entity<PlaylistList>,
     _list_subscriptions: [Subscription; 2],
@@ -162,7 +162,7 @@ pub(super) struct PlaylistPage {
     tracks: Arc<[model::ListedTrack]>,
     loaded: bool,
     error: Option<String>,
-    request: Option<gpui::Task<()>>,
+    request: Option<gpui_kit::Task<()>>,
     library: Entity<library::Library>,
     player: Entity<player::Player>,
     image_cache: Entity<image_cache::BoundedImageCache>,
@@ -351,7 +351,7 @@ pub(super) struct ArtistPage {
     loaded: bool,
     error: Option<String>,
     loaded_at: Option<SystemTime>,
-    request: Option<gpui::Task<()>>,
+    request: Option<gpui_kit::Task<()>>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     track_list: Entity<TrackList>,
     _list_subscription: Subscription,
@@ -541,7 +541,7 @@ impl ArtistPage {
                             .w_full()
                             .truncate()
                             .text_size(px(14.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(rgb(palette.text_primary))
                             .child(album.name.clone()),
                     )
@@ -575,7 +575,7 @@ pub(super) struct AlbumPage {
     loaded: bool,
     error: Option<String>,
     loaded_at: Option<SystemTime>,
-    request: Option<gpui::Task<()>>,
+    request: Option<gpui_kit::Task<()>>,
     player: Entity<player::Player>,
     image_cache: Entity<image_cache::BoundedImageCache>,
     track_list: Entity<TrackList>,

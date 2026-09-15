@@ -202,11 +202,11 @@ impl PlaylistsPage {
                     components::menu_surface(palette)
                         .w(px(180.))
                         .on_mouse_up_out(
-                            gpui::MouseButton::Left,
+                            gpui_kit::MouseButton::Left,
                             cx.listener(|this, _, _, cx| this.close_menus(cx)),
                         )
                         .on_mouse_down(
-                            gpui::MouseButton::Left,
+                            gpui_kit::MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),
                         ),
                     |menu, mode| {

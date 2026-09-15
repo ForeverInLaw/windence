@@ -174,7 +174,7 @@ impl Onboarding {
                 .child(
                     div()
                         .text_size(px(24.))
-                        .font_weight(gpui::FontWeight::BOLD)
+                        .font_weight(gpui_kit::FontWeight::BOLD)
                         .text_color(rgb(palette.text_primary))
                         .child("Cadence could not start"),
                 )
@@ -224,7 +224,7 @@ impl Onboarding {
                     .child(
                         div()
                             .text_size(px(18.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(rgb(palette.text_primary))
                             .child("Cadence"),
                     ),
@@ -234,7 +234,7 @@ impl Onboarding {
                     .mt(px(56.))
                     .text_size(px(30.))
                     .line_height(relative(1.12))
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui_kit::FontWeight::BOLD)
                     .text_color(rgb(palette.text_primary))
                     .child("Your Spotify,\nin Cadence"),
             )
@@ -344,7 +344,7 @@ impl Onboarding {
             .child(
                 div()
                     .text_size(px(28.))
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui_kit::FontWeight::BOLD)
                     .text_color(rgb(palette.text_primary))
                     .child(title),
             )
@@ -400,7 +400,7 @@ impl Onboarding {
                                 div()
                                     .mt(px(24.))
                                     .text_size(px(14.))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(rgb(palette.text_primary))
                                     .child("Add this redirect URI"),
                             )
@@ -461,7 +461,7 @@ impl Onboarding {
                                 div()
                                     .mt(px(16.))
                                     .text_size(px(14.))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .text_color(rgb(palette.text_primary))
                                     .child("Spotify Client ID"),
                             )
@@ -476,7 +476,7 @@ impl Onboarding {
                                         .border_l_1()
                                         .border_color(rgb(palette.danger))
                                         .text_size(px(12.))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                         .text_color(rgb(palette.text_primary))
                                         .child(error),
                                 )
@@ -598,7 +598,7 @@ impl Onboarding {
             .items_center()
             .justify_center()
             .text_size(px(13.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
             .text_color(rgb(palette.text_primary))
             .child(number)
     }
@@ -606,7 +606,7 @@ impl Onboarding {
     fn onboarding_step_title(palette: CadencePalette, title: &'static str) -> Div {
         div()
             .text_size(px(19.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
             .text_color(rgb(palette.text_primary))
             .child(title)
     }

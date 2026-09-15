@@ -25,7 +25,7 @@ enum NavTarget {
 /// The library navigation rail.
 pub(super) struct Sidebar {
     library: Entity<library::Library>,
-    brand_mark: Arc<gpui::Image>,
+    brand_mark: Arc<gpui_kit::Image>,
     /// The route to highlight, pushed by the workspace when it navigates.
     route: Route,
     /// Where a pinned playlist should return to when the listener backs out.
@@ -282,7 +282,7 @@ impl Sidebar {
                     palette.text
                 }))
                 .text_size(px(14.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 .child(fill)
                 .on_click(cx.listener(move |_, _, _, cx| match target {
                     NavTarget::Route(target) => cx.emit(SidebarEvent::Navigate(target)),
@@ -362,7 +362,7 @@ impl Sidebar {
             .justify_start()
             .items_center()
             .text_color(rgb(palette.text_primary))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
             .child(brand_fill)
             .on_click(cx.listener(|this, _, _, cx| {
                 let collapsed = !this.collapsed;
