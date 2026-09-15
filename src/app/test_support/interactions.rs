@@ -1,7 +1,7 @@
 use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
 use crate::app::{
-    NoticeSeverity, Route, Workspace, appearance, assets, compact_progress_slider_width,
-    onboarding, services, windows,
+    NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets, onboarding,
+    services, uses_compact_player_layout, windows,
 };
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
@@ -414,8 +414,14 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
 /// The window sizes and rail states the interface has to survive. Widths
 /// sit at the tier boundaries: the window minimum (720) and the
 /// compact-content window boundary (960), each with the rail expanded and
-/// collapsed, plus the default 1280 window where the full tier shows the
-/// timeline with the volume slider beside it.
+/// collapsed, plus the default 1280 window in the full player tier.
+///
+/// The compact bar's fixed parts (paddings, clusters, transport, and the
+/// right cluster with the volume slider) sum to `COMPACT_BAR_FIXED_WIDTH`,
+/// so the timeline floor sits above every compact cell here: the timeline
+/// folds in that tier and the drawn slider's width comes from the content.
+/// The full tier draws the fixed `PROGRESS_SLIDER_WIDTH` instead, which
+/// its centre box reserves, and the volume slider shows in both tiers.
 const MATRIX: [(f32, bool); 5] = [
     (720., false),
     (720., true),
@@ -435,6 +441,7 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
         let (window, workspace) = workspace_collapsed(&mut cx, width, 600., collapsed);
         let rail = cx.update(|cx| workspace.read(cx).sidebar.read(cx).target_width());
         let content = width - rail;
+        let compact = uses_compact_player_layout(content);
         let mut fixture = Fixture {
             cx,
             window,
@@ -442,16 +449,22 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
             backend,
         };
         fixture.update(|window, _| {
-            // The timeline folds below the floor: no progress slider.
-            // At or above it the slider is on screen and takes what the
-            // content has left over.
+            // The timeline folds below the floor; in the full tier it
+            // always shows, at the width the centre box reserves.
             let slider = window.try_find("progress-slider");
-            let timeline_expected = compact_progress_slider_width(content).is_some();
-            assert_eq!(
-                slider.is_some(),
-                timeline_expected,
-                "timeline at width {width}, rail collapsed: {collapsed}, content {content}"
-            );
+            if compact {
+                assert!(
+                    slider.is_none(),
+                    "timeline must fold in the compact tier at width {width}, collapsed: {collapsed}, content {content}"
+                );
+            } else {
+                let slider = slider.as_ref().expect("the full tier shows the timeline");
+                assert_eq!(
+                    f32::from(slider.bounds().size.width),
+                    PROGRESS_SLIDER_WIDTH,
+                    "the full tier's drawn slider keeps the width the centre box reserves"
+                );
+            }
             // Transport keeps working wherever the timeline folded.
             if slider.is_none() {
                 let play = window
@@ -462,8 +475,13 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
                     "play button hidden at width {width}, collapsed: {collapsed}"
                 );
             }
-            // Nothing the bar shows may stick out of the window.
-            for id in ["play-toggle", "queue-toggle", "volume"] {
+            // The volume slider exists in both tiers and, with its
+            // cluster, nothing the bar shows may stick out of the window.
+            assert!(
+                window.try_find("volume-slider").is_some(),
+                "the volume slider must show at width {width}, collapsed: {collapsed}"
+            );
+            for id in ["play-toggle", "queue-toggle", "volume", "volume-slider"] {
                 if let Some(control) = window.try_find(id) {
                     let bounds = control.bounds();
                     assert!(
@@ -801,6 +819,66 @@ fn volume_slider_keys_step_and_mute() {
     assert!(initial > 0. && initial <= 1.);
 }
 
+/// The volume slider's keyboard path exists in the compact tier too: at a
+/// collapsed-rail 720 window (content 642, below the full tier's
+/// breakpoint) the slider renders and answers Up, Down, and M.
+#[test]
+fn volume_slider_answers_the_keyboard_in_the_compact_tier() {
+    let mut cx = HeadlessAppContext::with_asset_source(
+        Arc::new(NoopTextSystem),
+        Arc::new(assets::AppAssets),
+    );
+    let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
+    let (window, workspace) = workspace_collapsed(&mut cx, 720., 600., true);
+    // 720 - 78 = 642 content: below the full tier's breakpoint, so the
+    // bar runs its compact tier.
+    assert!(uses_compact_player_layout(642.));
+    let mut fixture = Fixture {
+        cx,
+        window,
+        workspace: Some(workspace.downgrade()),
+        backend,
+    };
+    fixture.play(track(0));
+    let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
+    // The saved default level (DEFAULT_VOLUME) the keys step from.
+    assert_eq!(initial, 0.72);
+    fixture.no_commands();
+    fixture.update(|window, _| {
+        assert!(
+            window.try_find("volume-slider").is_some(),
+            "the compact tier must render the volume slider"
+        );
+    });
+    // Walk tab to the volume slider. In the compact tier the drawn
+    // progress slider is absent, so the tab walk alternates between the
+    // slider and the root focus; the even steps land on the slider.
+    for _ in 0..2 {
+        fixture.press("tab");
+    }
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find("volume-slider").focused(),
+            Some(true),
+            "two tabs from the root land on the compact volume slider"
+        );
+    });
+    // Up steps 5 percent from the saved 0.72, and M mutes and restores.
+    fixture.press("up");
+    let up = fixture.backend.volume.borrow_and_update().to_owned();
+    assert!((up - 0.77).abs() < 1e-6);
+    fixture.press("down");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.72);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.72);
+    fixture.no_commands();
+    // The entity handle goes before the context, or the leak detector
+    // reads it as a Workspace left alive across contexts.
+    drop(workspace);
+}
+
 #[test]
 fn slider_keys_stay_dead_while_an_input_or_the_root_has_focus() {
     let mut fixture = Fixture::new(false);
@@ -857,23 +935,25 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
 
 /// Folding the rail on the running window re-derives the tiers without any
 /// resize: the sidebar observer pushes the new content width, and the bar
-/// follows it in the same frame. At 1280 the timeline stays through the
-/// fold (the content grows past the floor either way), and the compact
-/// player tier's slider width tracks the rail's share.
+/// follows it in the same frame. At 1280 both rail states sit in the full
+/// player tier, whose drawn slider keeps `PROGRESS_SLIDER_WIDTH` and whose
+/// centre cluster anchors to the window, so the timeline's geometry holds
+/// across the fold while the content column widens around it.
 #[test]
 fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
     let mut fixture = Fixture::new(false);
-    // At 1280 with the rail expanded the full tier shows the timeline.
-    fixture.update(|window, _| {
+    // At 1280 with the rail expanded the full tier shows the timeline at
+    // the width the centre box reserves.
+    let expanded_slider_width = fixture.update(|window, _| {
         let slider = window
             .try_find("progress-slider")
             .expect("the full tier must show the timeline before the rail folds");
-        let expanded_slider = f32::from(slider.bounds().size.width);
-        assert!(
-            expanded_slider > 160.,
-            "expanded slider was {expanded_slider}"
-        );
+        f32::from(slider.bounds().size.width)
     });
+    assert_eq!(
+        expanded_slider_width, PROGRESS_SLIDER_WIDTH,
+        "the full tier's drawn slider keeps the width the centre box reserves"
+    );
     fixture.update(|_, cx| {
         fixture_workspace(cx).update(cx, |workspace, cx| {
             workspace
@@ -882,14 +962,20 @@ fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
         });
     });
     fixture.update(|window, _| {
-        // The rail's share went to the content: the slider grew with it.
+        // The fold left the content in the same tier, so the drawn slider
+        // keeps its width and stays inside the window.
         let slider = window
             .try_find("progress-slider")
             .expect("the timeline must survive the fold here");
         let collapsed_slider = f32::from(slider.bounds().size.width);
         assert_eq!(
-            collapsed_slider, 606.,
-            "the collapsed rail's slider must take the rail's share"
+            collapsed_slider, PROGRESS_SLIDER_WIDTH,
+            "the full tier's slider must keep its width across the fold"
+        );
+        let bounds = slider.bounds();
+        assert!(
+            bounds.right() <= px(1280.) && bounds.left() >= px(0.),
+            "the timeline clips after the fold: bounds {bounds:?}"
         );
         let play = window.find("play-toggle");
         assert!(play.visible(), "the transport must survive the fold");
