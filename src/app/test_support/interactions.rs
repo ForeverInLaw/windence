@@ -1,5 +1,5 @@
 use super::test_support::{BackendProbe, initialize, settle, track, workspace};
-use crate::app::{Route, Workspace, appearance, assets, onboarding, services};
+use crate::app::{NoticeSeverity, Route, Workspace, appearance, assets, onboarding, services};
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
@@ -496,8 +496,11 @@ fn action_notice_dismiss_announces_itself() {
             .upgrade()
             .expect("live workspace")
             .update(cx, |workspace, cx| {
-                workspace.action_notice = Some("Starting track radio…".to_owned());
-                cx.notify();
+                workspace.show_notice(
+                    "Starting track radio…".to_owned(),
+                    NoticeSeverity::Confirmation,
+                    cx,
+                );
             });
     });
     fixture.update(|window, _| {
