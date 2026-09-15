@@ -12,10 +12,10 @@ use spotify_gpui_client::model;
 use spotify_gpui_client::storage::ThemePreference;
 use std::sync::Arc;
 
-struct Fixture {
+pub(super) struct Fixture {
     cx: HeadlessAppContext,
     window: WindowHandle<Root>,
-    workspace: Option<WeakEntity<Workspace>>,
+    pub(super) workspace: Option<WeakEntity<Workspace>>,
     backend: BackendProbe,
 }
 
@@ -32,7 +32,7 @@ const SECONDARY_A: &str = "cmd-a";
 const SECONDARY_A: &str = "ctrl-a";
 
 impl Fixture {
-    fn new(settings: bool) -> Self {
+    pub(super) fn new(settings: bool) -> Self {
         let mut cx = HeadlessAppContext::with_asset_source(
             Arc::new(NoopTextSystem),
             Arc::new(assets::AppAssets),
@@ -93,7 +93,7 @@ impl Fixture {
         }
     }
 
-    fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+    pub(super) fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         let result = self
             .cx
             .update_window(self.window.into(), |_, window, cx| f(window, cx))
@@ -102,7 +102,7 @@ impl Fixture {
         result
     }
 
-    fn no_commands(&mut self) {
+    pub(super) fn no_commands(&mut self) {
         assert!(matches!(
             self.backend.commands.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -416,6 +416,98 @@ fn mute_sends_volume_and_restores_the_previous_level() {
     assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
     fixture.update(|window, cx| window.click("volume", cx));
     assert_eq!(*fixture.backend.volume.borrow_and_update(), initial);
+    fixture.no_commands();
+}
+
+/// Every icon-only control names its action for a screen reader. The
+/// builders require the label, so these assert what the names say, not
+/// that they exist.
+#[test]
+fn icon_buttons_announce_their_actions_in_human_words() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(credited_track());
+    fixture.update(|window, _| {
+        let expected = [
+            ("next", "Next track"),
+            ("previous", "Previous track"),
+            ("volume", "Volume"),
+            ("queue-toggle", "Queue"),
+            ("shuffle-toggle", "Shuffle"),
+        ];
+        for (id, label) in expected {
+            assert_eq!(
+                window.find(id).label(),
+                Some(label),
+                "the {id} button must announce itself as {label:?}"
+            );
+        }
+    });
+    // The heart follows the state the player bar already knows: the
+    // snapshot track starts liked, so the heart offers removal.
+    let liked = fixture.update(|_, cx| {
+        services::AppServices::library(cx)
+            .read(cx)
+            .is_liked(&track(0))
+    });
+    let expected = if liked {
+        "Remove from Liked Songs"
+    } else {
+        "Add to Liked Songs"
+    };
+    fixture.update(|window, _| {
+        assert_eq!(window.find("player-liked").label(), Some(expected));
+    });
+    // The queue drawer's close button exists only while the drawer is open.
+    fixture.update(|window, cx| window.click("queue-toggle", cx));
+    fixture.update(|window, _| {
+        assert_eq!(window.find("close-queue").label(), Some("Close queue"));
+    });
+    fixture.no_commands();
+}
+
+/// The track-row heart and actions button carry their names, and the
+/// row heart follows the liked state the row already knows.
+#[test]
+fn track_row_controls_announce_their_actions() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find(("spotify-liked", 0usize)).label(),
+            // The fixture library starts with every rendered row liked.
+            Some("Remove from Liked Songs")
+        );
+        assert_eq!(
+            window.find(("track-actions", 0usize)).label(),
+            Some("More actions")
+        );
+    });
+    fixture.no_commands();
+}
+
+/// An overlay control announces its action. The notice banner exists only
+/// while a notice is up, so the test raises one the way the workspace
+/// itself would, then dismisses it.
+#[test]
+fn action_notice_dismiss_announces_itself() {
+    let mut fixture = Fixture::new(false);
+    let workspace = fixture.workspace.clone().expect("workspace fixture");
+    fixture.update(|_, cx| {
+        workspace
+            .upgrade()
+            .expect("live workspace")
+            .update(cx, |workspace, cx| {
+                workspace.action_notice = Some("Starting track radio…".to_owned());
+                cx.notify();
+            });
+    });
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find("dismiss-action-notice").label(),
+            Some("Dismiss")
+        );
+    });
+    fixture.update(|window, cx| window.click("dismiss-action-notice", cx));
+    fixture.update(|window, _| assert!(window.try_find("dismiss-action-notice").is_none()));
     fixture.no_commands();
 }
 

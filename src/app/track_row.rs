@@ -390,20 +390,29 @@ impl RenderOnce for TrackRow {
                 })
             })
             .child(
-                components::liked_heart(palette, ("spotify-liked", index), self.liked)
-                    .test_support()
-                    // Reachable on the row under the pointer and nowhere
-                    // else: the column keeps its width so the ones beside
-                    // it do not shift, but stays empty until then.
-                    .invisible()
-                    .group_hover(row_group.clone(), |style| style.visible())
-                    .hover(|style| style.bg(rgb(palette.control)))
-                    .when_some(self.on_liked, |button, handler| {
-                        button.on_click(move |event, window, cx| {
-                            cx.stop_propagation();
-                            handler(event, window, cx);
-                        })
-                    }),
+                components::liked_heart(
+                    palette,
+                    ("spotify-liked", index),
+                    self.liked,
+                    if self.liked {
+                        "Remove from Liked Songs"
+                    } else {
+                        "Add to Liked Songs"
+                    },
+                )
+                .test_support()
+                // Reachable on the row under the pointer and nowhere
+                // else: the column keeps its width so the ones beside
+                // it do not shift, but stays empty until then.
+                .invisible()
+                .group_hover(row_group.clone(), |style| style.visible())
+                .hover(|style| style.bg(rgb(palette.control)))
+                .when_some(self.on_liked, |button, handler| {
+                    button.on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    })
+                }),
             )
             .child(
                 div()
@@ -425,6 +434,7 @@ impl RenderOnce for TrackRow {
                     .child(
                         components::button(palette, ("track-actions", index))
                             .test_support()
+                            .aria_label("More actions")
                             .size(px(ACTIONS_COLUMN_WIDTH))
                             .rounded(px(18.))
                             .hover(|style| style.bg(rgb(palette.control)))

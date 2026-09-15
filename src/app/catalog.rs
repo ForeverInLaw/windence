@@ -918,6 +918,7 @@ impl Render for PlaylistPage {
                                                 palette,
                                                 "playlist-shuffle",
                                                 CadenceIcon::Shuffle,
+                                                "Shuffle",
                                             )
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
@@ -939,6 +940,11 @@ impl Render for PlaylistPage {
                                                     CadenceIcon::CircleCheck
                                                 } else {
                                                     CadenceIcon::Plus
+                                                },
+                                                if saved {
+                                                    "Remove from Your Library"
+                                                } else {
+                                                    "Add to Your Library"
                                                 },
                                             )
                                             .bg(rgb(if saved {
@@ -967,6 +973,7 @@ impl Render for PlaylistPage {
                                                 } else {
                                                     CadenceIcon::Pin
                                                 },
+                                                if pinned { "Unpin playlist" } else { "Pin" },
                                             )
                                             .bg(rgb(if pinned {
                                                 palette.selection
@@ -1196,6 +1203,7 @@ impl Render for AlbumPage {
                                             palette,
                                             "album-shuffle",
                                             CadenceIcon::Shuffle,
+                                            "Shuffle",
                                         )
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {

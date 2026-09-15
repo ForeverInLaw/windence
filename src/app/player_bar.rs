@@ -266,7 +266,7 @@ impl PlayerBar {
                                 cx,
                             )),
                     )
-                    .child(self.liked_toggle(palette, now_playing, cx)),
+                    .child(self.liked_toggle(palette, now_playing, cx).test_support()),
             )
             .child(
                 div()
@@ -291,6 +291,7 @@ impl PlayerBar {
                                     shuffle_supported,
                                     shuffle_smart_supported,
                                 )
+                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player
@@ -299,10 +300,18 @@ impl PlayerBar {
                                 )),
                             )
                             .child(
-                                components::icon_button(palette, "previous", CadenceIcon::SkipBack)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                components::icon_button(
+                                    palette,
+                                    "previous",
+                                    CadenceIcon::SkipBack,
+                                    "Previous track",
+                                )
+                                .test_support()
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.previous(cx));
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
                                 components::button(palette, "play-toggle")
@@ -330,10 +339,18 @@ impl PlayerBar {
                                     })),
                             )
                             .child(
-                                components::icon_button(palette, "next", CadenceIcon::SkipForward)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                components::icon_button(
+                                    palette,
+                                    "next",
+                                    CadenceIcon::SkipForward,
+                                    "Next track",
+                                )
+                                .test_support()
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.next(cx));
-                                    })),
+                                    },
+                                )),
                             ),
                     )
                     .child(
@@ -432,6 +449,7 @@ impl PlayerBar {
                             "queue-toggle",
                             CadenceIcon::ListMusic,
                             17.,
+                            "Queue",
                         )
                         .test_support()
                         .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
@@ -442,7 +460,7 @@ impl PlayerBar {
                         })),
                     )
                     .child(
-                        components::icon_button_with(palette, "volume", volume_icon, 17.)
+                        components::icon_button_with(palette, "volume", volume_icon, 17., "Volume")
                             .test_support()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
@@ -524,17 +542,26 @@ impl PlayerBar {
         let liked = track
             .as_ref()
             .is_some_and(|track| self.library.read(cx).is_liked(track));
-        components::liked_heart(palette, "player-liked", liked)
-            .when(track.is_none(), |button| button.opacity(0.5))
-            .when_some(track, |button, track| {
-                button
-                    .hover(|style| style.bg(rgb(palette.control)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.library.update(cx, |library, cx| {
-                            library.set_liked(track.clone(), !liked, cx)
-                        });
-                    }))
-            })
+        components::liked_heart(
+            palette,
+            "player-liked",
+            liked,
+            if liked {
+                "Remove from Liked Songs"
+            } else {
+                "Add to Liked Songs"
+            },
+        )
+        .when(track.is_none(), |button| button.opacity(0.5))
+        .when_some(track, |button, track| {
+            button
+                .hover(|style| style.bg(rgb(palette.control)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.library.update(cx, |library, cx| {
+                        library.set_liked(track.clone(), !liked, cx)
+                    });
+                }))
+        })
     }
 }
 
@@ -555,14 +582,15 @@ fn shuffle_toggle(
     smart_supported: bool,
 ) -> Stateful<Div> {
     let active = mode.shuffles();
-    let icon = match mode {
-        ShuffleMode::Smart => CadenceIcon::Sparkles,
-        _ => CadenceIcon::Shuffle,
+    let (icon, label) = match mode {
+        ShuffleMode::Smart => (CadenceIcon::Sparkles, "Smart shuffle"),
+        _ => (CadenceIcon::Shuffle, "Shuffle"),
     };
     components::button(palette, "shuffle-toggle")
         .size(px(40.))
         .flex_none()
         .rounded(px(20.))
+        .aria_label(label)
         .when(active, |button| button.bg(rgb(palette.selection)))
         .when(!active && supported, |button| {
             button.hover(|style| style.bg(rgb(palette.control)))
@@ -641,9 +669,14 @@ impl QueueDrawer {
                             .child("Queue"),
                     )
                     .child(
-                        components::icon_button(palette, "close-queue", CadenceIcon::Close)
-                            .test_support()
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
+                        components::icon_button(
+                            palette,
+                            "close-queue",
+                            CadenceIcon::Close,
+                            "Close queue",
+                        )
+                        .test_support()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )
             .child(components::section_label(palette, "Now playing"))

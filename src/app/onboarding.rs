@@ -430,6 +430,7 @@ impl Onboarding {
                                             "copy-spotify-redirect",
                                             CadenceIcon::Copy,
                                             16.,
+                                            "Copy redirect URI",
                                         )
                                             .size(px(36.))
                                             .mr(px(6.))
