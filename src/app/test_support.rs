@@ -90,21 +90,51 @@ pub(super) fn ready(cx: &mut App) {
     });
 }
 
+/// A workspace at a fixed window size with the rail expanded.
 pub(super) fn workspace(
     cx: &mut HeadlessAppContext,
     width: f32,
     height: f32,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    workspace_collapsed(cx, width, height, false)
+}
+
+/// A workspace at a fixed window size, with the sidebar collapsed or not
+/// from the start (the way the saved preference opens it). Rendering it
+/// before returning means the first snapshot already carries the layout
+/// tiers the size and rail imply.
+pub(super) fn workspace_collapsed(
+    cx: &mut HeadlessAppContext,
+    width: f32,
+    height: f32,
+    collapsed: bool,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(ready);
     let mut workspace = None;
     let window = cx
         .open_window(size(px(width), px(height)), |window, cx| {
             let view = cx.new(|cx| Workspace::new(window, cx));
+            services::AppServices::set_root(view.downgrade(), cx);
             workspace = Some(view.clone());
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("workspace window");
-    (window, workspace.expect("workspace entity"))
+    let workspace = workspace.expect("workspace entity");
+    if collapsed {
+        cx.update(|cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .sidebar
+                    .update(cx, |sidebar, cx| sidebar.set_collapsed(true, cx));
+            });
+        });
+        cx.run_until_parked();
+    }
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .expect("draw workspace");
+    (window, workspace)
 }
 
 pub(super) fn settle(cx: &mut HeadlessAppContext, window: AnyWindowHandle) {

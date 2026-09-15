@@ -25,6 +25,10 @@ pub(super) struct Toolbar {
     back_target: Option<Route>,
     /// The workspace's standing failure, shown under the account name.
     error: Option<String>,
+    /// The width the toolbar's content spans: the window minus the
+    /// sidebar. The search field's tiers read it instead of the window
+    /// width.
+    content_width: f32,
     _search_subscription: Subscription,
 }
 
@@ -53,7 +57,17 @@ impl Toolbar {
             route: Route::LikedSongs,
             back_target: None,
             error: None,
+            // Replaced with the real value before the first paint.
+            content_width: 0.,
             _search_subscription: search_subscription,
+        }
+    }
+
+    /// Takes the content width the workspace derived for this frame.
+    pub(super) fn set_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.content_width != width {
+            self.content_width = width;
+            cx.notify();
         }
     }
 
@@ -268,9 +282,9 @@ impl Toolbar {
 }
 
 impl Render for Toolbar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact = uses_compact_content_layout(f32::from(window.viewport_size().width));
+        let compact = uses_compact_content_layout(self.content_width);
         let profile_name = self.profile_name(cx);
         let profile = self.session.read(cx).profile().cloned();
         let profile_artwork = profile

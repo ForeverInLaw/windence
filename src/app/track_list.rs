@@ -59,6 +59,10 @@ pub(super) struct TrackList {
     library: Entity<library::Library>,
     player: Entity<player::Player>,
     image_cache: Entity<image_cache::BoundedImageCache>,
+    /// The width the workspace gives this list: the window minus the
+    /// sidebar. The column tiers read it instead of the window width, so
+    /// collapsing the rail widens the table the same frame.
+    content_width: f32,
 }
 
 impl EventEmitter<PageEvent> for TrackList {}
@@ -76,7 +80,23 @@ impl TrackList {
             library: services::AppServices::library(cx),
             player: services::AppServices::player(cx),
             image_cache: services::AppServices::image_cache(cx),
+            // Replaced with the real value before the first paint.
+            content_width: 0.,
         }
+    }
+
+    /// Takes the content width the workspace derived for this frame.
+    pub(super) fn set_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.content_width != width {
+            self.content_width = width;
+            cx.notify();
+        }
+    }
+
+    /// The content width the workspace last pushed, for other views that
+    /// key on the same space.
+    pub(super) fn content_width(&self) -> f32 {
+        self.content_width
     }
 
     /// Shows `listed` under `id`, which pages vary per playlist or album so
@@ -374,9 +394,9 @@ impl TrackList {
 }
 
 impl Render for TrackList {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let mut columns = track_table_columns(f32::from(window.viewport_size().width));
+        let mut columns = track_table_columns(self.content_width);
         // A context without dates never shows the column, however wide the
         // window: albums and search results have nothing to put in it.
         columns.date_added &= self.context.id.is_some();

@@ -126,6 +126,20 @@ pub(super) fn open_main_window(cx: &mut App) {
     }
 }
 
+/// The fixed sign-in window's size: the rail and the form column at their
+/// widest, plus the headroom between them, and the usual height.
+const ONBOARDING_WINDOW_WIDTH: f32 = onboarding::ONBOARDING_RAIL_WIDTH
+    + onboarding::ONBOARDING_FORM_MAX_WIDTH
+    + onboarding::ONBOARDING_FORM_HEADROOM;
+const ONBOARDING_WINDOW_HEIGHT: f32 = 720.;
+
+/// The width the sign-in window opens at, for tests that render it at its
+/// fixed size.
+#[cfg(test)]
+pub(super) fn onboarding_window_width() -> f32 {
+    ONBOARDING_WINDOW_WIDTH
+}
+
 /// Opens the fixed-size sign-in window, or brings the open one forward. The
 /// size fits the onboarding layout (420px rail + content) above the compact
 /// breakpoint; the window is not resizable, so that is the only layout.
@@ -159,7 +173,7 @@ pub(super) fn ensure_onboarding_window(cx: &mut App) {
 
 /// Centered over the main window when one is open, otherwise on the display.
 fn onboarding_bounds(cx: &mut App) -> Bounds<Pixels> {
-    let onboarding_size = size(px(1140.), px(720.));
+    let onboarding_size = size(px(ONBOARDING_WINDOW_WIDTH), px(ONBOARDING_WINDOW_HEIGHT));
     let main_bounds = services::AppServices::main_window(cx)
         .and_then(|handle| handle.update(cx, |_, window, _| window.bounds()).ok());
     match main_bounds {
@@ -479,5 +493,17 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    #[test]
+    fn sign_in_window_clears_the_rail_and_form_with_margin() {
+        // The window exceeds rail plus form maximum by the headroom, so the
+        // two never sum exactly to the window's width.
+        assert_eq!(
+            ONBOARDING_WINDOW_WIDTH,
+            onboarding::ONBOARDING_RAIL_WIDTH
+                + onboarding::ONBOARDING_FORM_MAX_WIDTH
+                + onboarding::ONBOARDING_FORM_HEADROOM
+        );
     }
 }

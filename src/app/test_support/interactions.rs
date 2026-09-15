@@ -1,5 +1,8 @@
-use super::test_support::{BackendProbe, initialize, settle, track, workspace};
-use crate::app::{NoticeSeverity, Route, Workspace, appearance, assets, onboarding, services};
+use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
+use crate::app::{
+    NoticeSeverity, Route, Workspace, appearance, assets, compact_progress_slider_width,
+    onboarding, services, windows,
+};
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
@@ -38,7 +41,7 @@ impl Fixture {
             Arc::new(assets::AppAssets),
         );
         let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
-        let (window, workspace) = workspace(&mut cx, 1280., 820.);
+        let (window, workspace) = workspace_collapsed(&mut cx, 1280., 820., false);
         if settings {
             cx.update(|cx| workspace.update(cx, |workspace, cx| workspace.open_settings(cx)));
         }
@@ -408,6 +411,75 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
     fixture.no_commands();
 }
 
+/// The window sizes and rail states the interface has to survive. Widths
+/// sit at the tier boundaries: the window minimum (720) and the
+/// compact-content breakpoint (960), each with the rail expanded and
+/// collapsed, plus the default 1280 window where the expanded rail's
+/// content clears the timeline floor and the full tier shows the slider.
+const MATRIX: [(f32, bool); 5] = [
+    (720., false),
+    (720., true),
+    (960., false),
+    (960., true),
+    (1280., false),
+];
+
+#[test]
+fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
+    for (width, collapsed) in MATRIX {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let backend = cx.update(|cx| initialize(cx, ThemePreference::Light));
+        let (window, workspace) = workspace_collapsed(&mut cx, width, 600., collapsed);
+        let rail = cx.update(|cx| workspace.read(cx).sidebar.read(cx).target_width());
+        let content = width - rail;
+        let mut fixture = Fixture {
+            cx,
+            window,
+            workspace: Some(workspace.downgrade()),
+            backend,
+        };
+        fixture.update(|window, _| {
+            // The timeline folds below the floor: no progress slider.
+            // At or above it the slider is on screen and takes what the
+            // content has left over.
+            let slider = window.try_find("progress-slider");
+            let timeline_expected = compact_progress_slider_width(content).is_some();
+            assert_eq!(
+                slider.is_some(),
+                timeline_expected,
+                "timeline at width {width}, rail collapsed: {collapsed}, content {content}"
+            );
+            // Transport keeps working wherever the timeline folded.
+            if slider.is_none() {
+                let play = window
+                    .try_find("play-toggle")
+                    .unwrap_or_else(|| panic!("no play button at width {width}"));
+                assert!(
+                    play.visible(),
+                    "play button hidden at width {width}, collapsed: {collapsed}"
+                );
+            }
+            // Nothing the bar shows may stick out of the window.
+            for id in ["play-toggle", "queue-toggle", "volume"] {
+                if let Some(control) = window.try_find(id) {
+                    let bounds = control.bounds();
+                    assert!(
+                        bounds.right() <= px(width) && bounds.left() >= px(0.),
+                        "{id} clips at width {width}: bounds {bounds:?}",
+                    );
+                }
+            }
+        });
+        fixture.no_commands();
+        // The entity handle goes before the context, or the leak detector
+        // reads it as a Workspace left alive across contexts.
+        drop(workspace);
+    }
+}
+
 #[test]
 fn mute_sends_volume_and_restores_the_previous_level() {
     let mut fixture = Fixture::new(false);
@@ -479,6 +551,56 @@ fn track_row_controls_announce_their_actions() {
         assert_eq!(
             window.find(("track-actions", 0usize)).label(),
             Some("More actions")
+        );
+    });
+    fixture.no_commands();
+}
+
+/// At the fixed sign-in window's size, the setup form keeps air between the
+/// rail and its own edges: the form column's widest layout plus the rail
+/// never reach the window's width.
+#[test]
+fn sign_in_forms_render_with_headroom_at_the_fixed_size() {
+    let mut cx = HeadlessAppContext::with_asset_source(
+        Arc::new(NoopTextSystem),
+        Arc::new(assets::AppAssets),
+    );
+    let backend = cx.update(|cx| {
+        let backend = initialize(cx, ThemePreference::Light);
+        services::AppServices::session(cx).update(cx, |session, cx| {
+            session.handle_backend_event(BackendEvent::SetupRequired, cx);
+        });
+        backend
+    });
+    let window_width = windows::onboarding_window_width();
+    let window = cx
+        .open_window(size(px(window_width), px(720.)), |window, cx| {
+            appearance::Appearance::attach(window, cx);
+            let onboarding = cx.new(|cx| onboarding::Onboarding::new(window, cx));
+            cx.new(|cx| Root::new(onboarding, window, cx))
+        })
+        .expect("setup window");
+    settle(&mut cx, window.into());
+    let mut fixture = Fixture {
+        cx,
+        window,
+        workspace: None,
+        backend,
+    };
+    fixture.update(|window, _| {
+        let form = window.find("client-id-input");
+        let bounds = form.bounds();
+        // The input sits inside the form column: a margin off the rail and
+        // off the window's edge on both sides means no edge-to-edge contact.
+        assert!(
+            bounds.left() >= px(onboarding::ONBOARDING_RAIL_WIDTH + 24.),
+            "form starts {:?} from the left; the rail must keep air before it",
+            bounds
+        );
+        assert!(
+            bounds.right() <= px(window_width - 24.),
+            "form ends {:?}; the window must keep air after it",
+            bounds
         );
     });
     fixture.no_commands();
@@ -731,4 +853,54 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
         command => panic!("unexpected command: {command:?}"),
     }
     fixture.no_commands();
+}
+
+/// Folding the rail on the running window re-derives the tiers without any
+/// resize: the sidebar observer pushes the new content width, and the bar
+/// follows it in the same frame. At 1280 the timeline stays through the
+/// fold (the content grows past the floor either way), and the compact
+/// player tier's slider width tracks the rail's share.
+#[test]
+fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
+    let mut fixture = Fixture::new(false);
+    // At 1280 with the rail expanded the full tier shows the timeline.
+    fixture.update(|window, _| {
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the full tier must show the timeline before the rail folds");
+        let expanded_slider = f32::from(slider.bounds().size.width);
+        assert!(
+            expanded_slider > 160.,
+            "expanded slider was {expanded_slider}"
+        );
+    });
+    fixture.update(|_, cx| {
+        fixture_workspace(cx).update(cx, |workspace, cx| {
+            workspace
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.set_collapsed(true, cx));
+        });
+    });
+    fixture.update(|window, _| {
+        // The rail's share went to the content: the slider grew with it.
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the timeline must survive the fold here");
+        let collapsed_slider = f32::from(slider.bounds().size.width);
+        assert_eq!(
+            collapsed_slider, 606.,
+            "the collapsed rail's slider must take the rail's share"
+        );
+        let play = window.find("play-toggle");
+        assert!(play.visible(), "the transport must survive the fold");
+    });
+    fixture.no_commands();
+}
+
+/// The fixture's workspace entity, through the weak handle the fixture
+/// holds.
+fn fixture_workspace(cx: &mut App) -> gpui_kit::Entity<Workspace> {
+    // The test keeps one workspace alive in this context; reach it through
+    // the services root the workspace registers at construction.
+    services::AppServices::root_workspace(cx).expect("fixture workspace")
 }
