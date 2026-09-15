@@ -419,6 +419,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::dismiss_overlay))
             .on_action(cx.listener(Self::toggle_playback))
+            .on_action(cx.listener(Self::seek_back))
+            .on_action(cx.listener(Self::seek_forward))
+            .on_action(cx.listener(Self::seek_start))
+            .on_action(cx.listener(Self::seek_end))
+            .on_action(cx.listener(Self::volume_up))
+            .on_action(cx.listener(Self::volume_down))
+            .on_action(cx.listener(Self::volume_mute))
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, window, cx| {
                     this.player.update(cx, |player, cx| {

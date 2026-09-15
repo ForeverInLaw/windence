@@ -5,7 +5,7 @@ use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     App, AppContext as _, HeadlessAppContext, KeyUpEvent, Keystroke, NoopTextSystem, WeakEntity,
-    Window, WindowHandle, px, size,
+    Window, WindowHandle, point, px, size,
 };
 use spotify_gpui_client::backend::{BackendCommand, BackendEvent};
 use spotify_gpui_client::model;
@@ -452,5 +452,188 @@ fn a_cached_library_from_a_superseded_account_is_dropped_without_setting_boot_re
         assert!(library.playlist_rows().is_empty());
         assert!(!library.reloading());
     });
+    fixture.no_commands();
+}
+
+#[test]
+fn tab_reaches_both_sliders_with_visible_focus() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // Walk tab from the initial root focus. The first stop to name
+    // "progress-slider" is the slider itself; however many of the bar's
+    // own buttons sit before it, tab order is stable, so the second step
+    // reaches the volume slider right after it.
+    let mut steps = 0;
+    let mut on_progress = false;
+    while steps < 40 {
+        steps += 1;
+        fixture.press("tab");
+        let reached = fixture.update(|window, _| {
+            window
+                .try_find("progress-slider")
+                .is_some_and(|slider| slider.focused() == Some(true))
+        });
+        if reached {
+            on_progress = true;
+            break;
+        }
+    }
+    assert!(on_progress, "tab never reached the progress slider");
+    assert_eq!(steps, 2, "the bar's first tab stop precedes the slider");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("volume-slider").focused(), Some(true));
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn progress_slider_keys_seek_at_documented_steps() {
+    let mut fixture = Fixture::new(false);
+    // track(0) is 240s long; the snapshot leaves playback at 60s.
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // Tab to the slider: the bar's first tab stop precedes it, so the
+    // second step lands on the slider itself.
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("progress-slider").focused(), Some(true));
+    });
+
+    // Left and Right step 5 seconds from wherever playback stands. The
+    // snapshot leaves playback at the track's start.
+    let seeked = |command| match command {
+        BackendCommand::Seek(position) => position,
+        other => panic!("expected a seek, got {other:?}"),
+    };
+    fixture.press("left");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        0,
+        "seeking back from the track start clamps to zero"
+    );
+    fixture.press("right");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        5_000
+    );
+    fixture.press("right");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        10_000
+    );
+    fixture.press("left");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        5_000
+    );
+
+    // Home and End jump to the track's bounds.
+    fixture.press("home");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        0
+    );
+    fixture.press("end");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        track(0).duration_ms
+    );
+    fixture.no_commands();
+}
+
+#[test]
+fn volume_slider_keys_step_and_mute() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
+    fixture.no_commands();
+
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("volume-slider").focused(), Some(true));
+    });
+
+    // Up and Down step 5 percent, clamped to the 0..=1 range. The player
+    // starts at the saved preference level, so Up clamps only at the top.
+    for _ in 0..20 {
+        fixture.press("up");
+    }
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 1.);
+    fixture.press("down");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.95);
+
+    // M mutes and restores, like the pointer control does.
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.95);
+    fixture.no_commands();
+
+    // The steps landed on the persisted level the restart reads back.
+    fixture.update(|_, cx| {
+        let player = services::AppServices::player(cx).read(cx);
+        assert_eq!(player.volume(), 0.95);
+    });
+    assert!(initial > 0. && initial <= 1.);
+}
+
+#[test]
+fn slider_keys_stay_dead_while_an_input_or_the_root_has_focus() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // With focus still on the root (no tab yet), the transport keys do
+    // nothing: space toggles playback, the slider keys stay dead.
+    fixture.press("space");
+    match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("playback command")
+    {
+        BackendCommand::Resume => {}
+        command => panic!("expected playback to toggle, got {command:?}"),
+    }
+    for key in ["left", "right", "home", "end", "up", "down", "m"] {
+        fixture.press(key);
+    }
+    fixture.no_commands();
+
+    // Focusing the search input must not hand it the slider keys either.
+    fixture.press(SECONDARY_K);
+    fixture.update(|window, _| {
+        assert_eq!(window.find("search-input").focused(), Some(true));
+    });
+    for key in ["left", "right", "home", "end", "up", "down", "m"] {
+        fixture.press(key);
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn clicking_inside_the_taller_progress_band_still_seeks() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // A click in the lower half of the 20px band, halfway along the track:
+    // the pointer math is unchanged, so this lands at half of 240s.
+    fixture.update(|window, cx| {
+        window.click_at("progress-slider", point(px(170.), px(15.)), cx);
+    });
+    match fixture.backend.commands.try_recv().expect("seek command") {
+        BackendCommand::Seek(position) => {
+            assert_eq!(position, 120_000, "a mid-band click must still seek");
+        }
+        command => panic!("unexpected command: {command:?}"),
+    }
     fixture.no_commands();
 }
