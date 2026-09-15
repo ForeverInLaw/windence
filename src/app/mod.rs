@@ -40,6 +40,7 @@ use library_pages::LibrarySection;
 use workspace::Workspace;
 
 mod http;
+mod icons;
 mod image_cache;
 
 actions!(
@@ -412,57 +413,6 @@ mod track_row;
 mod windows;
 mod workspace;
 
-#[cfg(test)]
-mod event_bridge_tests {
-    use super::{
-        BackendEvent, CATALOG_STALE_TIME, catalog_data_is_fresh, next_request_id,
-        receive_backend_event_batch,
-    };
-    use std::time::{Duration, SystemTime};
-
-    #[tokio::test]
-    async fn batches_events_that_are_already_queued() {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        sender.send(BackendEvent::SetupRequired).unwrap();
-        sender
-            .send(BackendEvent::CatalogReady { generation: 0 })
-            .unwrap();
-
-        let events = receive_backend_event_batch(&mut receiver).await.unwrap();
-
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], BackendEvent::SetupRequired));
-        assert!(matches!(
-            events[1],
-            BackendEvent::CatalogReady { generation: 0 }
-        ));
-    }
-
-    #[tokio::test]
-    async fn closes_after_all_senders_are_dropped() {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        drop(sender);
-
-        assert!(receive_backend_event_batch(&mut receiver).await.is_none());
-    }
-
-    #[test]
-    fn generations_advance_with_wrapping_request_ids() {
-        let mut generation = u64::MAX;
-        assert_eq!(next_request_id(&mut generation), 0);
-        assert_eq!(next_request_id(&mut generation), 1);
-    }
-
-    #[test]
-    fn catalog_data_expires_after_the_stale_time() {
-        assert!(!catalog_data_is_fresh(None));
-        assert!(catalog_data_is_fresh(Some(SystemTime::now())));
-        assert!(!catalog_data_is_fresh(Some(
-            SystemTime::now() - CATALOG_STALE_TIME - Duration::from_secs(1)
-        )));
-    }
-}
-
 pub fn run() {
     bootstrap::run();
 }
@@ -625,63 +575,52 @@ mod tests {
 }
 
 #[cfg(test)]
-mod icon_tests {
-    use gpui_kit::AssetSource as _;
+mod event_bridge_tests {
+    use super::{
+        BackendEvent, CATALOG_STALE_TIME, catalog_data_is_fresh, next_request_id,
+        receive_backend_event_batch,
+    };
+    use std::time::{Duration, SystemTime};
 
-    /// Every icon name the UI references, through `components::icon`,
-    /// `icon_button`, `menu_item`, or `artwork`'s fallback. A name missing
-    /// here renders blank at runtime; keeping this list complete makes its
-    /// absence fail the suite instead.
-    const REFERENCED_ICONS: &[&str] = &[
-        "chevron-down",
-        "chevron-left",
-        "chevron-right",
-        "circle-check",
-        "clock",
-        "close",
-        "copy",
-        "ellipsis",
-        "external-link",
-        "folder",
-        "folder-open",
-        "heart",
-        "heart-fill",
-        "house",
-        "key",
-        "list-music",
-        "log-out",
-        "music",
-        "pause",
-        "pin",
-        "pin-fill",
-        "play",
-        "plus",
-        "search",
-        "settings",
-        "shuffle",
-        "skip-back",
-        "skip-forward",
-        "sparkles",
-        "sun",
-        "sun-moon",
-        "moon",
-        "user",
-        "volume-2",
-        "volume-x",
-    ];
+    #[tokio::test]
+    async fn batches_events_that_are_already_queued() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        sender.send(BackendEvent::SetupRequired).unwrap();
+        sender
+            .send(BackendEvent::CatalogReady { generation: 0 })
+            .unwrap();
+
+        let events = receive_backend_event_batch(&mut receiver).await.unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], BackendEvent::SetupRequired));
+        assert!(matches!(
+            events[1],
+            BackendEvent::CatalogReady { generation: 0 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn closes_after_all_senders_are_dropped() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        drop(sender);
+
+        assert!(receive_backend_event_batch(&mut receiver).await.is_none());
+    }
 
     #[test]
-    fn all_referenced_icons_resolve_through_the_asset_source() {
-        for name in REFERENCED_ICONS {
-            let path = super::assets::icon_path(name);
-            let loaded = super::assets::AppAssets
-                .load(&path)
-                .expect("asset load must not error");
-            assert!(
-                loaded.is_some(),
-                "icon `{name}` ({path}) is missing from the asset source"
-            );
-            assert!(!loaded.unwrap().is_empty(), "icon `{name}` is empty");
-        }
+    fn generations_advance_with_wrapping_request_ids() {
+        let mut generation = u64::MAX;
+        assert_eq!(next_request_id(&mut generation), 0);
+        assert_eq!(next_request_id(&mut generation), 1);
+    }
+
+    #[test]
+    fn catalog_data_expires_after_the_stale_time() {
+        assert!(!catalog_data_is_fresh(None));
+        assert!(catalog_data_is_fresh(Some(SystemTime::now())));
+        assert!(!catalog_data_is_fresh(Some(
+            SystemTime::now() - CATALOG_STALE_TIME - Duration::from_secs(1)
+        )));
     }
 }

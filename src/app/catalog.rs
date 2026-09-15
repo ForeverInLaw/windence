@@ -1,5 +1,6 @@
 use super::*;
 
+use super::icons::CadenceIcon;
 use page::PageEvent;
 use track_list::{PlaylistList, TrackList};
 
@@ -534,7 +535,7 @@ impl ArtistPage {
                         album.artwork_url.as_deref(),
                         152.,
                         14.,
-                        "music",
+                        CadenceIcon::Music,
                     ))
                     .child(
                         div()
@@ -882,7 +883,11 @@ impl Render for PlaylistPage {
                         artwork_url.as_deref(),
                         176.,
                         28.,
-                        if is_dj { "bot" } else { "list-music" },
+                        if is_dj {
+                            CadenceIcon::Bot
+                        } else {
+                            CadenceIcon::ListMusic
+                        },
                     ))
                     .child(
                         div()
@@ -908,7 +913,7 @@ impl Render for PlaylistPage {
                                             components::icon_button(
                                                 palette,
                                                 "playlist-shuffle",
-                                                "shuffle",
+                                                CadenceIcon::Shuffle,
                                             )
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
@@ -926,7 +931,11 @@ impl Render for PlaylistPage {
                                             components::icon_button(
                                                 palette,
                                                 "playlist-save",
-                                                if saved { "circle-check" } else { "plus" },
+                                                if saved {
+                                                    CadenceIcon::CircleCheck
+                                                } else {
+                                                    CadenceIcon::Plus
+                                                },
                                             )
                                             .bg(rgb(if saved {
                                                 palette.selection
@@ -949,7 +958,11 @@ impl Render for PlaylistPage {
                                             components::icon_button(
                                                 palette,
                                                 "playlist-pin",
-                                                if pinned { "pin-fill" } else { "pin" },
+                                                if pinned {
+                                                    CadenceIcon::PinFill
+                                                } else {
+                                                    CadenceIcon::Pin
+                                                },
                                             )
                                             .bg(rgb(if pinned {
                                                 palette.selection
@@ -1030,7 +1043,7 @@ impl Render for ArtistPage {
                         artwork_url.as_deref(),
                         144.,
                         72.,
-                        "user",
+                        CadenceIcon::User,
                     ))
                     .child(
                         div()
@@ -1153,7 +1166,7 @@ impl Render for AlbumPage {
                         artwork_url.as_deref(),
                         176.,
                         28.,
-                        "music",
+                        CadenceIcon::Music,
                     ))
                     .child(
                         div()
@@ -1178,7 +1191,7 @@ impl Render for AlbumPage {
                                         components::icon_button(
                                             palette,
                                             "album-shuffle",
-                                            "shuffle",
+                                            CadenceIcon::Shuffle,
                                         )
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {

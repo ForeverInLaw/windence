@@ -1,5 +1,8 @@
 use super::*;
 
+use super::icons::CadenceIcon;
+use gpui_kit::component::IconNamed as _;
+
 /// Shared building blocks for Cadence views.
 ///
 /// These are free functions rather than methods so that every view entity can
@@ -119,7 +122,7 @@ pub(super) fn action_notice_banner(
             .text_color(rgb(palette.text_primary))
             .child(div().flex_1().child(message))
             .child(
-                icon_button(palette, "dismiss-action-notice", "close")
+                icon_button(palette, "dismiss-action-notice", CadenceIcon::Close)
                     .size(px(32.))
                     .on_click(on_dismiss),
             ),
@@ -127,11 +130,11 @@ pub(super) fn action_notice_banner(
     .into_any_element()
 }
 
-/// The icon every view draws with: `name` is an asset-set icon name
-/// (`search`, `skip-back`, ...), resolved through the app's asset source.
-pub(super) fn icon(name: &'static str, size: f32, color: u32) -> gpui_kit::component::Icon {
+/// The icon every view draws with: a bundle glyph resolved through the
+/// app's asset source.
+pub(super) fn icon(name: CadenceIcon, size: f32, color: u32) -> gpui_kit::component::Icon {
     gpui_kit::component::Icon::empty()
-        .path(super::assets::icon_path(name))
+        .path(name.path())
         .with_size(px(size))
         .text_color(rgb(color))
 }
@@ -172,7 +175,7 @@ pub(super) fn pill(
 pub(super) fn icon_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,
-    name: &'static str,
+    name: CadenceIcon,
 ) -> Stateful<Div> {
     icon_button_with(palette, id, name, 17.)
 }
@@ -180,7 +183,7 @@ pub(super) fn icon_button(
 pub(super) fn icon_button_with(
     palette: CadencePalette,
     id: impl Into<ElementId>,
-    name: &'static str,
+    name: CadenceIcon,
     size: f32,
 ) -> Stateful<Div> {
     button(palette, id)
@@ -207,7 +210,11 @@ pub(super) fn liked_heart(
         .flex_none()
         .rounded(px(LIKED_HEART_SIZE / 2.))
         .child(icon(
-            if liked { "heart-fill" } else { "heart" },
+            if liked {
+                CadenceIcon::HeartFill
+            } else {
+                CadenceIcon::Heart
+            },
             15.,
             if liked { palette.link } else { palette.text },
         ))
@@ -216,7 +223,7 @@ pub(super) fn liked_heart(
 pub(super) fn menu_item(
     palette: CadencePalette,
     id: impl Into<ElementId>,
-    name: &'static str,
+    name: CadenceIcon,
     label: &'static str,
     destructive: bool,
 ) -> Stateful<Div> {
@@ -326,7 +333,7 @@ pub(super) fn artwork(
     url: Option<&str>,
     size: f32,
     radius: f32,
-    fallback_icon: &'static str,
+    fallback_icon: CadenceIcon,
 ) -> gpui_kit::AnyElement {
     let frame = div()
         .size(px(size))

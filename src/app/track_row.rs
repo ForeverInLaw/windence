@@ -1,5 +1,6 @@
 use super::*;
 
+use super::icons::CadenceIcon;
 use gpui_kit::ClickEvent;
 use gpui_kit::TestSupportExt as _;
 
@@ -50,8 +51,8 @@ pub(super) fn track_list_header(
     let arrow = |direction| {
         components::icon(
             match direction {
-                model::ListSortDirection::Ascending => "arrow-up",
-                model::ListSortDirection::Descending => "arrow-down",
+                model::ListSortDirection::Ascending => CadenceIcon::ArrowUp,
+                model::ListSortDirection::Descending => CadenceIcon::ArrowDown,
             },
             11.,
             palette.text_primary,
@@ -342,7 +343,7 @@ impl RenderOnce for TrackRow {
                         self.track.artwork_url.as_deref(),
                         40.,
                         8.,
-                        "music",
+                        CadenceIcon::Music,
                     ))
                     .child(
                         // Cross-axis stretch (the default) hands each line a
@@ -434,7 +435,11 @@ impl RenderOnce for TrackRow {
                                     .invisible()
                                     .group_hover(row_group, |style| style.visible())
                             })
-                            .child(components::icon("ellipsis", 17., palette.text_primary))
+                            .child(components::icon(
+                                CadenceIcon::Ellipsis,
+                                17.,
+                                palette.text_primary,
+                            ))
                             .when_some(self.on_toggle_menu, |button, handler| {
                                 button.on_click(move |event, window, cx| {
                                     cx.stop_propagation();
@@ -515,9 +520,11 @@ impl RowEdges {
 /// what the sidebar's own section already shows.
 fn pin_marker(palette: CadencePalette, pinned: bool) -> Option<Div> {
     pinned.then(|| {
-        div()
-            .flex_none()
-            .child(components::icon("pin-fill", 15., palette.text_muted))
+        div().flex_none().child(components::icon(
+            CadenceIcon::PinFill,
+            15.,
+            palette.text_muted,
+        ))
     })
 }
 
@@ -597,7 +604,7 @@ impl RenderOnce for PlaylistRow {
             self.playlist.artwork_url.as_deref(),
             48.,
             10.,
-            "list-music",
+            CadenceIcon::ListMusic,
         ))
         .child(
             div()
@@ -709,9 +716,9 @@ impl RenderOnce for FolderRow {
                 .bg(rgb(palette.control))
                 .child(components::icon(
                     if self.expanded {
-                        "folder-open"
+                        CadenceIcon::FolderOpen
                     } else {
-                        "folder"
+                        CadenceIcon::Folder
                     },
                     22.,
                     palette.text_muted,
@@ -740,9 +747,9 @@ impl RenderOnce for FolderRow {
         .children(pin_marker(palette, pinned))
         .child(components::icon(
             if self.expanded {
-                "chevron-down"
+                CadenceIcon::ChevronDown
             } else {
-                "chevron-right"
+                CadenceIcon::ChevronRight
             },
             17.,
             palette.text_muted,

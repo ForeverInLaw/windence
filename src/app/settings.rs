@@ -1,5 +1,7 @@
 use super::*;
 
+use super::icons::CadenceIcon;
+
 /// What the settings page asks the workspace to do.
 pub(super) enum SettingsEvent {
     RequestAppChange,
@@ -59,21 +61,21 @@ impl Settings {
                                     .gap(px(4.))
                                     .child(self.appearance_option(
                                         "settings-appearance-system",
-                                        "sun-moon",
+                                        CadenceIcon::SunMoon,
                                         "System",
                                         ThemePreference::System,
                                         cx,
                                     ))
                                     .child(self.appearance_option(
                                         "settings-appearance-light",
-                                        "sun",
+                                        CadenceIcon::Sun,
                                         "Light",
                                         ThemePreference::Light,
                                         cx,
                                     ))
                                     .child(self.appearance_option(
                                         "settings-appearance-dark",
-                                        "moon",
+                                        CadenceIcon::Moon,
                                         "Dark",
                                         ThemePreference::Dark,
                                         cx,
@@ -185,7 +187,7 @@ impl Settings {
                                                             .justify_start()
                                                             .child(client_id)
                                                             .child(components::icon(
-                                                                "external-link",
+                                                                CadenceIcon::ExternalLink,
                                                                 11.,
                                                                 palette.link,
                                                             ))
@@ -263,7 +265,7 @@ impl Settings {
     fn appearance_option(
         &self,
         id: &'static str,
-        icon: &'static str,
+        icon: CadenceIcon,
         label: &'static str,
         preference: ThemePreference,
         cx: &mut Context<Self>,

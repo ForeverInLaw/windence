@@ -1,5 +1,7 @@
 use super::*;
 
+use super::icons::CadenceIcon;
+
 /// What the toolbar asks the workspace to do.
 pub(super) enum ToolbarEvent {
     QueryChanged(String),
@@ -103,7 +105,11 @@ impl Toolbar {
             .bg(rgb(palette.surface))
             .text_size(px(14.))
             .text_color(rgb(palette.text_muted))
-            .child(components::icon("search", 16., palette.text_muted))
+            .child(components::icon(
+                CadenceIcon::Search,
+                16.,
+                palette.text_muted,
+            ))
             .child(
                 Input::new(&self.search_input)
                     .id("search-input")
@@ -194,7 +200,7 @@ impl Toolbar {
                     components::menu_item(
                         palette,
                         "account-connect",
-                        "key",
+                        CadenceIcon::Key,
                         "Log in with Spotify",
                         false,
                     )
@@ -216,7 +222,7 @@ impl Toolbar {
                         components::menu_item(
                             palette,
                             "account-settings",
-                            "settings",
+                            CadenceIcon::Settings,
                             "Settings",
                             false,
                         )
@@ -228,13 +234,19 @@ impl Toolbar {
             )
             .when(self.session.read(cx).is_ready(), |menu| {
                 menu.child(
-                    components::menu_item(palette, "account-logout", "log-out", "Logout", true)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.menu_open = false;
-                            cx.emit(ToolbarEvent::Logout);
-                            cx.notify();
-                        })),
+                    components::menu_item(
+                        palette,
+                        "account-logout",
+                        CadenceIcon::LogOut,
+                        "Logout",
+                        true,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.menu_open = false;
+                        cx.emit(ToolbarEvent::Logout);
+                        cx.notify();
+                    })),
                 )
             })
     }
@@ -266,10 +278,16 @@ impl Render for Toolbar {
                     .gap(px(10.))
                     .when_some(self.back_target, |group, origin| {
                         group.child(
-                            components::icon_button(palette, "detail-back", "chevron-left")
-                                .on_click(cx.listener(move |_, _, _, cx| {
+                            components::icon_button(
+                                palette,
+                                "detail-back",
+                                CadenceIcon::ChevronLeft,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
                                     cx.emit(ToolbarEvent::Navigate(origin));
-                                })),
+                                },
+                            )),
                         )
                     })
                     .when(showing_settings, |group| {

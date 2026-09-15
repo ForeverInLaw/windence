@@ -20,7 +20,12 @@ http = "1"
 # its greeting and time-of-day shelves match the listener's clock. Already
 # in the graph through chrono's `clock` feature.
 iana-time-zone = "0.1"
+# The UI stack, packaged for crates.io: `gpui_kit::*` re-exports GPUI,
+# `gpui_kit::component` the component library, `gpui_kit::assets` its default
+# icon bundle (the fallback the app's asset source keeps for kit-internal
+# requests).
 gpui-kit = "0.6.1"
+rust-embed = "8"
 keyring = "4.1"
 # Same protobuf major the vendored librespot 0.8 speaks: we parse its raw
 # playlist/track messages (see proto_convert) instead of adapting to
@@ -36,7 +41,6 @@ oauth2 = { version = "5.0", default-features = false, features = ["reqwest", "na
 oauth2-reqwest = { package = "reqwest", version = "0.12", default-features = false, features = ["native-tls"] }
 open = "5.3"
 rspotify = { version = "0.16.0", default-features = false, features = ["client-reqwest", "reqwest-native-tls"] }
-# gpui-kit's HTTP client is built on this reqwest fork; sharing it keeps one build.
 reqwest = { package = "gpui-pre-reqwest", version = "0.12.15", default-features = false, features = ["rustls-tls", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -56,10 +60,17 @@ souvlaki = { version = "0.8.3", default-features = false }
 log = "0.4.33"
 file-rotate = "0.8.0"
 
+# gpui-kit's GPUI family (gpui-pre) tracks Zed's toolchain; keep in sync with
+# https://github.com/zed-industries/zed/blob/main/rust-toolchain.toml
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 souvlaki = { version = "0.8.3", default-features = false, features = ["use_dbus"] }
 
 [dev-dependencies]
+# Headless GPUI test dispatcher (`HeadlessAppContext`, `#[gpui_kit::test]`).
 gpui-kit = { version = "0.6.1", features = ["test-support"] }
 
 [build-dependencies]

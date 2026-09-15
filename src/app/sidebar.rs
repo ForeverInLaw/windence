@@ -1,5 +1,7 @@
 use super::*;
 
+use super::icons::CadenceIcon;
+
 /// Empty space above the brand row; also the height of the drag strips that
 /// surround the Windows traffic lights floating inside it.
 const SIDEBAR_TOP_PADDING: f32 = 52.;
@@ -177,7 +179,11 @@ impl Sidebar {
                 ..
             } => button
                 .child(components::icon(
-                    if expanded { "folder-open" } else { "folder" },
+                    if expanded {
+                        CadenceIcon::FolderOpen
+                    } else {
+                        CadenceIcon::Folder
+                    },
                     15.,
                     palette.text_muted,
                 ))
@@ -215,8 +221,8 @@ impl Sidebar {
         let nav_item = |id: &'static str,
                         fill_id: &'static str,
                         label: &'static str,
-                        icon: &'static str,
-                        selected_icon: &'static str,
+                        icon: CadenceIcon,
+                        selected_icon: CadenceIcon,
                         target: NavTarget,
                         cx: &mut Context<Self>| {
             let selected = match target {
@@ -334,7 +340,11 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(components::icon("chevron-left", 17., palette.text_primary))
+                    .child(components::icon(
+                        CadenceIcon::ChevronLeft,
+                        17.,
+                        palette.text_primary,
+                    ))
                     .with_animation(
                         ("sidebar-chevron", animation_id),
                         row_animation.clone(),
@@ -433,8 +443,8 @@ impl Sidebar {
                                         "nav-home",
                                         "nav-home-fill",
                                         "Home",
-                                        "house",
-                                        "house",
+                                        CadenceIcon::House,
+                                        CadenceIcon::House,
                                         NavTarget::Route(Route::Home),
                                         cx,
                                     ))
@@ -460,8 +470,8 @@ impl Sidebar {
                                         "nav-library",
                                         "nav-library-fill",
                                         "Liked Songs",
-                                        "heart",
-                                        "heart-fill",
+                                        CadenceIcon::Heart,
+                                        CadenceIcon::HeartFill,
                                         NavTarget::Route(Route::LikedSongs),
                                         cx,
                                     ))
@@ -469,8 +479,8 @@ impl Sidebar {
                                         "nav-playlist",
                                         "nav-playlist-fill",
                                         "Playlists",
-                                        "list-music",
-                                        "list-music",
+                                        CadenceIcon::ListMusic,
+                                        CadenceIcon::ListMusic,
                                         NavTarget::Route(Route::Playlists),
                                         cx,
                                     ))
@@ -478,8 +488,8 @@ impl Sidebar {
                                         "nav-recent",
                                         "nav-recent-fill",
                                         "Recently played",
-                                        "clock",
-                                        "clock",
+                                        CadenceIcon::Clock,
+                                        CadenceIcon::Clock,
                                         NavTarget::Route(Route::Recent),
                                         cx,
                                     ))
@@ -487,8 +497,8 @@ impl Sidebar {
                                         "nav-dj",
                                         "nav-dj-fill",
                                         dj::DISPLAY_NAME,
-                                        "bot",
-                                        "bot",
+                                        CadenceIcon::Bot,
+                                        CadenceIcon::Bot,
                                         NavTarget::DjX,
                                         cx,
                                     )),

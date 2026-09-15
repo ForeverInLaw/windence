@@ -1,5 +1,6 @@
 use super::*;
 
+use super::icons::CadenceIcon;
 use std::collections::HashMap;
 
 use gpui_kit::ScrollHandle;
@@ -186,7 +187,7 @@ impl HomePage {
             .unwrap_or_else(ScrollHandle::new);
         let has_more = shelf.uri.is_some() && shelf.next_offset.is_some();
         let loading_more = self.shelf_requests.contains_key(&index);
-        let arrow = |id: &'static str, icon: &'static str, direction: f32| {
+        let arrow = |id: &'static str, icon: CadenceIcon, direction: f32| {
             let scroll = scroll.clone();
             components::icon_button(palette, (id, index), icon).on_click(cx.listener(
                 move |_, _, _, cx| {
@@ -217,8 +218,8 @@ impl HomePage {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .child(arrow("home-shelf-back", "chevron-left", -1.))
-                    .child(arrow("home-shelf-forward", "chevron-right", 1.)),
+                    .child(arrow("home-shelf-back", CadenceIcon::ChevronLeft, -1.))
+                    .child(arrow("home-shelf-forward", CadenceIcon::ChevronRight, 1.)),
             );
         let row = div()
             .id(("home-shelf-row", index))
@@ -268,19 +269,19 @@ impl HomePage {
                     (None, None) => "Playlist".to_owned(),
                 },
                 8.,
-                "list-music",
+                CadenceIcon::ListMusic,
             ),
             model::HomeCardKind::Album => (
                 PageEvent::OpenAlbum(card.album()?),
                 card.owner.clone().unwrap_or_else(|| "Album".to_owned()),
                 8.,
-                "music",
+                CadenceIcon::Music,
             ),
             model::HomeCardKind::Artist => (
                 PageEvent::OpenArtist(card.artist()?),
                 "Artist".to_owned(),
                 ARTWORK_SIZE / 2.,
-                "user",
+                CadenceIcon::User,
             ),
             model::HomeCardKind::Other => return None,
         };
@@ -353,7 +354,8 @@ impl HomePage {
             .child(if loading {
                 Spinner::new().into_any_element()
             } else {
-                components::icon("chevron-right", 20., palette.text_primary).into_any_element()
+                components::icon(CadenceIcon::ChevronRight, 20., palette.text_primary)
+                    .into_any_element()
             })
             .child(if loading { "Loading…" } else { "Show more" })
             .when(!loading, |card| {

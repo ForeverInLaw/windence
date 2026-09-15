@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::TestSupportExt as _;
 
+use super::icons::CadenceIcon;
+
 pub(super) const SPOTIFY_DASHBOARD_URL: &str = "https://developer.spotify.com/dashboard";
 pub(super) const SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
 
@@ -426,7 +428,7 @@ impl Onboarding {
                                     .child(
                                         components::icon_button_with(appearance::Appearance::palette(cx),
                                             "copy-spotify-redirect",
-                                            "copy",
+                                            CadenceIcon::Copy,
                                             16.,
                                         )
                                             .size(px(36.))
