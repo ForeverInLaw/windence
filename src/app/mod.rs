@@ -92,12 +92,12 @@ impl CadencePalette {
         surface_hover: 0xF8F7F4,
         control: 0xF6F4EF,
         control_hover: 0xEAE6DD,
-        selection: 0xD8ECFC,
+        selection: 0xB3CFEC,
         text_primary: 0x171717,
         text: 0x494440,
         text_muted: 0x757373,
-        border: 0xE8E8E8,
-        focus_ring: 0x848281,
+        border: 0x8E8E8E,
+        focus_ring: 0x6E6C6B,
         danger: 0xEF4444,
         destructive: 0xB42318,
         on_destructive: 0xFFFFFF,
@@ -129,7 +129,7 @@ impl CadencePalette {
         text_primary: 0xF5F3EF,
         text: 0xD5D1CB,
         text_muted: 0xA09D99,
-        border: 0x414141,
+        border: 0x747474,
         focus_ring: 0xA8A5A1,
         danger: 0xF87171,
         destructive: 0xFF6961,
@@ -623,5 +623,158 @@ mod event_bridge_tests {
         assert!(!catalog_data_is_fresh(Some(
             SystemTime::now() - CATALOG_STALE_TIME - Duration::from_secs(1)
         )));
+    }
+}
+
+/// Contrast floors for the palette's structural colors, checked on every
+/// platform. The ratios use the WCAG 2.x formula: relative luminance from
+/// sRGB channels with the standard linearization, then the lighter value
+/// plus 0.05 over the darker value plus 0.05. The app's colors are opaque
+/// sRGB hex values and gpui does not gamma-correct them, so this plain
+/// channel model matches what the surfaces actually are.
+///
+/// A future palette edit that drops a structural color below its floor
+/// fails here instead of quietly reintroducing invisible structure.
+#[cfg(test)]
+mod palette_contrast_tests {
+    use super::CadencePalette;
+
+    /// Borders must separate a panel from the surface it sits on or in.
+    const BORDER_FLOOR: f64 = 2.5;
+    /// The focus ring must stay findable over anything it can encircle.
+    const FOCUS_RING_FLOOR: f64 = 3.0;
+    /// A selected fill must read as distinct from the canvas behind it.
+    const SELECTION_FLOOR: f64 = 1.35;
+    /// Danger keeps its distance from the selection fill so a red state is
+    /// never mistaken for an active one.
+    const DANGER_CLEARANCE_FLOOR: f64 = 2.0;
+
+    /// The linear component of one sRGB channel, as the WCAG 2.x spec
+    /// defines it.
+    fn srgb_channel(value: u32) -> f64 {
+        let c = f64::from(value) / 255.;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// Relative luminance of an 0xRRGGBB color.
+    fn relative_luminance(hex: u32) -> f64 {
+        let (r, g, b) = ((hex >> 16) & 0xFF, (hex >> 8) & 0xFF, hex & 0xFF);
+        0.2126 * srgb_channel(r) + 0.7152 * srgb_channel(g) + 0.0722 * srgb_channel(b)
+    }
+
+    /// WCAG 2.x contrast ratio between two 0xRRGGBB colors.
+    fn contrast_ratio(a: u32, b: u32) -> f64 {
+        let (l1, l2) = (relative_luminance(a), relative_luminance(b));
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn hex(color: u32) -> String {
+        format!("{color:06X}")
+    }
+
+    /// The helper itself, against published reference ratios. Without these
+    /// pins the threshold assertions below could pass vacuously.
+    #[test]
+    fn contrast_helper_matches_published_reference_ratios() {
+        assert_eq!(contrast_ratio(0xFFFFFF, 0x000000), 21.0);
+        assert_eq!(contrast_ratio(0x808080, 0x808080), 1.0);
+        // The published ratios are rounded to two decimals.
+        assert!((contrast_ratio(0xC0C0C0, 0xFFFFFF) - 1.82).abs() < 0.005);
+        assert!((contrast_ratio(0x767676, 0xFFFFFF) - 4.54).abs() < 0.005);
+        // Order of the two colors must not matter.
+        assert_eq!(
+            contrast_ratio(0x767676, 0xFFFFFF),
+            contrast_ratio(0xFFFFFF, 0x767676)
+        );
+    }
+
+    #[test]
+    fn borders_separate_from_every_adjacent_surface_in_both_themes() {
+        for (theme, palette) in [
+            ("light", CadencePalette::LIGHT),
+            ("dark", CadencePalette::DARK),
+        ] {
+            for (surface_name, surface) in [
+                ("canvas", palette.canvas),
+                ("surface", palette.surface),
+                ("surface_raised", palette.surface_raised),
+                ("control", palette.control),
+            ] {
+                assert!(
+                    contrast_ratio(palette.border, surface) >= BORDER_FLOOR,
+                    "{} theme border {} against {} {} is below the {} floor",
+                    theme,
+                    hex(palette.border),
+                    surface_name,
+                    hex(surface),
+                    BORDER_FLOOR
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn focus_ring_stays_visible_on_every_surface_in_both_themes() {
+        for (theme, palette) in [
+            ("light", CadencePalette::LIGHT),
+            ("dark", CadencePalette::DARK),
+        ] {
+            for (surface_name, surface) in [
+                ("canvas", palette.canvas),
+                ("surface", palette.surface),
+                ("surface_raised", palette.surface_raised),
+                ("control", palette.control),
+                ("selection", palette.selection),
+            ] {
+                assert!(
+                    contrast_ratio(palette.focus_ring, surface) >= FOCUS_RING_FLOOR,
+                    "{} theme focus ring {} against {} {} is below the {} floor",
+                    theme,
+                    hex(palette.focus_ring),
+                    surface_name,
+                    hex(surface),
+                    FOCUS_RING_FLOOR
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_reads_as_distinct_from_the_canvas_in_both_themes() {
+        for (theme, palette) in [
+            ("light", CadencePalette::LIGHT),
+            ("dark", CadencePalette::DARK),
+        ] {
+            assert!(
+                contrast_ratio(palette.selection, palette.canvas) >= SELECTION_FLOOR,
+                "{} theme selection {} against canvas {} is below the {} floor",
+                theme,
+                hex(palette.selection),
+                hex(palette.canvas),
+                SELECTION_FLOOR
+            );
+        }
+    }
+
+    #[test]
+    fn danger_keeps_clear_of_the_selection_fill_in_both_themes() {
+        for (theme, palette) in [
+            ("light", CadencePalette::LIGHT),
+            ("dark", CadencePalette::DARK),
+        ] {
+            assert!(
+                contrast_ratio(palette.danger, palette.selection) >= DANGER_CLEARANCE_FLOOR,
+                "{} theme danger {} against selection {} is below the {} floor",
+                theme,
+                hex(palette.danger),
+                hex(palette.selection),
+                DANGER_CLEARANCE_FLOOR
+            );
+        }
     }
 }
