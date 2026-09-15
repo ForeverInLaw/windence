@@ -1,5 +1,5 @@
-use super::test_support::{BackendProbe, initialize, settle, track, workspace};
-use crate::app::{Route, Workspace, appearance, assets, onboarding, services};
+use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
+use crate::app::{Route, Workspace, appearance, assets, compact_progress_slider_width, onboarding, services};
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
@@ -38,7 +38,7 @@ impl Fixture {
             Arc::new(assets::AppAssets),
         );
         let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
-        let (window, workspace) = workspace(&mut cx, 1280., 820.);
+        let (window, workspace) = workspace_collapsed(&mut cx, 1280., 820., false);
         if settings {
             cx.update(|cx| workspace.update(cx, |workspace, cx| workspace.open_settings(cx)));
         }
@@ -406,6 +406,77 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
         command => panic!("unexpected command: {command:?}"),
     }
     fixture.no_commands();
+}
+
+/// The window sizes and rail states the interface has to survive. Widths
+/// sit at the tier boundaries: the window minimum (720) and the
+/// compact-content breakpoint (960), each with the rail expanded and
+/// collapsed, plus the default 1280 window where the expanded rail's
+/// content clears the timeline floor and the full tier shows the slider.
+const MATRIX: [(f32, bool); 5] = [
+    (720., false),
+    (720., true),
+    (960., false),
+    (960., true),
+    (1280., false),
+];
+
+#[test]
+fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
+    for (width, collapsed) in MATRIX {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let backend = cx.update(|cx| initialize(cx, ThemePreference::Light));
+        let (window, workspace) = workspace_collapsed(&mut cx, width, 600., collapsed);
+        let rail = cx.update(|cx| {
+            workspace.read(cx).sidebar.read(cx).target_width()
+        });
+        let content = width - rail;
+        let mut fixture = Fixture {
+            cx,
+            window,
+            workspace: Some(workspace.downgrade()),
+            backend,
+        };
+        fixture.update(|window, _| {
+            // The timeline folds below the floor: no progress slider.
+            // At or above it the slider is on screen and takes what the
+            // content has left over.
+            let slider = window.try_find("progress-slider");
+            let timeline_expected = compact_progress_slider_width(content).is_some();
+            assert_eq!(
+                slider.is_some(),
+                timeline_expected,
+                "timeline at width {width}, rail collapsed: {collapsed}, content {content}"
+            );
+            // Transport keeps working wherever the timeline folded.
+            if slider.is_none() {
+                let play = window
+                    .try_find("play-toggle")
+                    .unwrap_or_else(|| panic!("no play button at width {width}"));
+                assert!(
+                    play.visible(),
+                    "play button hidden at width {width}, collapsed: {collapsed}"
+                );
+            }
+            // Nothing the bar shows may stick out of the window.
+            for id in ["play-toggle", "queue-toggle", "volume"] {
+                if let Some(control) = window.try_find(id) {
+                    let bounds = control.bounds();
+                    assert!(
+                        bounds.right() <= px(width) && bounds.left() >= px(0.),
+                        "{id} clips at width {width}: bounds {bounds:?}",
+                    );
+                }
+            }
+        });
+        fixture.no_commands();
+        // The entity handle goes before the context, or the leak detector
+        // reads it as a Workspace left alive across contexts.
+        drop(workspace);
+    }
 }
 
 #[test]

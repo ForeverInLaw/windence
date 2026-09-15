@@ -321,12 +321,15 @@ const PLAYER_BAR_PADDING: f32 = 24.;
 /// The player bar's gap between its three clusters.
 const PLAYER_BAR_GAP: f32 = 24.;
 /// What the compact player bar fixes across all its parts: its paddings,
-/// the gap between the three clusters, the like heart, and the compact
-/// transport cluster. The compact slider takes what the content leaves.
+/// the gap between the three clusters, the whole compact left cluster
+/// (artwork, title, heart), the transport cluster, and the compact right
+/// cluster (queue and volume). The compact slider takes what the content
+/// leaves.
 const COMPACT_BAR_FIXED_WIDTH: f32 = 2. * PLAYER_BAR_PADDING
     + 2. * PLAYER_BAR_GAP
-    + components::LIKED_HEART_SIZE
-    + TRANSPORT_CLUSTER_WIDTH;
+    + COMPACT_PLAYER_LEFT_WIDTH
+    + TRANSPORT_CLUSTER_WIDTH
+    + COMPACT_PLAYER_RIGHT_WIDTH;
 /// The least the compact centre needs for the timeline to be worth
 /// showing: the slider plus the two time labels and their gaps.
 const PLAYER_CENTER_MIN_WIDTH: f32 =
