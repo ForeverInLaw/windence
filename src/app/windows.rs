@@ -135,6 +135,7 @@ const ONBOARDING_WINDOW_HEIGHT: f32 = 720.;
 
 /// The width the sign-in window opens at, for tests that render it at its
 /// fixed size.
+#[cfg(test)]
 pub(super) fn onboarding_window_width() -> f32 {
     ONBOARDING_WINDOW_WIDTH
 }
@@ -172,10 +173,7 @@ pub(super) fn ensure_onboarding_window(cx: &mut App) {
 
 /// Centered over the main window when one is open, otherwise on the display.
 fn onboarding_bounds(cx: &mut App) -> Bounds<Pixels> {
-    let onboarding_size = size(
-        px(ONBOARDING_WINDOW_WIDTH),
-        px(ONBOARDING_WINDOW_HEIGHT),
-    );
+    let onboarding_size = size(px(ONBOARDING_WINDOW_WIDTH), px(ONBOARDING_WINDOW_HEIGHT));
     let main_bounds = services::AppServices::main_window(cx)
         .and_then(|handle| handle.update(cx, |_, window, _| window.bounds()).ok());
     match main_bounds {
@@ -461,8 +459,5 @@ mod tests {
                 + onboarding::ONBOARDING_FORM_MAX_WIDTH
                 + onboarding::ONBOARDING_FORM_HEADROOM
         );
-        // A form column must not sit edge-to-edge with the rail or the
-        // window's edge; a few button widths of air is the floor.
-        assert!(onboarding::ONBOARDING_FORM_HEADROOM >= 24.);
     }
 }

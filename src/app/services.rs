@@ -324,7 +324,10 @@ impl AppServices {
     /// drive the window's composition directly.
     #[cfg(test)]
     pub(super) fn root_workspace(cx: &App) -> Option<gpui_kit::Entity<Workspace>> {
-        cx.global::<Self>().root.clone().and_then(|root| root.upgrade())
+        cx.global::<Self>()
+            .root
+            .clone()
+            .and_then(|root| root.upgrade())
     }
 
     pub(super) fn main_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {

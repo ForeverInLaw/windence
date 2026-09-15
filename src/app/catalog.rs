@@ -485,9 +485,7 @@ impl ArtistPage {
         albums: Arc<[model::Album]>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let columns = if uses_compact_content_layout(
-            self.track_list.read(cx).content_width(),
-        ) {
+        let columns = if uses_compact_content_layout(self.track_list.read(cx).content_width()) {
             3
         } else {
             4

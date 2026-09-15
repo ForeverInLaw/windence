@@ -357,10 +357,7 @@ fn compact_progress_slider_width(content_width: f32) -> Option<f32> {
 /// answer stable while the rail is collapsed: the tier arms for the next
 /// expansion instead of flip-flopping with the rail's current width.
 fn sidebar_wants_compact_layout(window_width: f32) -> bool {
-    uses_compact_content_layout(content_width(
-        window_width,
-        expanded_sidebar_width(false),
-    ))
+    uses_compact_content_layout(content_width(window_width, expanded_sidebar_width(false)))
 }
 
 /// The sidebar's expanded width: the compact one when the window's content

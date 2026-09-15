@@ -433,9 +433,7 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
         );
         let backend = cx.update(|cx| initialize(cx, ThemePreference::Light));
         let (window, workspace) = workspace_collapsed(&mut cx, width, 600., collapsed);
-        let rail = cx.update(|cx| {
-            workspace.read(cx).sidebar.read(cx).target_width()
-        });
+        let rail = cx.update(|cx| workspace.read(cx).sidebar.read(cx).target_width());
         let content = width - rail;
         let mut fixture = Fixture {
             cx,
@@ -593,7 +591,10 @@ fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
             .try_find("progress-slider")
             .expect("the full tier must show the timeline before the rail folds");
         let expanded_slider = f32::from(slider.bounds().size.width);
-        assert!(expanded_slider > 160., "expanded slider was {expanded_slider}");
+        assert!(
+            expanded_slider > 160.,
+            "expanded slider was {expanded_slider}"
+        );
     });
     fixture.update(|_, cx| {
         fixture_workspace(cx).update(cx, |workspace, cx| {

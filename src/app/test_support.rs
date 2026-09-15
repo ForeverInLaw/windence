@@ -88,14 +88,6 @@ pub(super) fn ready(cx: &mut App) {
     });
 }
 
-pub(super) fn workspace(
-    cx: &mut HeadlessAppContext,
-    width: f32,
-    height: f32,
-) -> (WindowHandle<Root>, Entity<Workspace>) {
-    workspace_collapsed(cx, width, height, false)
-}
-
 /// A workspace at a fixed window size, with the sidebar collapsed or not
 /// from the start (the way the saved preference opens it). Rendering it
 /// before returning means the first snapshot already carries the layout
