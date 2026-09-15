@@ -328,25 +328,24 @@ impl AppServices {
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     pub(super) fn attach_media_controls(handle: gpui::AnyWindowHandle, cx: &mut App) {
         if cx.global::<Self>().media_controls.is_some() {
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let player = Self::player(cx);
-            match handle.update(cx, |_, window, cx| {
-                media_controls::SystemMediaControls::attach_to_window(player, window, cx)
-            }) {
-                Ok(Some(mut controls)) => {
-                    // Playback runs on without a window, so state may have
-                    // piled up while none existed; push it now rather than
-                    // waiting for the next player tick.
-                    controls.sync(Self::player(cx).read(cx));
-                    let services = cx.global_mut::<Self>();
-                    services.media_controls = Some(controls);
-                    services.media_controls_window = Some(handle);
+            #[cfg(target_os = "windows")]
+            {
+                let player = Self::player(cx);
+                match handle.update(cx, |_, window, cx| {
+                    media_controls::SystemMediaControls::attach_to_window(player, window, cx)
+                }) {
+                    Ok(Some(mut controls)) => {
+                        // Playback runs on without a window, so state may have
+                        // piled up while none existed; push it now rather than
+                        // waiting for the next player tick.
+                        controls.sync(Self::player(cx).read(cx));
+                        let services = cx.global_mut::<Self>();
+                        services.media_controls = Some(controls);
+                        services.media_controls_window = Some(handle);
+                    }
+                    Ok(None) => log::warn!("system media controls unavailable"),
+                    Err(error) => log::warn!("system media controls unavailable: {error}"),
                 }
-                Ok(None) => log::warn!("system media controls unavailable"),
-                Err(error) => log::warn!("system media controls unavailable: {error}"),
             }
         }
     }
