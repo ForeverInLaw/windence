@@ -400,19 +400,19 @@ impl RenderOnce for TrackRow {
                         "Add to Liked Songs"
                     },
                 )
-                    .test_support()
-                    // Reachable on the row under the pointer and nowhere
-                    // else: the column keeps its width so the ones beside
-                    // it do not shift, but stays empty until then.
-                    .invisible()
-                    .group_hover(row_group.clone(), |style| style.visible())
-                    .hover(|style| style.bg(rgb(palette.control)))
-                    .when_some(self.on_liked, |button, handler| {
-                        button.on_click(move |event, window, cx| {
-                            cx.stop_propagation();
-                            handler(event, window, cx);
-                        })
-                    }),
+                .test_support()
+                // Reachable on the row under the pointer and nowhere
+                // else: the column keeps its width so the ones beside
+                // it do not shift, but stays empty until then.
+                .invisible()
+                .group_hover(row_group.clone(), |style| style.visible())
+                .hover(|style| style.bg(rgb(palette.control)))
+                .when_some(self.on_liked, |button, handler| {
+                    button.on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    })
+                }),
             )
             .child(
                 div()

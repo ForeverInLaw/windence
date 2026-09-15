@@ -969,11 +969,7 @@ impl Render for PlaylistPage {
                                                 } else {
                                                     CadenceIcon::Pin
                                                 },
-                                                if pinned {
-                                                    "Unpin playlist"
-                                                } else {
-                                                    "Pin"
-                                                },
+                                                if pinned { "Unpin playlist" } else { "Pin" },
                                             )
                                             .bg(rgb(if pinned {
                                                 palette.selection

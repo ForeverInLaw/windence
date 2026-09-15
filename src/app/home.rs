@@ -187,10 +187,7 @@ impl HomePage {
             .unwrap_or_else(ScrollHandle::new);
         let has_more = shelf.uri.is_some() && shelf.next_offset.is_some();
         let loading_more = self.shelf_requests.contains_key(&index);
-        let arrow = |id: &'static str,
-                     icon: CadenceIcon,
-                     direction: f32,
-                     label: &'static str| {
+        let arrow = |id: &'static str, icon: CadenceIcon, direction: f32, label: &'static str| {
             let scroll = scroll.clone();
             components::icon_button(palette, (id, index), icon, label).on_click(cx.listener(
                 move |_, _, _, cx| {

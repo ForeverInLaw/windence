@@ -301,9 +301,11 @@ impl PlayerBar {
                                     "Previous track",
                                 )
                                 .test_support()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.player.update(cx, |player, cx| player.previous(cx));
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.player.update(cx, |player, cx| player.previous(cx));
+                                    },
+                                )),
                             )
                             .child(
                                 components::button(palette, "play-toggle")
@@ -338,9 +340,11 @@ impl PlayerBar {
                                     "Next track",
                                 )
                                 .test_support()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.player.update(cx, |player, cx| player.next(cx));
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.player.update(cx, |player, cx| player.next(cx));
+                                    },
+                                )),
                             ),
                     )
                     .child(
@@ -511,16 +515,16 @@ impl PlayerBar {
                 "Add to Liked Songs"
             },
         )
-            .when(track.is_none(), |button| button.opacity(0.5))
-            .when_some(track, |button, track| {
-                button
-                    .hover(|style| style.bg(rgb(palette.control)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.library.update(cx, |library, cx| {
-                            library.set_liked(track.clone(), !liked, cx)
-                        });
-                    }))
-            })
+        .when(track.is_none(), |button| button.opacity(0.5))
+        .when_some(track, |button, track| {
+            button
+                .hover(|style| style.bg(rgb(palette.control)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.library.update(cx, |library, cx| {
+                        library.set_liked(track.clone(), !liked, cx)
+                    });
+                }))
+        })
     }
 }
 
