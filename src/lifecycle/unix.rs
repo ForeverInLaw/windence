@@ -31,6 +31,12 @@ pub struct InstanceLifecycle {
 impl InstanceLifecycle {
     /// An activation channel with no listener behind it: the UI tests own no
     /// second instance, so nothing ever sends through it.
+    ///
+    /// Test-only seam. The headless harness and the isolated services live
+    /// in the bin's `app` module, which a lib-side `#[cfg(test)]` cannot
+    /// see — the lib is built without test configuration as the bin's
+    /// dependency — so this stays public and relies on that module for
+    /// every call.
     pub fn isolated() -> Arc<Self> {
         let (_, activations) = async_channel::bounded(1);
         Arc::new(Self {

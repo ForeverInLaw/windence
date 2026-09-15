@@ -89,7 +89,15 @@ impl Router {
     }
 
     pub(super) fn open_settings(&mut self) {
-        self.settings_origin = self.back_target().unwrap_or(self.route);
+        // The trail Settings is opened past: a detail route hands over where
+        // it came from, so Settings returns beyond it. When that trail
+        // already points back at Settings itself, keeping the way back
+        // Settings already had is what straightens it — pointing Settings
+        // at itself would circle.
+        let origin = self.back_target().unwrap_or(self.route);
+        if origin != Route::Settings {
+            self.set_origin(Route::Settings, origin);
+        }
         self.route = Route::Settings;
     }
 
@@ -206,6 +214,21 @@ mod tests {
 
         router.navigate(Route::LikedSongs);
         router.open_settings();
+        router.open_settings();
+
+        assert_eq!(router.back_target(), Some(Route::LikedSongs));
+    }
+
+    #[test]
+    fn settings_opened_from_a_page_whose_origin_is_settings_straightens_the_trail() {
+        let mut router = Router::new();
+
+        // A detail trail that already points back at Settings: reopening
+        // Settings takes over where that trail used to lead, so the way
+        // back stays a line instead of circling through the detail page.
+        router.navigate(Route::LikedSongs);
+        router.open_settings();
+        router.open_album(Route::Settings, true);
         router.open_settings();
 
         assert_eq!(router.back_target(), Some(Route::LikedSongs));

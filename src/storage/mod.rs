@@ -136,6 +136,12 @@ impl Store {
     }
 
     /// An in-memory store, for tests that do not want to touch the disk.
+    ///
+    /// Test-only seam. The callers that need it from the UI side live in
+    /// the bin's `app` module, which a lib-side `#[cfg(test)]` cannot see —
+    /// the lib is built without test configuration as the bin's dependency
+    /// — so this stays public and relies on those modules for every call
+    /// outside this crate's own tests.
     pub fn in_memory() -> Result<Self> {
         let connection = Connection::open_in_memory()?;
         let store = Self { connection };

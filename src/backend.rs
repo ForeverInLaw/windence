@@ -614,6 +614,12 @@ impl Backend {
     /// reads them, volume starts at the default level, and the shutdown
     /// watch stays untouched. The UI-side handle answers through the same
     /// senders the real worker would drain, so services see no difference.
+    ///
+    /// Test-only seam. The headless harness and the isolated services live
+    /// in the bin's `app` module, which a lib-side `#[cfg(test)]` cannot
+    /// see — the lib is built without test configuration as the bin's
+    /// dependency — so this stays public and relies on that module for
+    /// every call.
     pub fn isolated() -> (
         Self,
         tokio::sync::mpsc::Receiver<BackendCommand>,
@@ -2291,31 +2297,40 @@ impl Worker {
                 self.refresh_library_order(true);
                 self.watch_pins();
                 self.watch_connection_id();
-                // A click made while the session was opening starts before
-                // anything saved gets restored.
-                if let Some(request) = self.connection.pending_play.take() {
-                    if let Err(error) = self
-                        .play_context(
-                            request.tracks,
-                            request.index,
-                            request.shuffled,
-                            request.kind,
-                        )
-                        .await
-                    {
-                        send_error(&self.events, error);
-                    }
-                } else if self.connection.connect_restoring {
-                    let _ = self.events.send(BackendEvent::PlaybackReconnected);
-                } else if let Err(error) = restore_saved_playback(
-                    &self.connection.player,
-                    &self.queue.shuffle,
-                    &self.queue.tracks,
-                    self.queue.index,
-                    self.queue.position_ms,
-                    &self.events,
+                match connect_settlement(
+                    self.connection.pending_play.take(),
+                    self.connection.connect_restoring,
                 ) {
-                    send_error(&self.events, error);
+                    ConnectSettlement::ReplayHeld(request) => {
+                        // A click made while the session was opening starts
+                        // before anything saved gets restored.
+                        if let Err(error) = self
+                            .play_context(
+                                request.tracks,
+                                request.index,
+                                request.shuffled,
+                                request.kind,
+                            )
+                            .await
+                        {
+                            send_error(&self.events, error);
+                        }
+                    }
+                    ConnectSettlement::Reconnected => {
+                        let _ = self.events.send(BackendEvent::PlaybackReconnected);
+                    }
+                    ConnectSettlement::Restore => {
+                        if let Err(error) = restore_saved_playback(
+                            &self.connection.player,
+                            &self.queue.shuffle,
+                            &self.queue.tracks,
+                            self.queue.index,
+                            self.queue.position_ms,
+                            &self.events,
+                        ) {
+                            send_error(&self.events, error);
+                        }
+                    }
                 }
             }
             Some(Ok(Err(error))) => {
@@ -3616,6 +3631,29 @@ struct PendingPlay {
     kind: ContextKind,
 }
 
+/// What a finished connect does to playback. ReplayHeld wins over both
+/// restore and the reconnect note: the listener's held play starts before
+/// any saved playback is put back on the speaker.
+enum ConnectSettlement {
+    ReplayHeld(PendingPlay),
+    Reconnected,
+    Restore,
+}
+
+/// Decides the settlement from what a connect came to replace. A held play
+/// always replays; the note left by the attempt that was replacing a
+/// dropped session asks for the reconnect announcement; otherwise the
+/// saved playback is restored.
+fn connect_settlement(pending: Option<PendingPlay>, connect_restoring: bool) -> ConnectSettlement {
+    if let Some(request) = pending {
+        ConnectSettlement::ReplayHeld(request)
+    } else if connect_restoring {
+        ConnectSettlement::Reconnected
+    } else {
+        ConnectSettlement::Restore
+    }
+}
+
 /// The live Spotify playback session and the tasks that keep it alive.
 #[derive(Default)]
 struct PlaybackConnection {
@@ -3658,6 +3696,11 @@ impl PlaybackConnection {
     /// Whether a connect or reconnect attempt is in flight and no session
     /// exists yet: the window in which a play has to be held rather than
     /// dropped.
+    ///
+    /// A Play issued while a reconnect attempt is in flight lands in the
+    /// same held slot, and a failed reconnect reports it as failed through
+    /// `fail_pending_play`: "the connection itself failed" covers a failed
+    /// recovery attempt, matching upstream's cadence semantics.
     fn is_connecting(&self) -> bool {
         self.player.is_none() && (self.connect.is_some() || self.reconnect.is_some())
     }
@@ -4074,6 +4117,17 @@ enum ProbedLibrary {
     },
 }
 
+/// Whether Spotify's head probes match the fingerprint the boot serve left
+/// behind: the one case the probe may answer Unchanged, standing on the
+/// cache boot committed beside that fingerprint.
+fn classify_heads(current: &LibraryFingerprint, fingerprint: &SharedFingerprint) -> bool {
+    fingerprint
+        .lock()
+        .expect("library fingerprint lock")
+        .as_ref()
+        == Some(current)
+}
+
 /// Probes the first pages first: when they and the totals match the last
 /// reload, the answer is two requests instead of a full paginated walk.
 async fn probe_and_load_library(
@@ -4083,12 +4137,7 @@ async fn probe_and_load_library(
     let (liked, playlists) =
         tokio::try_join!(spotify.liked_tracks_head(), spotify.playlists_head())?;
     let current = LibraryFingerprint::new(&liked, &playlists);
-    let unchanged = fingerprint
-        .lock()
-        .expect("library fingerprint lock")
-        .as_ref()
-        == Some(&current);
-    if unchanged {
+    if classify_heads(&current, fingerprint) {
         return Ok(ProbedLibrary::Unchanged);
     }
     let contents = load_library(spotify).await?;
@@ -4189,19 +4238,11 @@ fn spawn_library_load(
             }
         };
         let library_load = async {
-            // Seed the probe with the fingerprint boot committed beside the
-            // served cache: when Spotify still matches it, revalidation
-            // answers from the head probes alone. A fresh database or an
-            // implausible cache was left unseeded by boot, so the probe
-            // fetches as before.
-            match store.saved_library_fingerprint().await {
-                Ok(Some(saved)) => commit_fingerprint(&fingerprint, saved),
-                Ok(None) => clear_fingerprint(&fingerprint),
-                Err(error) => {
-                    send_error(&events, error);
-                    clear_fingerprint(&fingerprint);
-                }
-            };
+            // The probe reads the fingerprint exactly as boot's serve left
+            // it: only a fingerprint boot committed beside a served cache
+            // can answer Unchanged, and every serve outcome that forbids
+            // one (fresh database, missing cache, store error) cleared it,
+            // so the probe fetches as before.
             let library = tokio::time::timeout(
                 Duration::from_secs(60),
                 probe_and_load_library(&spotify, &fingerprint),
@@ -4608,9 +4649,10 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendCommand, BackendEvent, BlockingStore, LibraryContents, PIN_WRITE_SETTLE, Pins,
-        PlayQueue, PlaybackConnection, SharedFingerprint, ShuffleState, boot_cache_is_plausible,
-        build_radio_context, commit_fingerprint, injected_flags, next_injection_seed, send_command,
+        BackendCommand, BackendEvent, BlockingStore, ConnectSettlement, LibraryContents,
+        PIN_WRITE_SETTLE, PendingPlay, Pins, PlayQueue, PlaybackConnection, SharedFingerprint,
+        ShuffleState, boot_cache_is_plausible, build_radio_context, classify_heads,
+        commit_fingerprint, connect_settlement, injected_flags, next_injection_seed, send_command,
         serve_cached_library, settled_base,
     };
     use crate::model::{ListedTrack, Playlist, Provider, Track};
@@ -5085,6 +5127,89 @@ mod tests {
         // One side carries contents and the saved total for it is zero:
         // still plausible, the cache is what is served.
         assert!(boot_cache_is_plausible(&fingerprint(0, 0), &cache(1, 0)));
+    }
+
+    #[tokio::test]
+    async fn boot_with_a_tampered_database_leaves_the_probe_to_fetch() {
+        // The fingerprint alone vouches for a cache that was never written:
+        // serve refuses to paint and clears the fingerprint. The load seeds
+        // its probe from the fingerprint serve left behind — the shared
+        // one, cleared here — so the persisted fingerprint cannot re-enter
+        // and the probe fetches rather than answering Unchanged.
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        store
+            .call(|store| store.replace_library_cache(&[], &[], &fingerprint(4, 1)))
+            .await
+            .unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let probing: SharedFingerprint = Default::default();
+
+        serve_cached_library(&store, &probing, &events, 0).await;
+
+        assert!(received.try_recv().is_err());
+        // The load will not resurrect the fingerprint: the shared one serve
+        // cleared stays cleared even though the store still holds a saved
+        // fingerprint for this generation's account.
+        assert_eq!(*probing.lock().expect("library fingerprint lock"), None);
+        assert_ne!(
+            store.saved_library_fingerprint().await.unwrap(),
+            None,
+            "the store-side fingerprint is what makes this a tampered database"
+        );
+    }
+
+    #[test]
+    fn classification_answers_unchanged_only_for_matching_committed_heads() {
+        // A fingerprint boot committed beside the served cache: the probe
+        // would answer Unchanged without replacing the on-screen contents.
+        let shared: SharedFingerprint = Default::default();
+        commit_fingerprint(&shared, fingerprint(4, 1));
+        assert!(classify_heads(&fingerprint(4, 1), &shared));
+
+        // Mismatched heads: the probe must fetch.
+        assert!(!classify_heads(&fingerprint(2, 2), &shared));
+
+        // Nothing committed: the probe must fetch, however plausible the
+        // heads look on their own.
+        let empty: SharedFingerprint = Default::default();
+        assert!(!classify_heads(&fingerprint(4, 1), &empty));
+    }
+
+    #[test]
+    fn a_held_play_wins_over_the_reconnect_note_and_the_restore() {
+        let settlement = connect_settlement(
+            Some(PendingPlay {
+                tracks: vec![track()],
+                index: 0,
+                shuffled: false,
+                kind: ContextKind::Collection,
+            }),
+            true,
+        );
+        assert!(matches!(
+            settlement,
+            ConnectSettlement::ReplayHeld(PendingPlay { index: 0, .. })
+        ));
+
+        let settlement = connect_settlement(
+            Some(PendingPlay {
+                tracks: vec![track()],
+                index: 0,
+                shuffled: false,
+                kind: ContextKind::Collection,
+            }),
+            false,
+        );
+        assert!(matches!(settlement, ConnectSettlement::ReplayHeld(_)));
+    }
+
+    #[test]
+    fn the_reconnect_note_wins_over_the_restore() {
+        let settlement = connect_settlement(None, true);
+        assert!(matches!(settlement, ConnectSettlement::Reconnected));
+
+        let settlement = connect_settlement(None, false);
+        assert!(matches!(settlement, ConnectSettlement::Restore));
     }
 
     #[tokio::test]

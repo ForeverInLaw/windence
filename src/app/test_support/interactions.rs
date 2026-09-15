@@ -19,6 +19,18 @@ struct Fixture {
     backend: BackendProbe,
 }
 
+/// The "secondary" modifier the bindings parse from, per platform: cmd on
+/// macOS, ctrl elsewhere. Every test that presses a secondary shortcut
+/// sends the same string a real keyboard would.
+#[cfg(target_os = "macos")]
+const SECONDARY_K: &str = "cmd-k";
+#[cfg(not(target_os = "macos"))]
+const SECONDARY_K: &str = "ctrl-k";
+#[cfg(target_os = "macos")]
+const SECONDARY_A: &str = "cmd-a";
+#[cfg(not(target_os = "macos"))]
+const SECONDARY_A: &str = "ctrl-a";
+
 impl Fixture {
     fn new(settings: bool) -> Self {
         let mut cx = HeadlessAppContext::with_asset_source(
@@ -135,9 +147,9 @@ fn credited_track() -> model::Track {
 fn search_shortcut_focuses_input_and_enter_submits_text_without_toggling_playback() {
     let mut fixture = Fixture::new(false);
     fixture.no_commands();
-    // On non-macOS the "secondary" modifier is ctrl, so the binding parses
-    // from the same string a real keyboard sends.
-    fixture.update(|window, cx| window.press("ctrl-k", cx));
+    // The "secondary" modifier parses from the same string a real keyboard
+    // sends, so the shortcut focuses the search input on every platform.
+    fixture.update(|window, cx| window.press(SECONDARY_K, cx));
     fixture.update(|window, cx| {
         assert_eq!(window.find("search-input").focused(), Some(true));
         window.input("Blue", cx);
@@ -184,7 +196,7 @@ fn player_bar_opens_each_credited_artist_and_the_album_separately() {
 fn player_bar_title_opens_the_album_from_the_keyboard() {
     let mut fixture = Fixture::new(false);
     fixture.play(credited_track());
-    fixture.press("ctrl-k");
+    fixture.press(SECONDARY_K);
     assert_eq!(fixture.route(), Route::Search);
 
     fixture.press("tab");
@@ -214,7 +226,7 @@ fn player_bar_credits_without_references_stay_plain() {
 fn space_keeps_toggling_playback_and_leaves_the_title_link_alone() {
     let mut fixture = Fixture::new(false);
     fixture.play(credited_track());
-    fixture.press("ctrl-k");
+    fixture.press(SECONDARY_K);
     fixture.press("tab");
     fixture.update(|window, _| {
         assert_eq!(window.find("player-title").focused(), Some(true));
@@ -287,7 +299,7 @@ fn client_id_validation_keeps_focus_and_only_submits_valid_input() {
                 .is_some()
         );
         window.click("client-id-input", cx);
-        window.press("ctrl-a", cx);
+        window.press(SECONDARY_A, cx);
         window.input("0123456789abcdef0123456789abcdef", cx);
     });
     fixture.update(|window, cx| {
@@ -404,5 +416,41 @@ fn mute_sends_volume_and_restores_the_previous_level() {
     assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
     fixture.update(|window, cx| window.click("volume", cx));
     assert_eq!(*fixture.backend.volume.borrow_and_update(), initial);
+    fixture.no_commands();
+}
+
+#[test]
+fn a_cached_library_from_a_superseded_account_is_dropped_without_setting_boot_refreshing() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|_, cx| {
+        services::AppServices::library(cx).update(cx, |library, cx| {
+            library.handle_backend_event(
+                BackendEvent::CachedLibrary {
+                    // Not the generation the UI is on: the backend stamps
+                    // its own account generation on the event, and a cache
+                    // from another account must not paint over this one.
+                    generation: 1,
+                    liked_tracks: Vec::new(),
+                    playlists: vec![model::Playlist {
+                        provider: model::Provider::Spotify,
+                        source_id: "leaked".into(),
+                        name: "Leaked".into(),
+                        owner: "Other Account".into(),
+                        track_count: 3,
+                        artwork_url: None,
+                    }],
+                },
+                0,
+                cx,
+            );
+        })
+    });
+    fixture.update(|_, cx| {
+        let library = services::AppServices::library(cx).read(cx);
+        // Nothing arrived: no cached rows, and no boot-revalidation banner
+        // that a served cache would have set.
+        assert!(library.playlist_rows().is_empty());
+        assert!(!library.reloading());
+    });
     fixture.no_commands();
 }
