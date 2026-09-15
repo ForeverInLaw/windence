@@ -180,11 +180,11 @@ fn a_replacing_notice_starts_a_fresh_entrance() {
     });
 }
 
-/// A confirmation notice stays readable while its auto-dismiss timer runs
-/// and the entrance is still on screen: the banner never blanks out between
-/// the arrival and the expiry (the timer path clears it, unmounting it).
+/// The radio-pending notice is legible on its first frame: the label is
+/// on screen while the entrance is still at delta 0, so the rise never
+/// starts outside the window or gates visibility.
 #[test]
-fn the_banner_stays_interactive_across_its_entrance() {
+fn radio_pending_notice_is_legible_on_the_first_frame() {
     let mut fixture = Fixture::new();
     fixture.update(|workspace, _, cx| {
         workspace.set_notice(Notice::RadioPending, cx);
