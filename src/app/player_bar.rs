@@ -218,7 +218,14 @@ impl PlayerBar {
         let palette = appearance::Appearance::palette(cx);
         let content_width = self.content_width;
         let compact = uses_compact_player_layout(content_width);
-        let timeline = compact_progress_slider_width(content_width);
+        // The drawn slider's width per tier: the full tier keeps the fixed
+        // width its centre box reserves, the compact tier takes what the
+        // content leaves, and below the timeline floor the timeline folds.
+        let timeline = if compact {
+            compact_progress_slider_width(content_width)
+        } else {
+            Some(PROGRESS_SLIDER_WIDTH)
+        };
         let player = self.player.read(cx);
         let now_playing = player.now_playing().cloned();
         let playing = player.playing();
@@ -499,68 +506,65 @@ impl PlayerBar {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
                             })),
                     )
-                    .when(!compact, |controls| {
-                        controls.child(
-                            div()
-                                .id("volume-slider")
-                                .test_support()
-                                .role(gpui_kit::Role::Slider)
-                                .key_context("VolumeSlider")
-                                .track_focus(&self.volume_focus)
-                                .tab_stop(true)
-                                .w(px(VOLUME_SLIDER_WIDTH))
-                                .h(px(24.))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .focus(|style| {
-                                    style
-                                        .border_2()
-                                        .border_color(rgb(palette.focus_ring))
-                                        .rounded(px(8.))
-                                })
-                                .on_mouse_down(
-                                    gpui_kit::MouseButton::Left,
-                                    cx.listener(
-                                        |this, event: &gpui_kit::MouseDownEvent, window, cx| {
-                                            this.player.update(cx, |player, cx| {
-                                                player.begin_volume_drag(
-                                                    event.position.x,
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        },
-                                    ),
-                                )
-                                .child(
-                                    div()
-                                        .relative()
-                                        .w_full()
-                                        .h(px(4.))
-                                        .rounded(px(2.))
-                                        .bg(rgb(palette.surface_raised))
-                                        .child(
-                                            div()
-                                                .h_full()
-                                                .w(px(VOLUME_SLIDER_WIDTH * volume))
-                                                .rounded(px(2.))
-                                                .bg(rgb(palette.text_primary)),
-                                        )
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left(px((VOLUME_SLIDER_WIDTH - 12.) * volume))
-                                                .top(px(-4.))
-                                                .size(px(12.))
-                                                .rounded(px(6.))
-                                                .bg(rgb(palette.text_primary))
-                                                .border_2()
-                                                .border_color(rgb(palette.surface)),
-                                        ),
+                    // The volume slider renders in both tiers, so its
+                    // keyboard path exists at every width; the compact
+                    // right cluster reserves its space in the tier math.
+                    .child(
+                        div()
+                            .id("volume-slider")
+                            .test_support()
+                            .role(gpui_kit::Role::Slider)
+                            .key_context("VolumeSlider")
+                            .track_focus(&self.volume_focus)
+                            .tab_stop(true)
+                            .w(px(VOLUME_SLIDER_WIDTH))
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .focus(|style| {
+                                style
+                                    .border_2()
+                                    .border_color(rgb(palette.focus_ring))
+                                    .rounded(px(8.))
+                            })
+                            .on_mouse_down(
+                                gpui_kit::MouseButton::Left,
+                                cx.listener(
+                                    |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                                        this.player.update(cx, |player, cx| {
+                                            player.begin_volume_drag(event.position.x, window, cx);
+                                        });
+                                    },
                                 ),
-                        )
-                    }),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(4.))
+                                    .rounded(px(2.))
+                                    .bg(rgb(palette.surface_raised))
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(px(VOLUME_SLIDER_WIDTH * volume))
+                                            .rounded(px(2.))
+                                            .bg(rgb(palette.text_primary)),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px((VOLUME_SLIDER_WIDTH - 12.) * volume))
+                                            .top(px(-4.))
+                                            .size(px(12.))
+                                            .rounded(px(6.))
+                                            .bg(rgb(palette.text_primary))
+                                            .border_2()
+                                            .border_color(rgb(palette.surface)),
+                                    ),
+                            ),
+                    ),
             )
     }
 

@@ -176,12 +176,15 @@ fn resolve_dark_mode(preference: ThemePreference, appearance: WindowAppearance) 
         ThemePreference::Dark => true,
     }
 }
-const VOLUME_SLIDER_WIDTH: f32 = 120.;
+/// The drawn volume slider's width, shared by the two tiers.
+pub(super) const VOLUME_SLIDER_WIDTH: f32 = 120.;
 const VOLUME_SLIDER_RIGHT_INSET: f32 = 144.;
 const PLAYER_LEFT_WIDTH: f32 = 360.;
 const PLAYER_CENTER_WIDTH: f32 = 440.;
 const PLAYER_RIGHT_WIDTH: f32 = 240.;
-const PROGRESS_SLIDER_WIDTH: f32 = 340.;
+/// The full-tier progress slider's width: what the centre box reserves
+/// for it, so the drawn track and the seek math agree.
+pub(super) const PROGRESS_SLIDER_WIDTH: f32 = 340.;
 const PROGRESS_TIME_WIDTH: f32 = 36.;
 const PROGRESS_GAP: f32 = 8.;
 /// The compact-content breakpoint, against the content width: the window
@@ -263,9 +266,12 @@ const SIDEBAR_FILL_COLLAPSED: f32 = 42.;
 const SIDEBAR_FILL_INSET: f32 = 2.;
 const CATALOG_STALE_TIME: Duration = Duration::from_secs(5 * 60);
 /// How long a confirmation notice stays before it dismisses itself.
-const NOTICE_CONFIRMATION_LIFETIME: Duration = Duration::from_secs(4);
+pub(super) const NOTICE_CONFIRMATION_LIFETIME: Duration = Duration::from_secs(4);
 const COMPACT_PLAYER_LEFT_WIDTH: f32 = 220.;
-const COMPACT_PLAYER_RIGHT_WIDTH: f32 = 96.;
+/// The compact player bar's right cluster: the queue and volume buttons
+/// with the volume slider between them.
+const COMPACT_PLAYER_RIGHT_WIDTH: f32 =
+    2. * TRANSPORT_BUTTON_SIZE + 2. * TRANSPORT_BUTTON_GAP + VOLUME_SLIDER_WIDTH;
 
 fn sidebar_transition_duration(
     current_width: f32,
@@ -344,8 +350,8 @@ const PLAYER_BAR_GAP: f32 = 24.;
 /// What the compact player bar fixes across all its parts: its paddings,
 /// the gap between the three clusters, the whole compact left cluster
 /// (artwork, title, heart), the transport cluster, and the compact right
-/// cluster (queue and volume). The compact slider takes what the content
-/// leaves.
+/// cluster (queue, volume, and the volume slider). The compact slider
+/// takes what the content leaves.
 const COMPACT_BAR_FIXED_WIDTH: f32 = 2. * PLAYER_BAR_PADDING
     + 2. * PLAYER_BAR_GAP
     + COMPACT_PLAYER_LEFT_WIDTH
@@ -496,9 +502,11 @@ fn volume_for_pointer(pointer_x: f32, window_width: f32) -> f32 {
 ///
 /// The window width says how wide the whole window is; the content width
 /// says what the bar spans. In the full tier the bar's centre cluster is
-/// centred on the content; in the compact tier the slider takes what the
-/// content has left over. Below the timeline floor the slider is not on
-/// screen, so this never runs for one.
+/// centred on the content and the slider keeps `PROGRESS_SLIDER_WIDTH` —
+/// the same width the centre box reserves for it, so the drawn track and
+/// this math agree. In the compact tier the slider takes what the content
+/// has left over. Below the timeline floor the slider is not on screen,
+/// so this never runs for one.
 fn seek_for_pointer(
     pointer_x: f32,
     window_width: f32,
@@ -602,8 +610,8 @@ pub fn run() {
 mod tests {
     use super::{
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
-        NAV_GLYPH_WIDTH, NAV_ROW_PAD, PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_SLIDER_WIDTH,
-        SIDEBAR_CONTENT_PAD, SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET,
+        NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR, PROGRESS_SLIDER_MIN_WIDTH,
+        PROGRESS_SLIDER_WIDTH, SIDEBAR_CONTENT_PAD, SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET,
         TRAFFIC_LIGHT_CLUSTER_WIDTH, compact_progress_slider_width, interpolate_sidebar_width,
         resolve_dark_mode, seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad,
         sidebar_transition_duration, traffic_light_position, uses_compact_content_layout,
@@ -671,17 +679,18 @@ mod tests {
 
     #[test]
     fn timeline_folds_below_the_floor_and_fills_the_space_above_it() {
+        let floor = PLAYER_TIMELINE_FLOOR;
         // Just below the floor: no slider.
-        assert_eq!(compact_progress_slider_width(659.), None);
+        assert_eq!(compact_progress_slider_width(floor - 1.), None);
         // Just above it: the slider keeps its minimum.
         assert_eq!(
-            compact_progress_slider_width(660.),
+            compact_progress_slider_width(floor + 1.),
             Some(PROGRESS_SLIDER_MIN_WIDTH)
         );
         // Wider content: the slider takes what the content has left over.
         assert_eq!(
-            compact_progress_slider_width(800.),
-            Some(800. - COMPACT_BAR_FIXED_WIDTH)
+            compact_progress_slider_width(floor + 100.),
+            Some(floor + 100. - COMPACT_BAR_FIXED_WIDTH)
         );
     }
 
