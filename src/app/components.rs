@@ -49,11 +49,15 @@ impl Render for DraggedPin {
     }
 }
 
+/// The callback a dropped pin triggers: where the pin landed, on the window
+/// and app that drew the rows.
+type OnPinDrop = Box<dyn Fn(&DraggedPin, &mut Window, &mut App)>;
+
 /// What one row of the pinned section needs to join the drag: the pin it
 /// draws, and what to do when another pin is dropped on it.
 pub(super) struct PinDrag {
     pub(super) pin: DraggedPin,
-    pub(super) on_drop: Box<dyn Fn(&DraggedPin, &mut Window, &mut App)>,
+    pub(super) on_drop: OnPinDrop,
 }
 
 impl PinDrag {

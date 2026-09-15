@@ -999,6 +999,9 @@ fn relocate_legacy_windows_database(data_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "windows"))]
+    use super::{AppPreferences, DEFAULT_VOLUME, LibraryFingerprint, Store, ThemePreference};
+    #[cfg(target_os = "windows")]
     use super::{
         AppPreferences, DEFAULT_VOLUME, LibraryFingerprint, Store, ThemePreference,
         relocate_legacy_windows_database,
