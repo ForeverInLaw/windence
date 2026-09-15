@@ -227,7 +227,7 @@ impl TrackList {
         index: usize,
         is_current_track: bool,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let palette = appearance::Appearance::palette(cx);
         let has_playback_context = self.player.read(cx).now_playing().is_some();
         let next_track = track.clone();
@@ -252,6 +252,10 @@ impl TrackList {
                 .border_color(rgb(palette.border))
         };
 
+        // The menu grows from its row's actions button: the same fade and
+        // start-inset entrance as the account menu, keyed per row so each
+        // open starts at zero. The anchor carries the position; the
+        // animation carries the grow.
         components::menu_surface(palette)
             .on_mouse_up_out(
                 gpui_kit::MouseButton::Left,
@@ -260,6 +264,14 @@ impl TrackList {
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .with_animation(
+                ("track-menu-open", index),
+                Animation::new(QUICK).with_easing(smooth_out()),
+                move |menu, delta| {
+                    menu.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                        .top(px(MENU_OPEN_INSET * (1. - delta)))
+                },
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-play", index), "Play now")
@@ -357,6 +369,7 @@ impl TrackList {
                     cx.notify();
                 })),
             )
+            .into_any_element()
     }
 }
 

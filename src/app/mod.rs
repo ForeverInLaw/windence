@@ -19,8 +19,8 @@ use gpui_kit::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, Bounds, ClipboardItem, Context, Div,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, KeyBinding, Pixels,
     RenderOnce, SharedString, Stateful, Subscription, Window, WindowAppearance, WindowBounds,
-    WindowControlArea, WindowOptions, actions, anchored, deferred, div, ease_out_quint, img, point,
-    prelude::*, px, relative, rgb, size, uniform_list,
+    WindowControlArea, WindowOptions, actions, anchored, deferred, div, img, point, prelude::*, px,
+    relative, rgb, size, uniform_list,
 };
 use spotify_gpui_client::{
     backend::{
@@ -42,6 +42,9 @@ use workspace::Workspace;
 mod http;
 mod icons;
 mod image_cache;
+mod motion;
+
+use motion::*;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -259,7 +262,11 @@ fn sidebar_transition_duration(
     let remaining_fraction = ((target_width - current_width).abs()
         / (expanded_width - COLLAPSED_SIDEBAR_WIDTH))
         .clamp(0., 1.);
-    Duration::from_millis((180. * remaining_fraction).round().max(60.) as u64)
+    Duration::from_millis(
+        (SIDEBAR_OPEN_MILLIS * remaining_fraction)
+            .round()
+            .max(SIDEBAR_FLOOR_MILLIS) as u64,
+    )
 }
 
 fn interpolate_sidebar_width(from: f32, target: f32, delta: f32) -> f32 {
@@ -440,6 +447,15 @@ fn is_fresh(loaded_at: Option<SystemTime>, max_age: Duration) -> bool {
 fn catalog_data_is_fresh(loaded_at: Option<SystemTime>) -> bool {
     is_fresh(loaded_at, CATALOG_STALE_TIME)
 }
+
+/// The sidebar's distance-scaled variant of the motion scale, in millis so
+/// the duration test can name its numbers. The open cap sits a step under
+/// `motion::FAST` (the drawer's panel-arrival duration) because the rail
+/// moves the whole page under the listener's eye; the floor is `motion`
+/// half-MICRO. The numbers are the sidebar's own and predate the scale —
+/// retiming them to different steps would change every collapse.
+const SIDEBAR_OPEN_MILLIS: f32 = 180.;
+const SIDEBAR_FLOOR_MILLIS: f32 = 60.;
 
 async fn receive_backend_event_batch(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<BackendEvent>,

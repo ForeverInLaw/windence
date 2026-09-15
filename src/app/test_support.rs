@@ -1,6 +1,7 @@
 use super::*;
 use gpui_kit::{AnyWindowHandle, HeadlessAppContext, WindowHandle};
 mod interactions;
+mod motion;
 mod notices;
 
 pub(super) struct BackendProbe {

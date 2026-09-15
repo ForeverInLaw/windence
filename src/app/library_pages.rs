@@ -208,6 +208,14 @@ impl PlaylistsPage {
                         .on_mouse_down(
                             gpui_kit::MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        )
+                        .with_animation(
+                            "sort-menu-open",
+                            Animation::new(QUICK).with_easing(smooth_out()),
+                            move |menu, delta| {
+                                menu.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                                    .top(px(MENU_OPEN_INSET * (1. - delta)))
+                            },
                         ),
                     |menu, mode| {
                         menu.child(

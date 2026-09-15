@@ -217,7 +217,7 @@ impl Sidebar {
         let start_progress = ((start_width - COLLAPSED_SIDEBAR_WIDTH) / width_range).clamp(0., 1.);
         let row_width = expanded_width - 2. * SIDEBAR_CONTENT_PAD;
         let target_progress = if collapsed { 0. } else { 1. };
-        let row_animation = Animation::new(animation_duration).with_easing(ease_out_quint());
+        let row_animation = Animation::new(animation_duration).with_easing(smooth_out());
         let nav_item = |id: &'static str,
                         fill_id: &'static str,
                         label: &'static str,
@@ -518,7 +518,7 @@ impl Sidebar {
             )
             .with_animation(
                 ("sidebar-width", animation_id),
-                Animation::new(animation_duration).with_easing(ease_out_quint()),
+                Animation::new(animation_duration).with_easing(smooth_out()),
                 move |sidebar, delta| {
                     let width = interpolate_sidebar_width(start_width, target_width, delta);
                     visual_width.set(width);

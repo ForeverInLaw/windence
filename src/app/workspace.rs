@@ -17,6 +17,9 @@ pub(super) struct Workspace {
     /// the dismissal while this is still the notice it was set for, so a
     /// notice that arrived later is never closed by an earlier timer.
     pub(super) notice_timer_armed_for: Option<Notice>,
+    /// How many notices have gone up. Keys the banner's arrival animation,
+    /// so a notice replacing the one on screen starts its entrance at zero.
+    pub(super) notice_generation: usize,
     pub(super) radio_request_id: u64,
     pub(super) pending_radio_request: Option<u64>,
     pub(super) player: Entity<player::Player>,
@@ -189,6 +192,7 @@ impl Workspace {
             last_error: None,
             action_notice: None,
             notice_timer_armed_for: None,
+            notice_generation: 0,
             radio_request_id: 0,
             pending_radio_request: None,
             player,
@@ -269,6 +273,7 @@ impl Workspace {
             .notice_timer_armed_for
             .take()
             .filter(|_| notice.auto_dismisses());
+        self.notice_generation += 1;
         self.action_notice = Some(notice.clone());
         if notice.auto_dismisses() {
             self.notice_timer_armed_for = Some(notice);
@@ -295,6 +300,13 @@ impl Workspace {
         self.notice_timer_armed_for = None;
     }
 
+    /// The current banner generation, for tests that prove a replacement
+    /// notice restarts its entrance.
+    #[cfg(test)]
+    pub(super) fn read_notice_generation(&self) -> usize {
+        self.notice_generation
+    }
+
     fn action_notice_banner(
         &self,
         palette: CadencePalette,
@@ -305,6 +317,7 @@ impl Workspace {
             palette,
             notice.message().to_owned(),
             notice.item().map(NoticeItem::severity),
+            self.notice_generation,
             cx.listener(|this, _, _, cx| {
                 this.action_notice = None;
                 this.notice_timer_armed_for = None;
