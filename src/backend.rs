@@ -1025,6 +1025,13 @@ async fn run(
                     abort_task(&mut worker.catalog.connection_id);
                     worker.watch_pins();
                     worker.watch_connection_id();
+                    if let Some(request) = worker.connection.pending_play.take()
+                        && let Err(error) = worker
+                            .play_context(request.tracks, request.index, request.shuffled, request.kind)
+                            .await
+                    {
+                        send_error(&worker.events, error);
+                    }
                 }
                 continue;
             }
@@ -1741,6 +1748,10 @@ impl Worker {
     ) -> Result<()> {
         self.stand_down_dj();
         self.radio.cancel(&self.events);
+        if self.connection.is_connecting() {
+            self.connection.hold_play(tracks, index, shuffled, kind);
+            return Ok(());
+        }
         let spotify_uri = tracks
             .get(index)
             .and_then(|track| track.spotify_uri.clone())
@@ -2280,7 +2291,21 @@ impl Worker {
                 self.refresh_library_order(true);
                 self.watch_pins();
                 self.watch_connection_id();
-                if self.connection.connect_restoring {
+                // A click made while the session was opening starts before
+                // anything saved gets restored.
+                if let Some(request) = self.connection.pending_play.take() {
+                    if let Err(error) = self
+                        .play_context(
+                            request.tracks,
+                            request.index,
+                            request.shuffled,
+                            request.kind,
+                        )
+                        .await
+                    {
+                        send_error(&self.events, error);
+                    }
+                } else if self.connection.connect_restoring {
                     let _ = self.events.send(BackendEvent::PlaybackReconnected);
                 } else if let Err(error) = restore_saved_playback(
                     &self.connection.player,
@@ -2294,11 +2319,15 @@ impl Worker {
                 }
             }
             Some(Ok(Err(error))) => {
+                self.connection.fail_pending_play(&error, &self.events);
                 let _ = self
                     .events
                     .send(BackendEvent::PlaybackFailed(error.to_string()));
             }
-            Some(Err(error)) => send_error(&self.events, error),
+            Some(Err(error)) => {
+                self.connection.fail_pending_play(&error, &self.events);
+                send_error(&self.events, error);
+            }
             None => {}
         }
         self.connection.connect_restoring = false;
@@ -2420,6 +2449,8 @@ impl Worker {
 
     /// Drops the live playback session and forgets the queue.
     fn stop_playback_session(&mut self) {
+        // A dropped session must not resurrect a play held for the old one.
+        self.connection.pending_play = None;
         self.connection.disconnect();
         abort_task(&mut self.connection.reconnect);
         self.connection.reconnect_pending = false;
@@ -3574,6 +3605,17 @@ impl CatalogFetches {
     }
 }
 
+/// A context play that arrived while the session was still opening, held
+/// until it lands. The command handler has already applied the request's
+/// context uri to the queue's bookkeeping, so a replay goes through
+/// `play_context` alone and must not note the uri a second time.
+struct PendingPlay {
+    tracks: Vec<Track>,
+    index: usize,
+    shuffled: bool,
+    kind: ContextKind,
+}
+
 /// The live Spotify playback session and the tasks that keep it alive.
 #[derive(Default)]
 struct PlaybackConnection {
@@ -3585,6 +3627,9 @@ struct PlaybackConnection {
     /// The connect in flight is replacing a dropped session rather than starting
     /// a fresh one, so playback must not be restored on top of it.
     connect_restoring: bool,
+    /// A play requested while the session was still connecting, started as
+    /// soon as it is up so the first click after launch is not lost.
+    pending_play: Option<PendingPlay>,
 }
 
 impl PlaybackConnection {
@@ -3608,6 +3653,47 @@ impl PlaybackConnection {
     fn abort_attempts(&mut self) {
         abort_task(&mut self.reconnect);
         abort_task(&mut self.connect);
+    }
+
+    /// Whether a connect or reconnect attempt is in flight and no session
+    /// exists yet: the window in which a play has to be held rather than
+    /// dropped.
+    fn is_connecting(&self) -> bool {
+        self.player.is_none() && (self.connect.is_some() || self.reconnect.is_some())
+    }
+
+    /// Holds a play until the in-flight connection finishes, replacing any
+    /// play held before it: the listener's latest intent wins.
+    fn hold_play(&mut self, tracks: Vec<Track>, index: usize, shuffled: bool, kind: ContextKind) {
+        log::info!("playback: holding play until the session connects");
+        self.pending_play = Some(PendingPlay {
+            tracks,
+            index,
+            shuffled,
+            kind,
+        });
+    }
+
+    /// Reports a held play as failed once the connection it waited on did,
+    /// through the same event pair the normal track-failure path uses.
+    fn fail_pending_play(
+        &mut self,
+        error: &dyn std::fmt::Display,
+        events: &UnboundedSender<BackendEvent>,
+    ) {
+        let Some(request) = self.pending_play.take() else {
+            return;
+        };
+        let spotify_uri = request
+            .tracks
+            .get(request.index)
+            .and_then(|track| track.spotify_uri.clone())
+            .unwrap_or_default();
+        let _ = events.send(BackendEvent::TrackFailed {
+            spotify_uri,
+            error: format!("Spotify playback is not connected: {error}"),
+        });
+        let _ = events.send(BackendEvent::PlaybackSettled);
     }
 
     /// Replaces the current session with a fresh connection attempt.
@@ -3667,6 +3753,7 @@ impl PlaybackConnection {
             }
             Some(Ok(Err(error))) => {
                 log::warn!("playback: reconnect attempt failed: {error}");
+                self.fail_pending_play(&error, events);
                 let _ = events.send(BackendEvent::PlaybackFailed(format!(
                     "Spotify playback disconnected; reconnecting: {error}"
                 )));
@@ -4522,12 +4609,12 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 mod tests {
     use super::{
         BackendCommand, BackendEvent, BlockingStore, LibraryContents, PIN_WRITE_SETTLE, Pins,
-        PlayQueue, SharedFingerprint, ShuffleState, boot_cache_is_plausible, build_radio_context,
-        commit_fingerprint, injected_flags, next_injection_seed, send_command,
-        serve_cached_library, settled_base,
+        PlayQueue, PlaybackConnection, SharedFingerprint, ShuffleState, boot_cache_is_plausible,
+        build_radio_context, commit_fingerprint, injected_flags, next_injection_seed,
+        send_command, serve_cached_library, settled_base,
     };
     use crate::model::{ListedTrack, Playlist, Provider, Track};
-    use crate::shuffle::Origin;
+    use crate::shuffle::{ContextKind, Origin};
     use crate::storage::{LibraryFingerprint, Store};
     use std::time::Instant;
 
@@ -4998,5 +5085,91 @@ mod tests {
         // One side carries contents and the saved total for it is zero:
         // still plausible, the cache is what is served.
         assert!(boot_cache_is_plausible(&fingerprint(0, 0), &cache(1, 0)));
+    }
+
+    #[tokio::test]
+    async fn play_is_held_only_while_the_session_is_connecting() {
+        // Nothing in flight: plays run straight through.
+        assert!(!PlaybackConnection::default().is_connecting());
+
+        // A connect attempt with no player yet is the connecting window.
+        let mut connection = PlaybackConnection {
+            connect: Some(tokio::spawn(std::future::pending())),
+            ..PlaybackConnection::default()
+        };
+        assert!(connection.is_connecting());
+        connection.hold_play(vec![track()], 0, false, ContextKind::Collection);
+        let held = connection.pending_play.as_ref().unwrap();
+        assert_eq!(held.index, 0);
+        assert!(!held.shuffled);
+        assert_eq!(held.kind, ContextKind::Collection);
+        assert_eq!(
+            held.tracks[0].spotify_uri.as_deref(),
+            Some("spotify:track:track-id")
+        );
+
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        connection.fail_pending_play(&"no network", &events);
+        assert!(connection.pending_play.is_none());
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::TrackFailed { spotify_uri, .. }) if spotify_uri == "spotify:track:track-id"
+        ));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::PlaybackSettled)
+        ));
+        connection.abort_attempts();
+    }
+
+    #[test]
+    fn a_second_held_play_replaces_the_first() {
+        let mut connection = PlaybackConnection::default();
+        connection.hold_play(vec![track()], 0, false, ContextKind::Collection);
+        let mut replacement = track();
+        replacement.spotify_uri = Some("spotify:track:next".to_owned());
+        connection.hold_play(vec![replacement], 1, true, ContextKind::Album);
+
+        let held = connection.pending_play.unwrap();
+        assert_eq!(held.index, 1);
+        assert!(held.shuffled);
+        assert_eq!(held.kind, ContextKind::Album);
+        assert_eq!(held.tracks.len(), 1);
+        assert_eq!(
+            held.tracks[0].spotify_uri.as_deref(),
+            Some("spotify:track:next")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_connection_in_flight_counts_as_connecting() {
+        // A reconnect attempt with no session yet is the connecting window.
+        let mut connection = PlaybackConnection {
+            reconnect: Some(tokio::spawn(std::future::pending())),
+            ..PlaybackConnection::default()
+        };
+        assert!(connection.is_connecting());
+        connection.abort_attempts();
+        assert!(!connection.is_connecting());
+
+        // Without a task in flight nothing is connecting, even with the
+        // reconnect_pending note left over for the health tick.
+        let idle = PlaybackConnection {
+            reconnect_pending: true,
+            ..PlaybackConnection::default()
+        };
+        assert!(!idle.is_connecting());
+        // The player-exists case is not constructible here: a `Playback`
+        // needs a live Spotify session, so it is covered by the
+        // play-context hold check, which reads the same predicate.
+    }
+
+    #[test]
+    fn failing_without_a_held_play_sends_nothing() {
+        let mut connection = PlaybackConnection::default();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        connection.fail_pending_play(&"no network", &events);
+        assert!(connection.pending_play.is_none());
+        assert!(received.try_recv().is_err());
     }
 }
