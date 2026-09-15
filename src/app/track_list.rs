@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::TestSupportExt as _;
 
 use page::PageEvent;
 
@@ -262,6 +263,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-play", index), "Play now")
+                    .test_support()
                     .when(is_current_track, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })

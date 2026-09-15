@@ -135,8 +135,8 @@ impl Store {
         Ok(store)
     }
 
-    #[cfg(test)]
-    pub(crate) fn in_memory() -> Result<Self> {
+    /// An in-memory store, for tests that do not want to touch the disk.
+    pub fn in_memory() -> Result<Self> {
         let connection = Connection::open_in_memory()?;
         let store = Self { connection };
         store.migrate()?;

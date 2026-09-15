@@ -1,6 +1,7 @@
 use super::*;
 
 use gpui_kit::ClickEvent;
+use gpui_kit::TestSupportExt as _;
 
 /// Breathing room between the Title column and whatever follows it.
 const COLUMN_GUTTER: f32 = 16.;
@@ -304,6 +305,7 @@ impl RenderOnce for TrackRow {
         let row_group: SharedString =
             format!("spotify-track-row:{}:{index}", self.track.source_id).into();
         components::button(palette, ("spotify-track", index))
+            .test_support()
             .group(row_group.clone())
             .w_full()
             .h(px(ROW_HEIGHT))
@@ -388,6 +390,7 @@ impl RenderOnce for TrackRow {
             })
             .child(
                 components::liked_heart(palette, ("spotify-liked", index), self.liked)
+                    .test_support()
                     // Reachable on the row under the pointer and nowhere
                     // else: the column keeps its width so the ones beside
                     // it do not shift, but stays empty until then.
@@ -420,6 +423,7 @@ impl RenderOnce for TrackRow {
                     .flex_none()
                     .child(
                         components::button(palette, ("track-actions", index))
+                            .test_support()
                             .size(px(ACTIONS_COLUMN_WIDTH))
                             .rounded(px(18.))
                             .hover(|style| style.bg(rgb(palette.control)))

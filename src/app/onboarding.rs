@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::TestSupportExt as _;
 
 pub(super) const SPOTIFY_DASHBOARD_URL: &str = "https://developer.spotify.com/dashboard";
 pub(super) const SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
@@ -503,6 +504,7 @@ impl Onboarding {
                                             "Log in with Spotify",
                                             true,
                                         )
+                                        .test_support()
                                         .h(px(48.))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.configure(window, cx);
@@ -526,6 +528,7 @@ impl Onboarding {
             .bg(rgb(palette.surface))
             .child(
                 Input::new(&self.client_id_input)
+                    .id("client-id-input")
                     .appearance(false)
                     .bordered(false)
                     .focus_bordered(false)

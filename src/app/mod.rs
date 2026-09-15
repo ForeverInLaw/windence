@@ -405,6 +405,8 @@ mod services;
 mod session;
 mod settings;
 mod sidebar;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod track_list;
 mod track_row;
 mod windows;

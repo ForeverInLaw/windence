@@ -106,6 +106,7 @@ impl Toolbar {
             .child(components::icon("search", 16., palette.text_muted))
             .child(
                 Input::new(&self.search_input)
+                    .id("search-input")
                     .appearance(false)
                     .bordered(false)
                     .focus_bordered(false)

@@ -10,8 +10,14 @@ use std::{
 use futures::FutureExt as _;
 use gpui_kit::{
     App, AppContext as _, Asset, AssetLogger, Entity, ImageAssetLoader, ImageCache,
-    ImageCacheError, ImageLoadingTask, RenderImage, Resource, Task, Window,
+    ImageCacheError, RenderImage, Resource, Task, Window,
 };
+
+/// The old kit re-exported a shared in-flight load as `ImageLoadingTask`;
+/// gpui-pre 0.3.5 dropped the alias, so the same shared task is spelled out
+/// here and `futures::FutureExt::shared` supplies it.
+type ImageLoadingTask =
+    futures::future::Shared<gpui_kit::Task<Result<Arc<RenderImage>, ImageCacheError>>>;
 
 const MAX_IMAGES: usize = 48;
 const MAX_DECODED_BYTES: usize = 32 * 1024 * 1024;

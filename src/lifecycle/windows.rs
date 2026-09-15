@@ -29,6 +29,17 @@ pub struct InstanceLifecycle {
 }
 
 impl InstanceLifecycle {
+    /// An activation channel with no listener behind it: the UI tests own no
+    /// second instance, so nothing ever sends through it.
+    pub fn isolated() -> Arc<Self> {
+        let (_, activations) = async_channel::bounded(1);
+        Arc::new(Self {
+            activations,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            listener_thread: None,
+        })
+    }
+
     pub fn acquire() -> Result<Instance> {
         // Named pipes are machine-global while the Unix transport lives in
         // the per-user cache directory; keep the pipe name per-user so two
@@ -149,6 +160,12 @@ impl InstanceLifecycle {
 
 impl Drop for InstanceLifecycle {
     fn drop(&mut self) {
+        // The isolated lifecycle owns no listener to stop; its channel
+        // exists for tests to hand out, and dropping it is all the
+        // shutdown there is.
+        if self.listener_thread.is_none() {
+            return;
+        }
         self.shutdown.store(true, Ordering::Relaxed);
         if let Some(listener_thread) = self.listener_thread.take() {
             let _ = listener_thread.join();

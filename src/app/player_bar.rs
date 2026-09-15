@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::TestSupportExt as _;
 
 /// The transport strip pinned to the bottom of the window.
 ///
@@ -283,6 +284,7 @@ impl PlayerBar {
                     .gap(px(8.))
                     .child(
                         components::icon_button_with(palette, "queue-toggle", "list-music", 17.)
+                            .test_support()
                             .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let open = !this.queue_open;
@@ -291,11 +293,11 @@ impl PlayerBar {
                             })),
                     )
                     .child(
-                        components::icon_button_with(palette, "volume", volume_icon, 17.).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        components::icon_button_with(palette, "volume", volume_icon, 17.)
+                            .test_support()
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
-                            }),
-                        ),
+                            })),
                     )
                     .when(!compact, |controls| {
                         controls.child(
@@ -480,6 +482,7 @@ impl QueueDrawer {
                     )
                     .child(
                         components::icon_button(palette, "close-queue", "close")
+                            .test_support()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )

@@ -608,6 +608,37 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// A backend with no worker: commands sit on the channel until a test
+    /// reads them, volume starts at the default level, and the shutdown
+    /// watch stays untouched. The UI-side handle answers through the same
+    /// senders the real worker would drain, so services see no difference.
+    pub fn isolated() -> (
+        Self,
+        tokio::sync::mpsc::Receiver<BackendCommand>,
+        tokio::sync::watch::Receiver<f32>,
+    ) {
+        let (commands, receiver) = tokio::sync::mpsc::channel(COMMAND_CAPACITY);
+        let (volume, volume_receiver) = tokio::sync::watch::channel(0.72);
+        let (shutdown, _) = tokio::sync::watch::channel(false);
+        let handle = BackendHandle {
+            senders: Arc::new(std::sync::Mutex::new(Senders {
+                commands: commands.clone(),
+                controls: commands.clone(),
+                volume,
+            })),
+        };
+        (
+            Self {
+                handle,
+                commands,
+                shutdown,
+                thread: None,
+            },
+            receiver,
+            volume_receiver,
+        )
+    }
+
     pub fn start() -> (Self, UnboundedReceiver<BackendEvent>) {
         let (senders, shutdown, thread, events) = Self::spawn_worker();
         let commands = senders.commands.clone();
@@ -706,6 +737,12 @@ fn send_command(
 
 impl Drop for Backend {
     fn drop(&mut self) {
+        // The isolated backend owns no worker to stop; its command channel
+        // exists for tests to observe, and dropping it is all the shutdown
+        // there is.
+        if self.thread.is_none() {
+            return;
+        }
         let (acknowledged, acknowledgment) = mpsc::channel();
         let _ = self.shutdown.send(true);
         let deadline = Instant::now() + Duration::from_secs(2);
