@@ -1,6 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::IconNamed as _;
 
 /// Shared building blocks for Cadence views.
@@ -111,6 +112,7 @@ pub(super) fn action_notice_banner(
     };
     deferred(
         div()
+            .id("action-notice")
             .occlude()
             .absolute()
             .top(px(76.))
@@ -130,9 +132,12 @@ pub(super) fn action_notice_banner(
             .gap(px(10.))
             .text_size(px(13.))
             .text_color(rgb(palette.text_primary))
+            .test_support()
+            .aria_label(message.clone())
             .child(div().flex_1().child(message))
             .child(
                 icon_button(palette, "dismiss-action-notice", CadenceIcon::Close)
+                    .test_support()
                     .size(px(32.))
                     .on_click(on_dismiss),
             ),
