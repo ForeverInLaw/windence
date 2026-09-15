@@ -175,10 +175,6 @@ impl BlockingStore {
             .await
     }
 
-    async fn liked_tracks(&self) -> Result<Vec<ListedTrack>> {
-        self.call(|store| store.liked_tracks()).await
-    }
-
     /// The persisted library cache: what the last completed load stored,
     /// served when a boot probe proves it still matches Spotify.
     async fn library_cache(&self) -> Result<LibraryContents> {
@@ -471,9 +467,15 @@ pub enum BackendEvent {
         generation: u64,
         profile: UserProfile,
     },
-    CachedLikedTracks {
+    /// The library as the last launch left it, served before Spotify answers.
+    CachedLibrary {
         generation: u64,
-        tracks: Vec<ListedTrack>,
+        liked_tracks: Vec<ListedTrack>,
+        playlists: Vec<Playlist>,
+    },
+    /// The boot revalidation matched the cached library; nothing to replace.
+    LibraryUnchanged {
+        generation: u64,
     },
     LocalStateLoaded {
         /// The pins as last read from Spotify, so the section is drawn
@@ -1173,16 +1175,7 @@ impl Worker {
             let _ = self.events.send(BackendEvent::AuthorizationRequired);
             return Ok(());
         }
-        match self.store.liked_tracks().await {
-            Ok(tracks) if !tracks.is_empty() => {
-                let _ = self.events.send(BackendEvent::CachedLikedTracks {
-                    generation: self.account_generation,
-                    tracks,
-                });
-            }
-            Ok(_) => {}
-            Err(error) => send_error(&self.events, error),
-        }
+        self.serve_cached_library().await;
         self.start_account_loads().await;
         match self.store.smart_shuffle_seen().await {
             Ok(seen) => self.smart_shuffle_seen = seen.into_iter().collect(),
@@ -1193,6 +1186,21 @@ impl Worker {
             authorization: None,
         });
         Ok(())
+    }
+
+    /// Makes the session usable from the last launch's library before any
+    /// request goes out. The fingerprint persisted beside it lets the boot
+    /// revalidation answer Unchanged from the head probes alone; without a
+    /// cache the load must deliver contents, so the fingerprint is forgotten.
+    async fn serve_cached_library(&mut self) {
+        let fingerprint = self.catalog.library_fingerprint.clone();
+        serve_cached_library(
+            &self.store,
+            &fingerprint,
+            &self.events,
+            self.account_generation,
+        )
+        .await;
     }
 
     /// Returns the shutdown acknowledgment once a `Shutdown` command arrives;
@@ -4005,17 +4013,70 @@ async fn probe_and_load_library(
 
 /// Whether the local caches may stand in for a library whose fingerprint
 /// matched Spotify's heads: non-empty, or empty because the account is
-/// (both saved totals zero).
-fn boot_cache_is_plausible(
-    persisted: &Option<LibraryFingerprint>,
-    cache: &LibraryContents,
-) -> bool {
+/// (both saved totals zero). With no fingerprint there is no match for a
+/// cache to stand behind, so the caller answers that case first.
+fn boot_cache_is_plausible(persisted: &LibraryFingerprint, cache: &LibraryContents) -> bool {
     let non_empty = !cache.0.is_empty() || !cache.1.is_empty();
-    let account_is_empty = matches!(
-        persisted,
-        Some(saved) if saved.liked_total == 0 && saved.playlist_total == 0
-    );
+    let account_is_empty = persisted.liked_total == 0 && persisted.playlist_total == 0;
     non_empty || account_is_empty
+}
+
+/// Serves the cached library before the network answers, in place of the
+/// boot load. A cache with a persisted fingerprint vouching for it stands
+/// in for the account's contents: both collections go out in one event,
+/// and the fingerprint is committed so the probe answers Unchanged from
+/// the heads alone. Without a persisted fingerprint the load must deliver
+/// contents, so the in-memory one is forgotten. An implausible pair — a
+/// fingerprint match with a cache that was never written, which cannot
+/// arise through normal operation but can through tampering — serves
+/// nothing, and the load answers as ever.
+async fn serve_cached_library(
+    store: &BlockingStore,
+    fingerprint: &SharedFingerprint,
+    events: &UnboundedSender<BackendEvent>,
+    generation: u64,
+) {
+    let persisted = match store.saved_library_fingerprint().await {
+        Ok(persisted) => persisted,
+        Err(error) => {
+            send_error(events, error);
+            clear_fingerprint(fingerprint);
+            return;
+        }
+    };
+    let cache = match store.library_cache().await {
+        Ok(cache) => cache,
+        Err(error) => {
+            send_error(events, error);
+            clear_fingerprint(fingerprint);
+            return;
+        }
+    };
+    let Some(persisted) = persisted else {
+        // A fresh database has nothing to serve, and the load must deliver
+        // contents, so any fingerprint remembered in memory is forgotten.
+        clear_fingerprint(fingerprint);
+        return;
+    };
+    if !boot_cache_is_plausible(&persisted, &cache) {
+        // A fingerprint match must not stand in for a cache that was never
+        // written; serving it would paint an empty library over revalidation.
+        log::warn!("library: cached fingerprint matched but its cache is missing");
+        clear_fingerprint(fingerprint);
+        return;
+    }
+    commit_fingerprint(fingerprint, persisted);
+    log::info!(
+        "startup: serving {} liked tracks and {} playlists from the cache",
+        cache.0.len(),
+        cache.1.len()
+    );
+    let _ = events.send(BackendEvent::CachedLibrary {
+        generation,
+        liked_tracks: cache.0,
+        playlists: cache.1,
+    });
+    let _ = events.send(BackendEvent::CatalogReady { generation });
 }
 
 fn spawn_library_load(
@@ -4041,24 +4102,17 @@ fn spawn_library_load(
             }
         };
         let library_load = async {
-            // Seed the probe with the fingerprint the previous session
-            // saved: when Spotify still matches it, boot answers from the
-            // local cache instead of walking the whole library. A fresh
-            // database has no fingerprint, so the probe seeds one and boot
+            // Seed the probe with the fingerprint boot committed beside the
+            // served cache: when Spotify still matches it, revalidation
+            // answers from the head probes alone. A fresh database or an
+            // implausible cache was left unseeded by boot, so the probe
             // fetches as before.
-            let persisted = match store.saved_library_fingerprint().await {
-                Ok(persisted) => {
-                    if let Some(saved) = &persisted {
-                        commit_fingerprint(&fingerprint, saved.clone());
-                    } else {
-                        clear_fingerprint(&fingerprint);
-                    }
-                    persisted
-                }
+            match store.saved_library_fingerprint().await {
+                Ok(Some(saved)) => commit_fingerprint(&fingerprint, saved),
+                Ok(None) => clear_fingerprint(&fingerprint),
                 Err(error) => {
                     send_error(&events, error);
                     clear_fingerprint(&fingerprint);
-                    None
                 }
             };
             let library = tokio::time::timeout(
@@ -4070,36 +4124,12 @@ fn spawn_library_load(
                 return;
             }
             match library {
+                // Only reachable with a fingerprint boot committed beside
+                // the cache it already served: the contents on screen are
+                // the account's current ones, and nothing may replace them.
                 Ok(Ok(ProbedLibrary::Unchanged)) => {
-                    // The persisted fingerprint matched Spotify's heads, so
-                    // the caches written beside it hold the account's
-                    // current contents. An implausible cache cannot happen
-                    // through normal operation (fingerprint and contents
-                    // share one transaction); fail loudly rather than boot
-                    // with a silently empty library.
-                    match store.library_cache().await {
-                        Ok(cache) if boot_cache_is_plausible(&persisted, &cache) => {
-                            let _ = events.send(BackendEvent::LibraryLoaded {
-                                generation,
-                                liked_tracks: cache.0,
-                                playlists: cache.1,
-                            });
-                            let _ = events.send(BackendEvent::CatalogReady { generation });
-                        }
-                        Ok(_) => {
-                            let _ = events.send(BackendEvent::CatalogFailed {
-                                generation,
-                                error: "library cache is missing although its fingerprint matched"
-                                    .to_owned(),
-                            });
-                        }
-                        Err(error) => {
-                            let _ = events.send(BackendEvent::CatalogFailed {
-                                generation,
-                                error: error.to_string(),
-                            });
-                        }
-                    }
+                    log::info!("library: cache matches Spotify");
+                    let _ = events.send(BackendEvent::LibraryUnchanged { generation });
                 }
                 Ok(Ok(ProbedLibrary::Changed {
                     contents,
@@ -4491,13 +4521,54 @@ async fn send_local_state(store: &BlockingStore, events: &UnboundedSender<Backen
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendCommand, BlockingStore, PIN_WRITE_SETTLE, Pins, PlayQueue, ShuffleState,
-        build_radio_context, injected_flags, next_injection_seed, send_command, settled_base,
+        BackendCommand, BackendEvent, BlockingStore, LibraryContents, PIN_WRITE_SETTLE, Pins,
+        PlayQueue, SharedFingerprint, ShuffleState, boot_cache_is_plausible, build_radio_context,
+        commit_fingerprint, injected_flags, next_injection_seed, send_command,
+        serve_cached_library, settled_base,
     };
-    use crate::model::{Provider, Track};
+    use crate::model::{ListedTrack, Playlist, Provider, Track};
     use crate::shuffle::Origin;
-    use crate::storage::Store;
+    use crate::storage::{LibraryFingerprint, Store};
     use std::time::Instant;
+
+    fn listed_track(id: &str) -> ListedTrack {
+        ListedTrack {
+            track: Track {
+                provider: Provider::Spotify,
+                source_id: id.to_owned(),
+                spotify_uri: Some(format!("spotify:track:{id}")),
+                isrc: None,
+                title: format!("Track {id}"),
+                artist: "Artist".to_owned(),
+                artists: Vec::new(),
+                album: "Album".to_owned(),
+                album_ref: None,
+                duration_ms: 180_000,
+                artwork_url: None,
+            },
+            added_at: None,
+        }
+    }
+
+    fn playlist(id: &str) -> Playlist {
+        Playlist {
+            provider: Provider::Spotify,
+            source_id: id.to_owned(),
+            name: format!("Playlist {id}"),
+            owner: "Owner".to_owned(),
+            track_count: 10,
+            artwork_url: None,
+        }
+    }
+
+    fn fingerprint(liked_total: u32, playlist_total: u32) -> LibraryFingerprint {
+        LibraryFingerprint {
+            liked_head: vec!["one".to_owned()],
+            liked_total,
+            playlist_head: vec![("focus".to_owned(), "Focus".to_owned(), "snap".to_owned())],
+            playlist_total,
+        }
+    }
 
     #[test]
     fn a_pin_change_goes_on_the_read_unless_a_write_has_yet_to_land() {
@@ -4788,5 +4859,144 @@ mod tests {
             "current"
         );
         assert!(next_injection_seed([], None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn boot_serves_both_collections_from_the_cache_before_the_network_answers() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        let playlists = vec![playlist("focus"), playlist("gym")];
+        store
+            .call(move |store| {
+                store.replace_library_cache(
+                    &[listed_track("one"), listed_track("two")],
+                    &playlists,
+                    &fingerprint(2, 2),
+                )
+            })
+            .await
+            .unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let probing: SharedFingerprint = Default::default();
+
+        serve_cached_library(&store, &probing, &events, 3).await;
+
+        // Both collections ride in one event, followed by CatalogReady: the
+        // session is usable before any Spotify request has gone out.
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::CachedLibrary {
+                generation: 3,
+                ref liked_tracks,
+                ref playlists,
+            }) if liked_tracks.len() == 2 && playlists.len() == 2
+        ));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::CatalogReady { generation: 3 })
+        ));
+        assert!(received.try_recv().is_err());
+        // The persisted fingerprint is committed, so the boot probe answers
+        // Unchanged from the head probes alone.
+        assert_eq!(
+            *probing.lock().expect("library fingerprint lock"),
+            Some(fingerprint(2, 2))
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_with_no_persisted_fingerprint_serves_nothing_and_forgets_the_old_fingerprint() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        store
+            .call(|store| {
+                store.replace_library_cache(&[listed_track("one")], &[], &fingerprint(1, 0))
+            })
+            .await
+            .unwrap();
+        store
+            .call(|store| store.clear_library_cache())
+            .await
+            .unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let probing: SharedFingerprint = Default::default();
+        commit_fingerprint(&probing, fingerprint(9, 9));
+
+        serve_cached_library(&store, &probing, &events, 0).await;
+
+        // A fresh install behaves as before: nothing served, and the load
+        // must deliver contents, so the stale in-memory fingerprint is gone.
+        assert!(received.try_recv().is_err());
+        assert_eq!(*probing.lock().expect("library fingerprint lock"), None);
+    }
+
+    #[tokio::test]
+    async fn boot_with_an_implausible_cache_serves_nothing_and_forgets_the_fingerprint() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        // The fingerprint survived, but the contents it vouches for were
+        // never written (or were dropped); a match must not serve a hole.
+        store
+            .call(|store| store.replace_library_cache(&[], &[], &fingerprint(4, 1)))
+            .await
+            .unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let probing: SharedFingerprint = Default::default();
+
+        serve_cached_library(&store, &probing, &events, 0).await;
+
+        assert!(received.try_recv().is_err());
+        assert_eq!(*probing.lock().expect("library fingerprint lock"), None);
+    }
+
+    #[tokio::test]
+    async fn boot_serves_an_empty_cache_for_an_empty_account() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        // Both saved totals are zero: an empty cache is what the account
+        // holds, so serving it is the honest answer.
+        store
+            .call(|store| store.replace_library_cache(&[], &[], &fingerprint(0, 0)))
+            .await
+            .unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let probing: SharedFingerprint = Default::default();
+
+        serve_cached_library(&store, &probing, &events, 1).await;
+
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::CachedLibrary {
+                generation: 1,
+                ref liked_tracks,
+                ref playlists,
+            }) if liked_tracks.is_empty() && playlists.is_empty()
+        ));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(BackendEvent::CatalogReady { generation: 1 })
+        ));
+        assert!(received.try_recv().is_err());
+        assert_eq!(
+            *probing.lock().expect("library fingerprint lock"),
+            Some(fingerprint(0, 0))
+        );
+    }
+
+    #[test]
+    fn plausibility_accepts_contents_or_an_empty_account_only() {
+        let cache = |liked: usize, playlists: usize| -> LibraryContents {
+            (
+                (0..liked).map(|i| listed_track(&i.to_string())).collect(),
+                (0..playlists).map(|i| playlist(&i.to_string())).collect(),
+            )
+        };
+
+        // Contents present: plausible whatever the fingerprint says.
+        assert!(boot_cache_is_plausible(&fingerprint(1, 1), &cache(2, 1)));
+        // Nothing cached and the account is not empty: a hole, not a stand-in.
+        assert!(!boot_cache_is_plausible(&fingerprint(1, 1), &cache(0, 0)));
+        // Nothing cached and both saved totals are zero: the account is
+        // genuinely empty, so the cache stands in for it.
+        assert!(boot_cache_is_plausible(&fingerprint(0, 0), &cache(0, 0)));
+        // One side carries contents and the saved total for it is zero:
+        // still plausible, the cache is what is served.
+        assert!(boot_cache_is_plausible(&fingerprint(0, 0), &cache(1, 0)));
     }
 }
