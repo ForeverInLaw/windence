@@ -120,11 +120,49 @@ fn app_key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("escape", DismissOverlay, Some("Cadence")),
         playback_key_binding(),
+        seek_back_key_binding(),
+        seek_forward_key_binding(),
+        seek_start_key_binding(),
+        seek_end_key_binding(),
+        volume_up_key_binding(),
+        volume_down_key_binding(),
+        volume_mute_key_binding(),
     ]
 }
 
 fn playback_key_binding() -> KeyBinding {
     KeyBinding::new("space", TogglePlayback, Some("Cadence && !Input"))
+}
+
+// The slider keys sit on the focused slider element, one context below the
+// app's "Cadence" root. The `>` matches that shape, so the keys stay dead
+// while focus is anywhere else — an input, a menu, or the root itself.
+fn seek_back_key_binding() -> KeyBinding {
+    KeyBinding::new("left", SeekBack, Some("Cadence > ProgressSlider"))
+}
+
+fn seek_forward_key_binding() -> KeyBinding {
+    KeyBinding::new("right", SeekForward, Some("Cadence > ProgressSlider"))
+}
+
+fn seek_start_key_binding() -> KeyBinding {
+    KeyBinding::new("home", SeekStart, Some("Cadence > ProgressSlider"))
+}
+
+fn seek_end_key_binding() -> KeyBinding {
+    KeyBinding::new("end", SeekEnd, Some("Cadence > ProgressSlider"))
+}
+
+fn volume_up_key_binding() -> KeyBinding {
+    KeyBinding::new("up", VolumeUp, Some("Cadence > VolumeSlider"))
+}
+
+fn volume_down_key_binding() -> KeyBinding {
+    KeyBinding::new("down", VolumeDown, Some("Cadence > VolumeSlider"))
+}
+
+fn volume_mute_key_binding() -> KeyBinding {
+    KeyBinding::new("m", VolumeMute, Some("Cadence > VolumeSlider"))
 }
 
 #[cfg(test)]
@@ -172,6 +210,85 @@ mod tests {
                 std::slice::from_ref(&cadence),
             );
             assert!(bindings.is_empty(), "{source} must not open search");
+        }
+    }
+
+    #[test]
+    fn progress_keys_match_only_under_the_focused_progress_slider() {
+        let keymap = gpui_kit::Keymap::new(app_key_bindings());
+        let cadence = gpui_kit::KeyContext::try_from("Cadence").unwrap();
+        let progress = gpui_kit::KeyContext::try_from("ProgressSlider").unwrap();
+        let volume = gpui_kit::KeyContext::try_from("VolumeSlider").unwrap();
+        let input = gpui_kit::KeyContext::try_from("Input").unwrap();
+
+        // The slider's context sits one element below the app root.
+        let stack = vec![cadence.clone(), progress.clone()];
+        for key in ["left", "right", "home", "end"] {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert_eq!(bindings.len(), 1, "{key} must seek on the progress slider");
+        }
+        // Up and Down belong to the volume slider, not the progress slider.
+        for key in ["up", "down"] {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert!(
+                bindings.is_empty(),
+                "{key} must not act on the progress slider"
+            );
+        }
+
+        // Focus anywhere else — the volume slider, a text input, or the bare
+        // root — leaves every progress key dead.
+        for stack in [
+            vec![cadence.clone(), volume.clone()],
+            vec![cadence.clone(), input.clone()],
+            vec![cadence.clone()],
+        ] {
+            for key in ["left", "right", "home", "end"] {
+                let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+                let (bindings, _) =
+                    keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+                assert!(bindings.is_empty(), "{key} must stay dead off the slider");
+            }
+        }
+    }
+
+    #[test]
+    fn volume_keys_match_only_under_the_focused_volume_slider() {
+        let keymap = gpui_kit::Keymap::new(app_key_bindings());
+        let cadence = gpui_kit::KeyContext::try_from("Cadence").unwrap();
+        let progress = gpui_kit::KeyContext::try_from("ProgressSlider").unwrap();
+        let volume = gpui_kit::KeyContext::try_from("VolumeSlider").unwrap();
+        let input = gpui_kit::KeyContext::try_from("Input").unwrap();
+
+        let stack = vec![cadence.clone(), volume.clone()];
+        for key in ["up", "down", "m"] {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert_eq!(bindings.len(), 1, "{key} must step or mute the volume");
+        }
+        // Left and Right belong to the progress slider, not the volume slider.
+        for key in ["left", "right"] {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+            assert!(
+                bindings.is_empty(),
+                "{key} must not act on the volume slider"
+            );
+        }
+
+        for stack in [
+            vec![cadence.clone(), progress.clone()],
+            vec![cadence.clone(), input.clone()],
+            vec![cadence.clone()],
+        ] {
+            for key in ["up", "down", "m"] {
+                let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+                let (bindings, _) =
+                    keymap.bindings_for_input(std::slice::from_ref(&keystroke), &stack);
+                assert!(bindings.is_empty(), "{key} must stay dead off the slider");
+            }
         }
     }
 }

@@ -9,7 +9,17 @@ use router::Router;
 pub(super) struct Workspace {
     pub(super) router: Router,
     pub(super) last_error: Option<String>,
-    pub(super) action_notice: Option<String>,
+    /// The banner's current notice. A radio request's notice is answered by a
+    /// backend event; every other one carries its own severity and, for a
+    /// confirmation, the moment it should dismiss itself.
+    pub(super) action_notice: Option<Notice>,
+    /// What the last armed dismiss timer may clear. The timer only fires
+    /// the dismissal while the generation still matches, so a notice that
+    /// arrived later is never closed by an earlier timer.
+    pub(super) notice_timer_armed_for: Option<ArmedNotice>,
+    /// How many notices have gone up. Keys the banner's arrival animation,
+    /// so a notice replacing the one on screen starts its entrance at zero.
+    pub(super) notice_generation: usize,
     pub(super) radio_request_id: u64,
     pub(super) pending_radio_request: Option<u64>,
     pub(super) player: Entity<player::Player>,
@@ -31,6 +41,10 @@ pub(super) struct Workspace {
     pub(super) focus_handle: FocusHandle,
     pub(super) _appearance_subscription: Subscription,
     pub(super) _activation_subscription: Subscription,
+    /// The window width from the most recent render. The sidebar observer
+    /// uses it to re-derive the tiers while the rail moves.
+    last_window_width: f32,
+    _layout_subscription: Subscription,
 }
 
 impl Workspace {
@@ -128,6 +142,7 @@ impl Workspace {
         )
         .detach();
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(preferences.sidebar_collapsed, cx));
+        let layout_subscription = cx.observe(&sidebar, |this, _, cx| this.sync_layout(cx));
         cx.subscribe(
             &sidebar,
             |this, _, event: &sidebar::SidebarEvent, cx| match event {
@@ -181,6 +196,8 @@ impl Workspace {
             router: Router::new(),
             last_error: None,
             action_notice: None,
+            notice_timer_armed_for: None,
+            notice_generation: 0,
             radio_request_id: 0,
             pending_radio_request: None,
             player,
@@ -202,6 +219,8 @@ impl Workspace {
             focus_handle,
             _appearance_subscription: appearance_subscription,
             _activation_subscription: activation_subscription,
+            last_window_width: 0.,
+            _layout_subscription: layout_subscription,
         }
     }
 
@@ -240,17 +259,78 @@ impl Workspace {
         }
     }
 
+    /// Shows a notice that no backend event will resolve. A confirmation
+    /// arms a timer that dismisses it; the timer only ever closes the exact
+    /// notice it was armed for, so a notice that replaces it is safe.
+    pub(super) fn show_notice(
+        &mut self,
+        message: String,
+        severity: NoticeSeverity,
+        cx: &mut Context<Self>,
+    ) {
+        let notice = Notice::Timed(NoticeItem { message, severity });
+        self.set_notice(notice, cx);
+    }
+
+    /// Puts `notice` up. A confirmation arms a timer carrying its own
+    /// generation: when the timer fires it only clears the banner if no
+    /// newer notice has gone up since, so a notice that replaced it is safe
+    /// even when the words match.
+    pub(super) fn set_notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        self.notice_timer_armed_for = self
+            .notice_timer_armed_for
+            .take()
+            .filter(|_| notice.auto_dismisses());
+        self.notice_generation += 1;
+        self.action_notice = Some(notice.clone());
+        if notice.auto_dismisses() {
+            let armed = ArmedNotice {
+                generation: self.notice_generation,
+            };
+            self.notice_timer_armed_for = Some(armed);
+            let task = cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(NOTICE_CONFIRMATION_LIFETIME)
+                    .await;
+                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
+                    .ok();
+            });
+            task.detach();
+        }
+        cx.notify();
+    }
+
+    /// A timer's callback: clears the banner only for the notice the timer
+    /// was armed for. The generation moved on whenever another notice went
+    /// up, so an older timer leaves the newcomer alone.
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+        if self.notice_generation == armed.generation {
+            self.action_notice = None;
+            self.notice_timer_armed_for = None;
+        }
+    }
+
+    /// The current banner generation, for tests that prove a replacement
+    /// notice restarts its entrance.
+    #[cfg(test)]
+    pub(super) fn read_notice_generation(&self) -> usize {
+        self.notice_generation
+    }
+
     fn action_notice_banner(
         &self,
         palette: CadencePalette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let message = self.action_notice.clone()?;
+        let notice = self.action_notice.as_ref()?;
         Some(components::action_notice_banner(
             palette,
-            message,
+            notice.message().to_owned(),
+            notice.item().map(NoticeItem::severity),
+            self.notice_generation,
             cx.listener(|this, _, _, cx| {
                 this.action_notice = None;
+                this.notice_timer_armed_for = None;
                 cx.notify();
             }),
         ))
@@ -327,6 +407,37 @@ impl Workspace {
             cx.listener(|this, _, _, cx| this.confirm_spotify_app_change(cx)),
         )
     }
+
+    /// Re-derives the layout tiers from the window's last width and the
+    /// sidebar's settled width, and pushes the content width to the views
+    /// that key on it. Runs on every render and whenever the sidebar moves.
+    fn sync_layout(&mut self, cx: &mut Context<Self>) {
+        let window_width = self.last_window_width;
+        let compact_layout = sidebar_wants_compact_layout(window_width);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_compact_layout(compact_layout, cx)
+        });
+        let content = content_width(window_width, self.sidebar.read(cx).target_width());
+        self.player_bar
+            .update(cx, |bar, cx| bar.set_content_width(content, cx));
+        self.toolbar
+            .update(cx, |toolbar, cx| toolbar.set_content_width(content, cx));
+        for list in self.track_lists(cx) {
+            list.update(cx, |list, cx| list.set_content_width(content, cx));
+        }
+    }
+
+    /// Every track list the workspace's pages can show.
+    fn track_lists(&self, cx: &App) -> Vec<Entity<track_list::TrackList>> {
+        vec![
+            self.liked_songs.read(cx).track_list_entity(),
+            self.recent.read(cx).track_list_entity(),
+            self.search.read(cx).track_list_entity(),
+            self.playlist.read(cx).track_list_entity(),
+            self.artist.read(cx).track_list_entity(),
+            self.album.read(cx).track_list_entity(),
+        ]
+    }
 }
 
 // Render derives the window from memory; all I/O stays behind the backend or
@@ -334,7 +445,8 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact_layout = uses_compact_content_layout(f32::from(window.viewport_size().width));
+        self.last_window_width = f32::from(window.viewport_size().width);
+        self.sync_layout(cx);
         // While the session is not ready the sign-in window shows this
         // confirmation; rendering it here too would double the modal.
         let app_change_open = self.session.read(cx).app_change_confirmation_open()
@@ -342,9 +454,6 @@ impl Render for Workspace {
         let action_notice = self.action_notice_banner(palette, cx);
 
         let scrim = self.signed_out_scrim(palette, cx);
-        self.sidebar.update(cx, |sidebar, cx| {
-            sidebar.set_compact_layout(compact_layout, cx)
-        });
         let route = self.router.route();
         let back_target = self.router.back_target();
         let error = self.last_error.clone();
@@ -362,6 +471,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::dismiss_overlay))
             .on_action(cx.listener(Self::toggle_playback))
+            .on_action(cx.listener(Self::seek_back))
+            .on_action(cx.listener(Self::seek_forward))
+            .on_action(cx.listener(Self::seek_start))
+            .on_action(cx.listener(Self::seek_end))
+            .on_action(cx.listener(Self::volume_up))
+            .on_action(cx.listener(Self::volume_down))
+            .on_action(cx.listener(Self::volume_mute))
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, window, cx| {
                     this.player.update(cx, |player, cx| {

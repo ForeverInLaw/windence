@@ -56,6 +56,66 @@ impl Workspace {
         self.player.update(cx, |player, cx| player.toggle(cx));
     }
 
+    /// How far one Left or Right press moves playback, in milliseconds.
+    const SEEK_STEP_MS: u32 = 5_000;
+    /// How far one Up or Down press moves the volume.
+    const VOLUME_STEP: f32 = 0.05;
+
+    pub(super) fn seek_back(&mut self, _: &SeekBack, _: &mut Window, cx: &mut Context<Self>) {
+        self.seek_by(-(Self::SEEK_STEP_MS as i64), cx);
+    }
+
+    pub(super) fn seek_forward(&mut self, _: &SeekForward, _: &mut Window, cx: &mut Context<Self>) {
+        self.seek_by(Self::SEEK_STEP_MS as i64, cx);
+    }
+
+    pub(super) fn seek_start(&mut self, _: &SeekStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.seek_to(0, cx);
+    }
+
+    pub(super) fn seek_end(&mut self, _: &SeekEnd, _: &mut Window, cx: &mut Context<Self>) {
+        let duration = self
+            .player
+            .read(cx)
+            .now_playing()
+            .map_or(0, |track| track.duration_ms);
+        self.seek_to(duration, cx);
+    }
+
+    /// Moves playback by `delta_ms`, clamped to the track's bounds, so a
+    /// step past either end stops at it instead of wrapping.
+    fn seek_by(&mut self, delta_ms: i64, cx: &mut Context<Self>) {
+        let position = self.player.read(cx).position_ms() as i64 + delta_ms;
+        let duration = self
+            .player
+            .read(cx)
+            .now_playing()
+            .map_or(0, |track| track.duration_ms) as i64;
+        self.seek_to(position.clamp(0, duration.max(0)) as u32, cx);
+    }
+
+    fn seek_to(&mut self, position_ms: u32, cx: &mut Context<Self>) {
+        self.player
+            .update(cx, |player, cx| player.seek(position_ms, cx));
+    }
+
+    pub(super) fn volume_up(&mut self, _: &VolumeUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_volume(Self::VOLUME_STEP, cx);
+    }
+
+    pub(super) fn volume_down(&mut self, _: &VolumeDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_volume(-Self::VOLUME_STEP, cx);
+    }
+
+    pub(super) fn volume_mute(&mut self, _: &VolumeMute, _: &mut Window, cx: &mut Context<Self>) {
+        self.player.update(cx, |player, cx| player.toggle_mute(cx));
+    }
+
+    fn step_volume(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.player
+            .update(cx, |player, cx| player.step_volume(delta, cx));
+    }
+
     pub(super) fn authenticate(&mut self, cx: &mut Context<Self>) {
         self.session
             .update(cx, |session, cx| session.authenticate(cx));
@@ -108,9 +168,8 @@ impl Workspace {
                 self.last_error = Some(error.clone());
                 cx.notify();
             }
-            session::SessionEvent::Notice(notice) => {
-                self.action_notice = Some(notice.clone());
-                cx.notify();
+            session::SessionEvent::Notice((message, severity)) => {
+                self.show_notice(message.clone(), *severity, cx);
             }
         }
     }
@@ -133,6 +192,7 @@ impl Workspace {
         self.player.update(cx, |player, cx| player.clear(cx));
         self.last_error = None;
         self.action_notice = None;
+        self.notice_timer_armed_for = None;
         cx.notify();
     }
 
@@ -268,7 +328,9 @@ impl Workspace {
         match event {
             page::PageEvent::Loaded => self.last_error = None,
             page::PageEvent::Failed(error) => self.last_error = Some(error.clone()),
-            page::PageEvent::Notice(notice) => self.action_notice = Some(notice.clone()),
+            page::PageEvent::Notice((message, severity)) => {
+                self.show_notice(message.clone(), *severity, cx);
+            }
             page::PageEvent::OpenPlaylist(playlist) => {
                 self.load_playlist(playlist.clone(), cx);
                 self.open_playlist(origin, cx);
@@ -283,7 +345,7 @@ impl Workspace {
     /// Queues a radio seeded from `track`, tracking the request so a later
     /// failure or cancellation can clear the notice it puts up.
     fn start_track_radio(&mut self, track: model::Track, cx: &mut Context<Self>) {
-        self.action_notice = Some("Starting track radio…".to_owned());
+        self.set_notice(Notice::RadioPending, cx);
         let request_id = next_request_id(&mut self.radio_request_id);
         self.pending_radio_request = Some(request_id);
         let started = self
@@ -291,7 +353,11 @@ impl Workspace {
             .update(cx, |player, cx| player.start_radio(request_id, track, cx));
         if !started {
             self.pending_radio_request = None;
-            self.action_notice = Some("Unable to start track radio".to_owned());
+            self.show_notice(
+                "Unable to start track radio".to_owned(),
+                NoticeSeverity::Failure,
+                cx,
+            );
         }
     }
 }

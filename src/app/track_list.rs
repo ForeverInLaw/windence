@@ -59,6 +59,10 @@ pub(super) struct TrackList {
     library: Entity<library::Library>,
     player: Entity<player::Player>,
     image_cache: Entity<image_cache::BoundedImageCache>,
+    /// The width the workspace gives this list: the window minus the
+    /// sidebar. The column tiers read it instead of the window width, so
+    /// collapsing the rail widens the table the same frame.
+    content_width: f32,
 }
 
 impl EventEmitter<PageEvent> for TrackList {}
@@ -76,7 +80,23 @@ impl TrackList {
             library: services::AppServices::library(cx),
             player: services::AppServices::player(cx),
             image_cache: services::AppServices::image_cache(cx),
+            // Replaced with the real value before the first paint.
+            content_width: 0.,
         }
+    }
+
+    /// Takes the content width the workspace derived for this frame.
+    pub(super) fn set_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.content_width != width {
+            self.content_width = width;
+            cx.notify();
+        }
+    }
+
+    /// The content width the workspace last pushed, for other views that
+    /// key on the same space.
+    pub(super) fn content_width(&self) -> f32 {
+        self.content_width
     }
 
     /// Shows `listed` under `id`, which pages vary per playlist or album so
@@ -227,7 +247,7 @@ impl TrackList {
         index: usize,
         is_current_track: bool,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let palette = appearance::Appearance::palette(cx);
         let has_playback_context = self.player.read(cx).now_playing().is_some();
         let next_track = track.clone();
@@ -252,6 +272,10 @@ impl TrackList {
                 .border_color(rgb(palette.border))
         };
 
+        // The menu grows from its row's actions button: the same fade and
+        // start-inset entrance as the account menu, keyed per row so each
+        // open starts at zero. The anchor carries the position; the
+        // animation carries the grow.
         components::menu_surface(palette)
             .on_mouse_up_out(
                 gpui_kit::MouseButton::Left,
@@ -260,6 +284,14 @@ impl TrackList {
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .with_animation(
+                ("track-menu-open", index),
+                Animation::new(QUICK).with_easing(smooth_out()),
+                move |menu, delta| {
+                    menu.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                        .top(px(MENU_OPEN_INSET * (1. - delta)))
+                },
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-play", index), "Play now")
@@ -357,13 +389,14 @@ impl TrackList {
                     cx.notify();
                 })),
             )
+            .into_any_element()
     }
 }
 
 impl Render for TrackList {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let mut columns = track_table_columns(f32::from(window.viewport_size().width));
+        let mut columns = track_table_columns(self.content_width);
         // A context without dates never shows the column, however wide the
         // window: albums and search results have nothing to put in it.
         columns.date_added &= self.context.id.is_some();

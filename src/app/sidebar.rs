@@ -51,10 +51,6 @@ fn row_label(text: impl Into<SharedString>) -> Div {
     div().min_w_0().flex_1().truncate().child(text.into())
 }
 
-fn expanded_sidebar_width(compact_layout: bool) -> f32 {
-    if compact_layout { 200. } else { 232. }
-}
-
 impl Sidebar {
     pub(super) fn new(collapsed: bool, cx: &mut App) -> Self {
         let width = if collapsed {
@@ -96,6 +92,18 @@ impl Sidebar {
         if self.compact_layout != compact {
             self.compact_layout = compact;
             cx.notify();
+        }
+    }
+
+    /// The width the rail occupies at rest: the collapsed rail while it is
+    /// collapsed, the expanded width its tier arms otherwise. The
+    /// transition's painted width moves through this on its way, so tiers
+    /// keyed on it stay stable while the animation runs.
+    pub(super) fn target_width(&self) -> f32 {
+        if self.collapsed {
+            COLLAPSED_SIDEBAR_WIDTH
+        } else {
+            expanded_sidebar_width(self.compact_layout)
         }
     }
 
@@ -217,7 +225,7 @@ impl Sidebar {
         let start_progress = ((start_width - COLLAPSED_SIDEBAR_WIDTH) / width_range).clamp(0., 1.);
         let row_width = expanded_width - 2. * SIDEBAR_CONTENT_PAD;
         let target_progress = if collapsed { 0. } else { 1. };
-        let row_animation = Animation::new(animation_duration).with_easing(ease_out_quint());
+        let row_animation = Animation::new(animation_duration).with_easing(smooth_out());
         let nav_item = |id: &'static str,
                         fill_id: &'static str,
                         label: &'static str,
@@ -518,7 +526,7 @@ impl Sidebar {
             )
             .with_animation(
                 ("sidebar-width", animation_id),
-                Animation::new(animation_duration).with_easing(ease_out_quint()),
+                Animation::new(animation_duration).with_easing(smooth_out()),
                 move |sidebar, delta| {
                     let width = interpolate_sidebar_width(start_width, target_width, delta);
                     visual_width.set(width);

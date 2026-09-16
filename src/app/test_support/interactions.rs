@@ -1,21 +1,24 @@
-use super::test_support::{BackendProbe, initialize, settle, track, workspace};
-use crate::app::{Route, Workspace, appearance, assets, onboarding, services};
+use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
+use crate::app::{
+    NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets,
+    compact_progress_slider_width, onboarding, services, uses_compact_player_layout, windows,
+};
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     App, AppContext as _, HeadlessAppContext, KeyUpEvent, Keystroke, NoopTextSystem, WeakEntity,
-    Window, WindowHandle, px, size,
+    Window, WindowHandle, point, px, size,
 };
 use spotify_gpui_client::backend::{BackendCommand, BackendEvent};
 use spotify_gpui_client::model;
 use spotify_gpui_client::storage::ThemePreference;
 use std::sync::Arc;
 
-struct Fixture {
+pub(super) struct Fixture {
     cx: HeadlessAppContext,
     window: WindowHandle<Root>,
-    workspace: Option<WeakEntity<Workspace>>,
+    pub(super) workspace: Option<WeakEntity<Workspace>>,
     backend: BackendProbe,
 }
 
@@ -32,13 +35,13 @@ const SECONDARY_A: &str = "cmd-a";
 const SECONDARY_A: &str = "ctrl-a";
 
 impl Fixture {
-    fn new(settings: bool) -> Self {
+    pub(super) fn new(settings: bool) -> Self {
         let mut cx = HeadlessAppContext::with_asset_source(
             Arc::new(NoopTextSystem),
             Arc::new(assets::AppAssets),
         );
         let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
-        let (window, workspace) = workspace(&mut cx, 1280., 820.);
+        let (window, workspace) = workspace_collapsed(&mut cx, 1280., 820., false);
         if settings {
             cx.update(|cx| workspace.update(cx, |workspace, cx| workspace.open_settings(cx)));
         }
@@ -93,7 +96,7 @@ impl Fixture {
         }
     }
 
-    fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+    pub(super) fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         let result = self
             .cx
             .update_window(self.window.into(), |_, window, cx| f(window, cx))
@@ -102,7 +105,7 @@ impl Fixture {
         result
     }
 
-    fn no_commands(&mut self) {
+    pub(super) fn no_commands(&mut self) {
         assert!(matches!(
             self.backend.commands.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -408,6 +411,101 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
     fixture.no_commands();
 }
 
+/// The window sizes and rail states the interface has to survive. Widths
+/// sit at the tier boundaries: the window minimum (720) and the
+/// compact-content window boundary (960), each with the rail expanded and
+/// collapsed, plus the default 1280 window in the full player tier.
+///
+/// The compact bar's fixed parts (paddings, clusters, transport, and the
+/// right cluster with the volume slider) sum to `COMPACT_BAR_FIXED_WIDTH`;
+/// the floor adds the slider minimum on top, so the timeline only folds on
+/// the narrowest compact contents. Wider compact contents and the full
+/// tier show the slider at the width the tier math grants, and the volume
+/// slider shows in both tiers.
+const MATRIX: [(f32, bool); 5] = [
+    (720., false),
+    (720., true),
+    (960., false),
+    (960., true),
+    (1280., false),
+];
+
+#[test]
+fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
+    for (width, collapsed) in MATRIX {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let backend = cx.update(|cx| initialize(cx, ThemePreference::Light));
+        let (window, workspace) = workspace_collapsed(&mut cx, width, 600., collapsed);
+        let rail = cx.update(|cx| workspace.read(cx).sidebar.read(cx).target_width());
+        let content = width - rail;
+        let compact = uses_compact_player_layout(content);
+        let mut fixture = Fixture {
+            cx,
+            window,
+            workspace: Some(workspace.downgrade()),
+            backend,
+        };
+        fixture.update(|window, _| {
+            // The bar folds the timeline below the floor, so the test does
+            // too: `None` means no slider on screen, `Some` its width.
+            let slider = window.try_find("progress-slider");
+            let expected = if compact {
+                compact_progress_slider_width(content)
+            } else {
+                Some(PROGRESS_SLIDER_WIDTH)
+            };
+            match (slider.as_ref(), expected) {
+                (None, None) => (),
+                (Some(slider), Some(expected)) => {
+                    assert_eq!(
+                        f32::from(slider.bounds().size.width),
+                        expected,
+                        "the drawn slider at width {width}, collapsed: {collapsed}, content {content}"
+                    );
+                }
+                (None, Some(_)) => panic!(
+                    "timeline must show at width {width}, collapsed: {collapsed}, content {content}"
+                ),
+                (Some(_), None) => panic!(
+                    "timeline must fold below the floor at width {width}, collapsed: {collapsed}, content {content}"
+                ),
+            }
+            // Transport keeps working wherever the timeline folded.
+            if slider.is_none() {
+                let play = window
+                    .try_find("play-toggle")
+                    .unwrap_or_else(|| panic!("no play button at width {width}"));
+                assert!(
+                    play.visible(),
+                    "play button hidden at width {width}, collapsed: {collapsed}"
+                );
+            }
+            // The volume slider exists in both tiers and, with its
+            // cluster, nothing the bar shows may stick out of the window.
+            assert!(
+                window.try_find("volume-slider").is_some(),
+                "the volume slider must show at width {width}, collapsed: {collapsed}"
+            );
+            for id in ["play-toggle", "queue-toggle", "volume", "volume-slider"] {
+                if let Some(control) = window.try_find(id) {
+                    let bounds = control.bounds();
+                    assert!(
+                        bounds.right() <= px(width) && bounds.left() >= px(0.),
+                        "{id} clips at width {width}: bounds {bounds:?}",
+                    );
+                }
+            }
+        });
+        fixture.no_commands();
+        // The entity handle goes before the context, or the leak detector
+        // reads it as a Workspace left alive across contexts.
+        drop(workspace);
+    }
+}
+
 #[test]
 fn mute_sends_volume_and_restores_the_previous_level() {
     let mut fixture = Fixture::new(false);
@@ -416,6 +514,156 @@ fn mute_sends_volume_and_restores_the_previous_level() {
     assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
     fixture.update(|window, cx| window.click("volume", cx));
     assert_eq!(*fixture.backend.volume.borrow_and_update(), initial);
+    fixture.no_commands();
+}
+
+/// Every icon-only control names its action for a screen reader. The
+/// builders require the label, so these assert what the names say, not
+/// that they exist.
+#[test]
+fn icon_buttons_announce_their_actions_in_human_words() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(credited_track());
+    fixture.update(|window, _| {
+        let expected = [
+            ("next", "Next track"),
+            ("previous", "Previous track"),
+            ("volume", "Volume"),
+            ("queue-toggle", "Queue"),
+            ("shuffle-toggle", "Shuffle"),
+            // The transport button is state-dependent: the fixture starts
+            // paused, so it offers to play.
+            ("play-toggle", "Play"),
+            ("progress-slider", "Playback position"),
+            ("volume-slider", "Volume"),
+        ];
+        for (id, label) in expected {
+            assert_eq!(
+                window.find(id).label(),
+                Some(label),
+                "the {id} button must announce itself as {label:?}"
+            );
+        }
+    });
+    // The heart follows the state the player bar already knows: the
+    // snapshot track starts liked, so the heart offers removal.
+    let liked = fixture.update(|_, cx| {
+        services::AppServices::library(cx)
+            .read(cx)
+            .is_liked(&track(0))
+    });
+    let expected = if liked {
+        "Remove from Liked Songs"
+    } else {
+        "Add to Liked Songs"
+    };
+    fixture.update(|window, _| {
+        assert_eq!(window.find("player-liked").label(), Some(expected));
+    });
+    // The queue drawer's close button exists only while the drawer is open.
+    fixture.update(|window, cx| window.click("queue-toggle", cx));
+    fixture.update(|window, _| {
+        assert_eq!(window.find("close-queue").label(), Some("Close queue"));
+    });
+    fixture.no_commands();
+}
+
+/// The track-row heart and actions button carry their names, and the
+/// row heart follows the liked state the row already knows.
+#[test]
+fn track_row_controls_announce_their_actions() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find(("spotify-liked", 0usize)).label(),
+            // The fixture library starts with every rendered row liked.
+            Some("Remove from Liked Songs")
+        );
+        assert_eq!(
+            window.find(("track-actions", 0usize)).label(),
+            Some("More actions")
+        );
+    });
+    fixture.no_commands();
+}
+
+/// At the fixed sign-in window's size, the setup form keeps air between the
+/// rail and its own edges: the form column's widest layout plus the rail
+/// never reach the window's width.
+#[test]
+fn sign_in_forms_render_with_headroom_at_the_fixed_size() {
+    let mut cx = HeadlessAppContext::with_asset_source(
+        Arc::new(NoopTextSystem),
+        Arc::new(assets::AppAssets),
+    );
+    let backend = cx.update(|cx| {
+        let backend = initialize(cx, ThemePreference::Light);
+        services::AppServices::session(cx).update(cx, |session, cx| {
+            session.handle_backend_event(BackendEvent::SetupRequired, cx);
+        });
+        backend
+    });
+    let window_width = windows::onboarding_window_width();
+    let window = cx
+        .open_window(size(px(window_width), px(720.)), |window, cx| {
+            appearance::Appearance::attach(window, cx);
+            let onboarding = cx.new(|cx| onboarding::Onboarding::new(window, cx));
+            cx.new(|cx| Root::new(onboarding, window, cx))
+        })
+        .expect("setup window");
+    settle(&mut cx, window.into());
+    let mut fixture = Fixture {
+        cx,
+        window,
+        workspace: None,
+        backend,
+    };
+    fixture.update(|window, _| {
+        let form = window.find("client-id-input");
+        let bounds = form.bounds();
+        // The input sits inside the form column: a margin off the rail and
+        // off the window's edge on both sides means no edge-to-edge contact.
+        assert!(
+            bounds.left() >= px(onboarding::ONBOARDING_RAIL_WIDTH + 24.),
+            "form starts {:?} from the left; the rail must keep air before it",
+            bounds
+        );
+        assert!(
+            bounds.right() <= px(window_width - 24.),
+            "form ends {:?}; the window must keep air after it",
+            bounds
+        );
+    });
+    fixture.no_commands();
+}
+
+/// An overlay control announces its action. The notice banner exists only
+/// while a notice is up, so the test raises one the way the workspace
+/// itself would, then dismisses it.
+#[test]
+fn action_notice_dismiss_announces_itself() {
+    let mut fixture = Fixture::new(false);
+    let workspace = fixture.workspace.clone().expect("workspace fixture");
+    fixture.update(|_, cx| {
+        workspace
+            .upgrade()
+            .expect("live workspace")
+            .update(cx, |workspace, cx| {
+                workspace.show_notice(
+                    "Starting track radio…".to_owned(),
+                    NoticeSeverity::Confirmation,
+                    cx,
+                );
+            });
+    });
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find("dismiss-action-notice").label(),
+            Some("Dismiss")
+        );
+    });
+    fixture.update(|window, cx| window.click("dismiss-action-notice", cx));
+    fixture.update(|window, _| assert!(window.try_find("dismiss-action-notice").is_none()));
     fixture.no_commands();
 }
 
@@ -453,4 +701,308 @@ fn a_cached_library_from_a_superseded_account_is_dropped_without_setting_boot_re
         assert!(!library.reloading());
     });
     fixture.no_commands();
+}
+
+#[test]
+fn tab_reaches_both_sliders_with_visible_focus() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // Walk tab from the initial root focus. The first stop to name
+    // "progress-slider" is the slider itself; however many of the bar's
+    // own buttons sit before it, tab order is stable, so the second step
+    // reaches the volume slider right after it.
+    let mut steps = 0;
+    let mut on_progress = false;
+    while steps < 40 {
+        steps += 1;
+        fixture.press("tab");
+        let reached = fixture.update(|window, _| {
+            window
+                .try_find("progress-slider")
+                .is_some_and(|slider| slider.focused() == Some(true))
+        });
+        if reached {
+            on_progress = true;
+            break;
+        }
+    }
+    assert!(on_progress, "tab never reached the progress slider");
+    assert_eq!(steps, 2, "the bar's first tab stop precedes the slider");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("volume-slider").focused(), Some(true));
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn progress_slider_keys_seek_at_documented_steps() {
+    let mut fixture = Fixture::new(false);
+    // track(0) is 240s long; the snapshot leaves playback at 60s.
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // Tab to the slider: the bar's first tab stop precedes it, so the
+    // second step lands on the slider itself.
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("progress-slider").focused(), Some(true));
+    });
+
+    // Left and Right step 5 seconds from wherever playback stands. The
+    // snapshot leaves playback at the track's start.
+    let seeked = |command| match command {
+        BackendCommand::Seek(position) => position,
+        other => panic!("expected a seek, got {other:?}"),
+    };
+    fixture.press("left");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        0,
+        "seeking back from the track start clamps to zero"
+    );
+    fixture.press("right");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        5_000
+    );
+    fixture.press("right");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        10_000
+    );
+    fixture.press("left");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        5_000
+    );
+
+    // Home and End jump to the track's bounds.
+    fixture.press("home");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        0
+    );
+    fixture.press("end");
+    assert_eq!(
+        seeked(fixture.backend.commands.try_recv().expect("seek")),
+        track(0).duration_ms
+    );
+    fixture.no_commands();
+}
+
+#[test]
+fn volume_slider_keys_step_and_mute() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
+    fixture.no_commands();
+
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.press("tab");
+    fixture.update(|window, _| {
+        assert_eq!(window.find("volume-slider").focused(), Some(true));
+    });
+
+    // Up and Down step 5 percent, clamped to the 0..=1 range. The player
+    // starts at the saved preference level, so Up clamps only at the top.
+    for _ in 0..20 {
+        fixture.press("up");
+    }
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 1.);
+    fixture.press("down");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.95);
+
+    // M mutes and restores, like the pointer control does.
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.95);
+    fixture.no_commands();
+
+    // The steps landed on the persisted level the restart reads back.
+    fixture.update(|_, cx| {
+        let player = services::AppServices::player(cx).read(cx);
+        assert_eq!(player.volume(), 0.95);
+    });
+    assert!(initial > 0. && initial <= 1.);
+}
+
+/// The volume slider's keyboard path exists in the compact tier too: at a
+/// collapsed-rail 720 window (content 642, below the full tier's
+/// breakpoint) the slider renders and answers Up, Down, and M.
+#[test]
+fn volume_slider_answers_the_keyboard_in_the_compact_tier() {
+    let mut cx = HeadlessAppContext::with_asset_source(
+        Arc::new(NoopTextSystem),
+        Arc::new(assets::AppAssets),
+    );
+    let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
+    let (window, workspace) = workspace_collapsed(&mut cx, 720., 600., true);
+    // 720 - 78 = 642 content: below the full tier's breakpoint, so the
+    // bar runs its compact tier.
+    assert!(uses_compact_player_layout(642.));
+    let mut fixture = Fixture {
+        cx,
+        window,
+        workspace: Some(workspace.downgrade()),
+        backend,
+    };
+    fixture.play(track(0));
+    let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
+    // The saved default level (DEFAULT_VOLUME) the keys step from.
+    assert_eq!(initial, 0.72);
+    fixture.no_commands();
+    fixture.update(|window, _| {
+        assert!(
+            window.try_find("volume-slider").is_some(),
+            "the compact tier must render the volume slider"
+        );
+    });
+    // Walk tab to the volume slider. In the compact tier the drawn
+    // progress slider is absent, so the tab walk alternates between the
+    // slider and the root focus; the even steps land on the slider.
+    for _ in 0..2 {
+        fixture.press("tab");
+    }
+    fixture.update(|window, _| {
+        assert_eq!(
+            window.find("volume-slider").focused(),
+            Some(true),
+            "two tabs from the root land on the compact volume slider"
+        );
+    });
+    // Up steps 5 percent from the saved 0.72, and M mutes and restores.
+    fixture.press("up");
+    let up = fixture.backend.volume.borrow_and_update().to_owned();
+    assert!((up - 0.77).abs() < 1e-6);
+    fixture.press("down");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.72);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.);
+    fixture.press("m");
+    assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.72);
+    fixture.no_commands();
+    // The entity handle goes before the context, or the leak detector
+    // reads it as a Workspace left alive across contexts.
+    drop(workspace);
+}
+
+#[test]
+fn slider_keys_stay_dead_while_an_input_or_the_root_has_focus() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // With focus still on the root (no tab yet), the transport keys do
+    // nothing: space toggles playback, the slider keys stay dead.
+    fixture.press("space");
+    match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("playback command")
+    {
+        BackendCommand::Resume => {}
+        command => panic!("expected playback to toggle, got {command:?}"),
+    }
+    for key in ["left", "right", "home", "end", "up", "down", "m"] {
+        fixture.press(key);
+    }
+    fixture.no_commands();
+
+    // Focusing the search input must not hand it the slider keys either.
+    fixture.press(SECONDARY_K);
+    fixture.update(|window, _| {
+        assert_eq!(window.find("search-input").focused(), Some(true));
+    });
+    for key in ["left", "right", "home", "end", "up", "down", "m"] {
+        fixture.press(key);
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn clicking_inside_the_taller_progress_band_still_seeks() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+
+    // A click in the lower half of the 20px band, halfway along the track:
+    // the full tier's fixed 340px track puts that at half of 240s.
+    fixture.update(|window, cx| {
+        window.click_at("progress-slider", point(px(170.), px(15.)), cx);
+    });
+    match fixture.backend.commands.try_recv().expect("seek command") {
+        BackendCommand::Seek(position) => {
+            assert_eq!(
+                position, 124_235,
+                "a mid-band click must still seek along the drawn track"
+            );
+        }
+        command => panic!("unexpected command: {command:?}"),
+    }
+    fixture.no_commands();
+}
+
+/// Folding the rail on the running window re-derives the tiers without any
+/// resize: the sidebar observer pushes the new content width, and the bar
+/// follows it in the same frame. At 1280 both rail states sit in the full
+/// player tier, whose drawn slider keeps `PROGRESS_SLIDER_WIDTH` and whose
+/// centre cluster anchors to the window, so the timeline's geometry holds
+/// across the fold while the content column widens around it.
+#[test]
+fn collapsing_the_rail_folds_the_timeline_without_a_resize() {
+    let mut fixture = Fixture::new(false);
+    // At 1280 with the rail expanded the full tier shows the timeline at
+    // the width the centre box reserves.
+    let expanded_slider_width = fixture.update(|window, _| {
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the full tier must show the timeline before the rail folds");
+        f32::from(slider.bounds().size.width)
+    });
+    assert_eq!(
+        expanded_slider_width, PROGRESS_SLIDER_WIDTH,
+        "the full tier's drawn slider keeps the width the centre box reserves"
+    );
+    fixture.update(|_, cx| {
+        fixture_workspace(cx).update(cx, |workspace, cx| {
+            workspace
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.set_collapsed(true, cx));
+        });
+    });
+    fixture.update(|window, _| {
+        // The fold left the content in the same tier, so the drawn slider
+        // keeps its width and stays inside the window.
+        let slider = window
+            .try_find("progress-slider")
+            .expect("the timeline must survive the fold here");
+        let collapsed_slider = f32::from(slider.bounds().size.width);
+        assert_eq!(
+            collapsed_slider, PROGRESS_SLIDER_WIDTH,
+            "the full tier's slider must keep its width across the fold"
+        );
+        let bounds = slider.bounds();
+        assert!(
+            bounds.right() <= px(1280.) && bounds.left() >= px(0.),
+            "the timeline clips after the fold: bounds {bounds:?}"
+        );
+        let play = window.find("play-toggle");
+        assert!(play.visible(), "the transport must survive the fold");
+    });
+    fixture.no_commands();
+}
+
+/// The fixture's workspace entity, through the weak handle the fixture
+/// holds.
+fn fixture_workspace(cx: &mut App) -> gpui_kit::Entity<Workspace> {
+    // The test keeps one workspace alive in this context; reach it through
+    // the services root the workspace registers at construction.
+    services::AppServices::root_workspace(cx).expect("fixture workspace")
 }

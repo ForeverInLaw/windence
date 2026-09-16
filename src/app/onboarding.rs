@@ -6,6 +6,15 @@ use super::icons::CadenceIcon;
 pub(super) const SPOTIFY_DASHBOARD_URL: &str = "https://developer.spotify.com/dashboard";
 pub(super) const SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
 
+/// The context rail's fixed width.
+pub(super) const ONBOARDING_RAIL_WIDTH: f32 = 420.;
+/// The form column's widest layout.
+pub(super) const ONBOARDING_FORM_MAX_WIDTH: f32 = 720.;
+/// Space the sign-in window keeps between the rail and the form column
+/// beyond their widths, so the two never touch and the form keeps air on
+/// both sides at the fixed window size.
+pub(super) const ONBOARDING_FORM_HEADROOM: f32 = 60.;
+
 /// Height of the window drag strip along the onboarding top edge. Sits inside
 /// the rail's 56px padding and the forms' 48px padding, so it covers nothing
 /// interactive.
@@ -28,7 +37,7 @@ fn onboarding_drag_strips() -> [Div; 2] {
 pub(super) enum OnboardingEvent {
     Authenticate,
     DismissOverlay,
-    Notice(String),
+    Notice((String, NoticeSeverity)),
     ChangeSpotifyApp,
     RetryBackend,
     ClearError,
@@ -210,7 +219,7 @@ impl Onboarding {
             ConnectionState::AuthorizationRequired | ConnectionState::Connecting
         );
         div()
-            .w(px(420.))
+            .w(px(ONBOARDING_RAIL_WIDTH))
             .flex_none()
             .p(px(56.))
             .border_r_1()
@@ -367,7 +376,7 @@ impl Onboarding {
         div()
             .flex_1()
             .w_full()
-            .max_w(px(720.))
+            .max_w(px(ONBOARDING_FORM_MAX_WIDTH))
             .mx_auto()
             .min_w_0()
             .p(px(48.))
@@ -430,6 +439,7 @@ impl Onboarding {
                                             "copy-spotify-redirect",
                                             CadenceIcon::Copy,
                                             16.,
+                                            "Copy redirect URI",
                                         )
                                             .size(px(36.))
                                             .mr(px(6.))
@@ -438,9 +448,10 @@ impl Onboarding {
                                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                                     SPOTIFY_REDIRECT_URI.to_owned(),
                                                 ));
-                                                cx.emit(OnboardingEvent::Notice(
+                                                cx.emit(OnboardingEvent::Notice((
                                                     "Redirect URI copied".to_owned(),
-                                                ));
+                                                    NoticeSeverity::Confirmation,
+                                                )));
                                             })),
                                     ),
                             ),
@@ -548,7 +559,7 @@ impl Onboarding {
         div()
             .flex_1()
             .w_full()
-            .max_w(px(720.))
+            .max_w(px(ONBOARDING_FORM_MAX_WIDTH))
             .mx_auto()
             .min_w_0()
             .p(px(48.))

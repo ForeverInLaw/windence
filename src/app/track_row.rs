@@ -390,20 +390,39 @@ impl RenderOnce for TrackRow {
                 })
             })
             .child(
-                components::liked_heart(palette, ("spotify-liked", index), self.liked)
-                    .test_support()
-                    // Reachable on the row under the pointer and nowhere
-                    // else: the column keeps its width so the ones beside
-                    // it do not shift, but stays empty until then.
-                    .invisible()
-                    .group_hover(row_group.clone(), |style| style.visible())
-                    .hover(|style| style.bg(rgb(palette.control)))
-                    .when_some(self.on_liked, |button, handler| {
-                        button.on_click(move |event, window, cx| {
-                            cx.stop_propagation();
-                            handler(event, window, cx);
-                        })
-                    }),
+                components::liked_heart(
+                    palette,
+                    ("spotify-liked", index),
+                    self.liked,
+                    if self.liked {
+                        "Remove from Liked Songs"
+                    } else {
+                        "Add to Liked Songs"
+                    },
+                )
+                .test_support()
+                // Reachable on the row under the pointer and nowhere
+                // else: the column keeps its width so the ones beside
+                // it do not shift, but stays empty until then.
+                //
+                // The reveal is the visibility flip, not an opacity
+                // ramp, on purpose: `with_animation` only restarts on a
+                // mount or id change, and a hover reveal mounts nothing
+                // — the button is always in the tree. An opacity-0 rest
+                // state would also leave the heart's hitbox live inside
+                // every row, swallowing row clicks a hidden control
+                // should not take. `motion::MICRO` names the step this
+                // surface class would ride the day hover transitions
+                // exist in Div.
+                .invisible()
+                .group_hover(row_group.clone(), |style| style.visible())
+                .hover(|style| style.bg(rgb(palette.control)))
+                .when_some(self.on_liked, |button, handler| {
+                    button.on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    })
+                }),
             )
             .child(
                 div()
@@ -425,12 +444,18 @@ impl RenderOnce for TrackRow {
                     .child(
                         components::button(palette, ("track-actions", index))
                             .test_support()
+                            .aria_label("More actions")
                             .size(px(ACTIONS_COLUMN_WIDTH))
                             .rounded(px(18.))
                             .hover(|style| style.bg(rgb(palette.control)))
                             .active(|style| style.bg(rgb(palette.control_hover)))
                             .when(self.menu_open, |button| button.bg(rgb(palette.control)))
                             .when(!self.menu_open, |button| {
+                                // Same story as the heart's reveal: the
+                                // button stays mounted, so an opacity ramp
+                                // has nothing to restart on, and an
+                                // invisible-but-hitboxable actions button
+                                // would eat the row clicks beside it.
                                 button
                                     .invisible()
                                     .group_hover(row_group, |style| style.visible())

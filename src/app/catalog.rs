@@ -83,6 +83,11 @@ impl SearchPage {
         cx.notify();
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     pub(super) fn set_kind(&mut self, kind: SearchKind, cx: &mut Context<Self>) {
         self.kind = kind;
         cx.notify();
@@ -211,6 +216,11 @@ impl PlaylistPage {
             .map(|playlist| playlist.source_id.as_str())
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     /// Takes down any open row menu, for a route change no click drove.
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.track_list.update(cx, |list, cx| list.close_menu(cx));
@@ -255,9 +265,12 @@ impl PlaylistPage {
             return;
         };
         if !pinned && self.library.read(cx).pins_at_limit() {
-            cx.emit(PageEvent::Notice(format!(
-                "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
-                library::PIN_WARNING_LIMIT
+            cx.emit(PageEvent::Notice((
+                format!(
+                    "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
+                    library::PIN_WARNING_LIMIT
+                ),
+                NoticeSeverity::Confirmation,
             )));
         }
         self.library.update(cx, |library, cx| {
@@ -385,6 +398,11 @@ impl ArtistPage {
         cx.notify();
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     /// Takes down any open row menu, for a route change no click drove.
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.track_list.update(cx, |list, cx| list.close_menu(cx));
@@ -468,10 +486,9 @@ impl ArtistPage {
     fn discography(
         &mut self,
         albums: Arc<[model::Album]>,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let columns = if uses_compact_content_layout(f32::from(window.viewport_size().width)) {
+        let columns = if uses_compact_content_layout(self.track_list.read(cx).content_width()) {
             3
         } else {
             4
@@ -609,6 +626,11 @@ impl AlbumPage {
         self.track_list.update(cx, |list, cx| list.close_menu(cx));
     }
 
+    /// The track list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.track_list.clone()
+    }
+
     /// Starts the page's contents from the top, if there is anything to play.
     pub(super) fn play(&mut self, tracks: &Arc<[model::ListedTrack]>, cx: &mut Context<Self>) {
         if tracks.is_empty() {
@@ -719,8 +741,9 @@ impl Render for SearchPage {
         let playlists = self.playlists.clone();
         let searching = self.searching;
         let loaded = self.loaded;
-        let results = if self.error.is_some() {
-            components::empty_state(palette, "Unable to search Spotify").into_any_element()
+        let results = if let Some(error) = self.error.as_deref() {
+            components::empty_state(palette, format!("Unable to search Spotify: {error}"))
+                .into_any_element()
         } else if kind == SearchKind::Tracks && !tracks.is_empty() {
             let list_id = (ElementId::from("search-tracks"), self.results_query.clone());
             self.track_list.update(cx, |list, cx| {
@@ -744,7 +767,7 @@ impl Render for SearchPage {
             let message = match (loaded, searching) {
                 (true, _) if kind == SearchKind::Tracks => "No tracks found",
                 (true, _) => "No playlists found",
-                (_, true) => "Searching Spotify…",
+                (_, true) => "Searching…",
                 _ => "Press Return to search",
             };
             components::empty_state(palette, message).into_any_element()
@@ -865,11 +888,11 @@ impl Render for PlaylistPage {
             });
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
-            components::empty_state(palette, "No playlist selected").into_any_element()
+            components::empty_state(palette, "No playlist open").into_any_element()
         } else if live_station {
             components::empty_state(palette, "Waiting for the DJ…").into_any_element()
         } else if loaded {
-            components::empty_state(palette, "This playlist is empty").into_any_element()
+            components::empty_state(palette, "No tracks in this playlist").into_any_element()
         } else {
             components::empty_state(palette, "Loading playlist…").into_any_element()
         };
@@ -914,6 +937,7 @@ impl Render for PlaylistPage {
                                                 palette,
                                                 "playlist-shuffle",
                                                 CadenceIcon::Shuffle,
+                                                "Shuffle",
                                             )
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
@@ -935,6 +959,11 @@ impl Render for PlaylistPage {
                                                     CadenceIcon::CircleCheck
                                                 } else {
                                                     CadenceIcon::Plus
+                                                },
+                                                if saved {
+                                                    "Remove from Your Library"
+                                                } else {
+                                                    "Add to Your Library"
                                                 },
                                             )
                                             .bg(rgb(if saved {
@@ -963,6 +992,7 @@ impl Render for PlaylistPage {
                                                 } else {
                                                     CadenceIcon::Pin
                                                 },
+                                                if pinned { "Unpin playlist" } else { "Pin" },
                                             )
                                             .bg(rgb(if pinned {
                                                 palette.selection
@@ -984,7 +1014,7 @@ impl Render for PlaylistPage {
 }
 
 impl Render for ArtistPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let name = self
             .artist
@@ -1026,11 +1056,11 @@ impl Render for ArtistPage {
             });
             self.track_list.clone().into_any_element()
         } else if section == ArtistSection::Popular {
-            components::empty_state(palette, "No popular tracks available").into_any_element()
+            components::empty_state(palette, "No popular tracks yet").into_any_element()
         } else if albums.is_empty() {
-            components::empty_state(palette, "No releases available").into_any_element()
+            components::empty_state(palette, "No releases yet").into_any_element()
         } else {
-            self.discography(albums, window, cx).into_any_element()
+            self.discography(albums, cx).into_any_element()
         };
 
         components::page("artist-page")
@@ -1149,7 +1179,7 @@ impl Render for AlbumPage {
             });
             self.track_list.clone().into_any_element()
         } else if loaded {
-            components::empty_state(palette, "This album has no playable tracks").into_any_element()
+            components::empty_state(palette, "No playable tracks in this album").into_any_element()
         } else {
             components::empty_state(palette, "Loading album…").into_any_element()
         };
@@ -1192,6 +1222,7 @@ impl Render for AlbumPage {
                                             palette,
                                             "album-shuffle",
                                             CadenceIcon::Shuffle,
+                                            "Shuffle",
                                         )
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {

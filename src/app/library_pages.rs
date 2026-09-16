@@ -39,7 +39,7 @@ impl LibrarySection {
 
     fn empty_message(self) -> &'static str {
         match self {
-            Self::LikedSongs => "No liked songs",
+            Self::LikedSongs => "No liked songs yet",
             Self::Recent => "No listening history yet",
         }
     }
@@ -115,6 +115,11 @@ impl LibraryTracksPage {
     /// Takes down any open row menu, for a route change no click drove.
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
         self.tracks.update(cx, |list, cx| list.close_menu(cx));
+    }
+
+    /// The list the page can show, whatever is on screen.
+    pub(super) fn track_list_entity(&self) -> Entity<track_list::TrackList> {
+        self.tracks.clone()
     }
 }
 
@@ -208,6 +213,14 @@ impl PlaylistsPage {
                         .on_mouse_down(
                             gpui_kit::MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        )
+                        .with_animation(
+                            "sort-menu-open",
+                            Animation::new(QUICK).with_easing(smooth_out()),
+                            move |menu, delta| {
+                                menu.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                                    .top(px(MENU_OPEN_INSET * (1. - delta)))
+                            },
                         ),
                     |menu, mode| {
                         menu.child(
@@ -275,7 +288,7 @@ impl Render for PlaylistsPage {
         };
         let content = if rows.is_empty() {
             let message = if loaded {
-                "No Spotify playlists"
+                "No playlists yet"
             } else {
                 "Loading playlists…"
             };

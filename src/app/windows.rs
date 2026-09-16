@@ -126,6 +126,20 @@ pub(super) fn open_main_window(cx: &mut App) {
     }
 }
 
+/// The fixed sign-in window's size: the rail and the form column at their
+/// widest, plus the headroom between them, and the usual height.
+const ONBOARDING_WINDOW_WIDTH: f32 = onboarding::ONBOARDING_RAIL_WIDTH
+    + onboarding::ONBOARDING_FORM_MAX_WIDTH
+    + onboarding::ONBOARDING_FORM_HEADROOM;
+const ONBOARDING_WINDOW_HEIGHT: f32 = 720.;
+
+/// The width the sign-in window opens at, for tests that render it at its
+/// fixed size.
+#[cfg(test)]
+pub(super) fn onboarding_window_width() -> f32 {
+    ONBOARDING_WINDOW_WIDTH
+}
+
 /// Opens the fixed-size sign-in window, or brings the open one forward. The
 /// size fits the onboarding layout (420px rail + content) above the compact
 /// breakpoint; the window is not resizable, so that is the only layout.
@@ -159,7 +173,7 @@ pub(super) fn ensure_onboarding_window(cx: &mut App) {
 
 /// Centered over the main window when one is open, otherwise on the display.
 fn onboarding_bounds(cx: &mut App) -> Bounds<Pixels> {
-    let onboarding_size = size(px(1140.), px(720.));
+    let onboarding_size = size(px(ONBOARDING_WINDOW_WIDTH), px(ONBOARDING_WINDOW_HEIGHT));
     let main_bounds = services::AppServices::main_window(cx)
         .and_then(|handle| handle.update(cx, |_, window, _| window.bounds()).ok());
     match main_bounds {
@@ -275,11 +289,54 @@ pub(super) struct OnboardingWindow {
     onboarding: Entity<onboarding::Onboarding>,
     session: Entity<session::Session>,
     last_error: Option<String>,
-    action_notice: Option<String>,
+    action_notice: Option<Notice>,
+    /// What the last armed dismiss timer may clear; see Workspace's field
+    /// of the same name for why the generation keeps the dismissal honest.
+    notice_timer_armed_for: Option<ArmedNotice>,
+    /// How many notices have gone up. Keys the banner's arrival animation.
+    notice_generation: usize,
     _appearance_subscription: Subscription,
 }
 
 impl OnboardingWindow {
+    /// Shows a notice that no backend event will resolve, arming the dismiss
+    /// timer for a confirmation. Mirrors the workspace's notice methods: the
+    /// timer carries its own generation, so it only clears the banner when
+    /// no newer notice has gone up since.
+    fn show_notice(&mut self, message: String, severity: NoticeSeverity, cx: &mut Context<Self>) {
+        let notice = Notice::Timed(NoticeItem { message, severity });
+        self.notice_timer_armed_for = self
+            .notice_timer_armed_for
+            .take()
+            .filter(|_| notice.auto_dismisses());
+        self.notice_generation += 1;
+        self.action_notice = Some(notice.clone());
+        if notice.auto_dismisses() {
+            let armed = ArmedNotice {
+                generation: self.notice_generation,
+            };
+            self.notice_timer_armed_for = Some(armed);
+            let task = cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(NOTICE_CONFIRMATION_LIFETIME)
+                    .await;
+                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
+                    .ok();
+            });
+            task.detach();
+        }
+    }
+
+    /// A timer's callback: clears the banner only for the notice the timer
+    /// was armed for. The generation moved on whenever another notice went
+    /// up, so an older timer leaves the newcomer alone.
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+        if self.notice_generation == armed.generation {
+            self.action_notice = None;
+            self.notice_timer_armed_for = None;
+        }
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         appearance::Appearance::attach(window, cx);
         let appearance_subscription = cx.observe_window_appearance(window, |_, window, cx| {
@@ -292,7 +349,9 @@ impl OnboardingWindow {
             match event {
                 session::SessionEvent::Failed(error) => this.last_error = Some(error.clone()),
                 session::SessionEvent::Ready => this.last_error = None,
-                session::SessionEvent::Notice(notice) => this.action_notice = Some(notice.clone()),
+                session::SessionEvent::Notice((message, severity)) => {
+                    this.show_notice(message.clone(), *severity, cx)
+                }
                 session::SessionEvent::Restarted | session::SessionEvent::LoggedOut => {}
             }
             cx.notify();
@@ -320,8 +379,8 @@ impl OnboardingWindow {
                             .update(cx, |session, cx| session.cancel_app_change(cx));
                     }
                     onboarding::OnboardingEvent::ClearError => this.last_error = None,
-                    onboarding::OnboardingEvent::Notice(notice) => {
-                        this.action_notice = Some(notice.clone())
+                    onboarding::OnboardingEvent::Notice((message, severity)) => {
+                        this.show_notice(message.clone(), *severity, cx)
                     }
                 }
                 cx.notify();
@@ -336,6 +395,8 @@ impl OnboardingWindow {
             session,
             last_error,
             action_notice: None,
+            notice_timer_armed_for: None,
+            notice_generation: 0,
             _appearance_subscription: appearance_subscription,
         }
     }
@@ -350,12 +411,15 @@ impl Render for OnboardingWindow {
             onboarding.focus_setup_field(window, cx);
         });
         let app_change_open = self.session.read(cx).app_change_confirmation_open();
-        let notice = self.action_notice.clone().map(|message| {
+        let notice = self.action_notice.as_ref().map(|notice| {
             components::action_notice_banner(
                 palette,
-                message,
+                notice.message().to_owned(),
+                notice.item().map(NoticeItem::severity),
+                self.notice_generation,
                 cx.listener(|this, _, _, cx| {
                     this.action_notice = None;
+                    this.notice_timer_armed_for = None;
                     cx.notify();
                 }),
             )
@@ -433,5 +497,17 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    #[test]
+    fn sign_in_window_clears_the_rail_and_form_with_margin() {
+        // The window exceeds rail plus form maximum by the headroom, so the
+        // two never sum exactly to the window's width.
+        assert_eq!(
+            ONBOARDING_WINDOW_WIDTH,
+            onboarding::ONBOARDING_RAIL_WIDTH
+                + onboarding::ONBOARDING_FORM_MAX_WIDTH
+                + onboarding::ONBOARDING_FORM_HEADROOM
+        );
     }
 }

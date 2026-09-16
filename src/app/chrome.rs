@@ -25,6 +25,10 @@ pub(super) struct Toolbar {
     back_target: Option<Route>,
     /// The workspace's standing failure, shown under the account name.
     error: Option<String>,
+    /// The width the toolbar's content spans: the window minus the
+    /// sidebar. The search field's tiers read it instead of the window
+    /// width.
+    content_width: f32,
     _search_subscription: Subscription,
 }
 
@@ -53,7 +57,17 @@ impl Toolbar {
             route: Route::LikedSongs,
             back_target: None,
             error: None,
+            // Replaced with the real value before the first paint.
+            content_width: 0.,
             _search_subscription: search_subscription,
+        }
+    }
+
+    /// Takes the content width the workspace derived for this frame.
+    pub(super) fn set_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.content_width != width {
+            self.content_width = width;
+            cx.notify();
         }
     }
 
@@ -158,6 +172,13 @@ impl Toolbar {
         )
     }
 
+    /// The menu under the account button. It grows from the trigger: the
+    /// entrance is the fade from `SCALE_STEP` opacity plus a start inset
+    /// that pulls the anchored surface up toward the button's corner, on
+    /// `QUICK` with the smooth-out curve. Nothing else's layout moves — the
+    /// menu is `deferred` and absolute. Closing is an unmount (the state
+    /// flip tears the element down), so every open starts its animation
+    /// from zero: there is no closing state to carry a stale scale.
     fn account_menu(&self, palette: CadencePalette, cx: &mut Context<Self>) -> impl IntoElement {
         let profile_name = self.profile_name(cx);
         let can_connect = matches!(
@@ -177,6 +198,14 @@ impl Toolbar {
             .absolute()
             .top(px(48.))
             .right_0()
+            .with_animation(
+                "account-menu-open",
+                Animation::new(QUICK).with_easing(smooth_out()),
+                move |menu, delta| {
+                    menu.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta)
+                        .top(px(48. + MENU_OPEN_INSET * (1. - delta)))
+                },
+            )
             .child(
                 div()
                     .px(px(10.))
@@ -253,9 +282,9 @@ impl Toolbar {
 }
 
 impl Render for Toolbar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
-        let compact = uses_compact_content_layout(f32::from(window.viewport_size().width));
+        let compact = uses_compact_content_layout(self.content_width);
         let profile_name = self.profile_name(cx);
         let profile = self.session.read(cx).profile().cloned();
         let profile_artwork = profile
@@ -282,6 +311,7 @@ impl Render for Toolbar {
                                 palette,
                                 "detail-back",
                                 CadenceIcon::ChevronLeft,
+                                "Back",
                             )
                             .on_click(cx.listener(
                                 move |_, _, _, cx| {
@@ -370,6 +400,10 @@ pub(super) fn spotify_app_change_confirmation(
         .flex()
         .items_center()
         .justify_center()
+        // The card grows in from `SCALE_STEP` while fading, on `FAST`. The
+        // scrim stays static: what arrives is the question, not the dimming.
+        // Out is an unmount, like every other surface here — a softer exit
+        // would hold the modal up after the state that drew it is gone.
         .child(
             div()
                 .w(px(440.))
@@ -421,6 +455,11 @@ pub(super) fn spotify_app_change_confirmation(
                                 .child("Change developer app")
                                 .on_click(confirm),
                         ),
+                )
+                .with_animation(
+                    "app-change-card-open",
+                    Animation::new(FAST).with_easing(smooth_out()),
+                    move |card, delta| card.opacity(SCALE_STEP + (1. - SCALE_STEP) * delta),
                 ),
         )
 }

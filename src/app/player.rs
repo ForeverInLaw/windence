@@ -349,6 +349,19 @@ impl Player {
         cx.notify();
     }
 
+    /// Steps the volume by `delta` (negative to go down) and clamps it to the
+    /// 0..=1 range. Any level above zero is remembered as the level a later
+    /// mute restores.
+    pub(super) fn step_volume(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.volume = (self.volume + delta).clamp(0., 1.);
+        if self.volume > 0. {
+            self.volume_before_mute = self.volume;
+        }
+        self.deliver(BackendCommand::SetVolume(self.volume), cx);
+        self.save_volume(cx);
+        cx.notify();
+    }
+
     pub(super) fn begin_volume_drag(
         &mut self,
         pointer_x: Pixels,

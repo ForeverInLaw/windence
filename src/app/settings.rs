@@ -49,7 +49,7 @@ impl Settings {
                         div()
                             .child(Self::settings_section_header(palette,
                                 "Appearance",
-                                "Choose how Cadence looks on this Mac.",
+                                "Choose how Cadence looks.",
                             ))
                             .child(
                                 div()

@@ -1,6 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::IconNamed as _;
 
 /// Shared building blocks for Cadence views.
@@ -95,13 +96,31 @@ pub(super) fn draggable_pin(
 }
 
 /// The transient banner for things that finished without a page to say so.
+/// A failure keeps its border in the danger color until dismissed; a
+/// confirmation keeps the neutral border and goes away on its own.
+///
+/// The arrival is a rise and fade: the banner starts `RISE_DISTANCE` under
+/// its place, transparent, and comes up on `MEDIUM`. `generation` keys the
+/// animation, so a notice replacing the one on screen starts its own
+/// entrance instead of inheriting the replaced one's progress. There is no
+/// exit animation: the banner unmounts the moment its state clears, which
+/// is what keeps the dismiss timer exact (see `Notice`).
 pub(super) fn action_notice_banner(
     palette: CadencePalette,
     message: String,
+    severity: Option<NoticeSeverity>,
+    generation: usize,
     on_dismiss: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let failure = severity == Some(NoticeSeverity::Failure);
+    let border = if failure {
+        palette.danger
+    } else {
+        palette.border
+    };
     deferred(
         div()
+            .id("action-notice")
             .occlude()
             .absolute()
             .top(px(76.))
@@ -111,8 +130,9 @@ pub(super) fn action_notice_banner(
             .px(px(14.))
             .py(px(8.))
             .rounded(px(14.))
-            .border_1()
-            .border_color(rgb(palette.border))
+            .border_color(rgb(border))
+            .when(failure, |banner| banner.border_l_4())
+            .when(!failure, |banner| banner.border_1())
             .bg(rgb(palette.surface_raised))
             .shadow_lg()
             .flex()
@@ -120,11 +140,28 @@ pub(super) fn action_notice_banner(
             .gap(px(10.))
             .text_size(px(13.))
             .text_color(rgb(palette.text_primary))
+            .test_support()
+            .aria_label(message.clone())
             .child(div().flex_1().child(message))
             .child(
-                icon_button(palette, "dismiss-action-notice", CadenceIcon::Close)
-                    .size(px(32.))
-                    .on_click(on_dismiss),
+                icon_button(
+                    palette,
+                    "dismiss-action-notice",
+                    CadenceIcon::Close,
+                    "Dismiss",
+                )
+                .test_support()
+                .size(px(32.))
+                .on_click(on_dismiss),
+            )
+            .with_animation(
+                animation_id("action-notice-arrival", generation),
+                Animation::new(MEDIUM).with_easing(smooth_out()),
+                move |banner, delta| {
+                    banner
+                        .top(px(76. + RISE_DISTANCE * (1. - delta)))
+                        .opacity(delta)
+                },
             ),
     )
     .into_any_element()
@@ -191,19 +228,25 @@ pub(super) fn link(
         .focus_visible(|style| style.underline().text_color(rgb(palette.text_primary)))
 }
 
+/// An icon-only button. The caller names the action in human words: an
+/// icon alone says nothing to a screen reader, so a call without a label
+/// does not compile.
 pub(super) fn icon_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     name: CadenceIcon,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
-    icon_button_with(palette, id, name, 17.)
+    icon_button_with(palette, id, name, 17., label)
 }
 
+/// The same icon-only button with a size of its own.
 pub(super) fn icon_button_with(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     name: CadenceIcon,
     size: f32,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
     button(palette, id)
         .size(px(40.))
@@ -212,22 +255,26 @@ pub(super) fn icon_button_with(
         .text_color(rgb(palette.text_primary))
         .hover(|style| style.bg(rgb(palette.control)))
         .active(|style| style.bg(rgb(palette.control_hover)))
+        .aria_label(label.into())
         .child(icon(name, size, palette.text_primary))
 }
 
 /// The heart that adds a track to Spotify's Liked Songs. The player bar
 /// and the track rows both show one, and they are the same action, so they
-/// are the same control. The caller supplies the click; without one the
-/// heart is inert.
+/// are the same control. The caller supplies the click and the name the
+/// heart announces, which can follow the state the caller already knows.
+/// Without a name the heart is inert.
 pub(super) fn liked_heart(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     liked: bool,
+    label: impl Into<SharedString>,
 ) -> Stateful<Div> {
     button(palette, id)
         .size(px(LIKED_HEART_SIZE))
         .flex_none()
         .rounded(px(LIKED_HEART_SIZE / 2.))
+        .aria_label(label.into())
         .child(icon(
             if liked {
                 CadenceIcon::HeartFill

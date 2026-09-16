@@ -187,9 +187,15 @@ impl HomePage {
             .unwrap_or_else(ScrollHandle::new);
         let has_more = shelf.uri.is_some() && shelf.next_offset.is_some();
         let loading_more = self.shelf_requests.contains_key(&index);
-        let arrow = |id: &'static str, icon: CadenceIcon, direction: f32| {
+        // Render the arrows only when the row can actually scroll: their
+        // click moves the row, and a row with room to spare has nowhere to
+        // go. Scroll state comes from the previous frame, so a row that
+        // just gained or lost its overflow updates its arrows one frame
+        // later; the header reads the same handle the row tracks below.
+        let can_page = scroll.max_offset().x > px(0.);
+        let arrow = |id: &'static str, icon: CadenceIcon, direction: f32, label: &'static str| {
             let scroll = scroll.clone();
-            components::icon_button(palette, (id, index), icon).on_click(cx.listener(
+            components::icon_button(palette, (id, index), icon, label).on_click(cx.listener(
                 move |_, _, _, cx| {
                     page_shelf(&scroll, direction);
                     cx.notify();
@@ -218,8 +224,21 @@ impl HomePage {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .child(arrow("home-shelf-back", CadenceIcon::ChevronLeft, -1.))
-                    .child(arrow("home-shelf-forward", CadenceIcon::ChevronRight, 1.)),
+                    .when(can_page, |arrows| {
+                        arrows
+                            .child(arrow(
+                                "home-shelf-back",
+                                CadenceIcon::ChevronLeft,
+                                -1.,
+                                "Scroll back",
+                            ))
+                            .child(arrow(
+                                "home-shelf-forward",
+                                CadenceIcon::ChevronRight,
+                                1.,
+                                "Scroll forward",
+                            ))
+                    }),
             );
         let row = div()
             .id(("home-shelf-row", index))
