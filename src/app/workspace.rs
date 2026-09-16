@@ -13,10 +13,10 @@ pub(super) struct Workspace {
     /// backend event; every other one carries its own severity and, for a
     /// confirmation, the moment it should dismiss itself.
     pub(super) action_notice: Option<Notice>,
-    /// Marks the notice a dismiss timer was armed for. The timer only fires
-    /// the dismissal while this is still the notice it was set for, so a
-    /// notice that arrived later is never closed by an earlier timer.
-    pub(super) notice_timer_armed_for: Option<Notice>,
+    /// What the last armed dismiss timer may clear. The timer only fires
+    /// the dismissal while the generation still matches, so a notice that
+    /// arrived later is never closed by an earlier timer.
+    pub(super) notice_timer_armed_for: Option<ArmedNotice>,
     /// How many notices have gone up. Keys the banner's arrival animation,
     /// so a notice replacing the one on screen starts its entrance at zero.
     pub(super) notice_generation: usize,
@@ -272,9 +272,10 @@ impl Workspace {
         self.set_notice(notice, cx);
     }
 
-    /// Puts `notice` up, cancel-safe against an already-armed timer: the
-    /// armed-for mark moves to the new notice, so the old timer firing later
-    /// finds nothing it is allowed to dismiss.
+    /// Puts `notice` up. A confirmation arms a timer carrying its own
+    /// generation: when the timer fires it only clears the banner if no
+    /// newer notice has gone up since, so a notice that replaced it is safe
+    /// even when the words match.
     pub(super) fn set_notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
         self.notice_timer_armed_for = self
             .notice_timer_armed_for
@@ -283,12 +284,15 @@ impl Workspace {
         self.notice_generation += 1;
         self.action_notice = Some(notice.clone());
         if notice.auto_dismisses() {
-            self.notice_timer_armed_for = Some(notice);
+            let armed = ArmedNotice {
+                generation: self.notice_generation,
+            };
+            self.notice_timer_armed_for = Some(armed);
             let task = cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
-                this.update(cx, |this, _| this.dismiss_expired_notice())
+                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
                     .ok();
             });
             task.detach();
@@ -296,15 +300,14 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The timer's callback: clears the notice only when it is still the one
-    /// the timer was set for.
-    fn dismiss_expired_notice(&mut self) {
-        if self.notice_timer_armed_for.is_some()
-            && self.action_notice == self.notice_timer_armed_for
-        {
+    /// A timer's callback: clears the banner only for the notice the timer
+    /// was armed for. The generation moved on whenever another notice went
+    /// up, so an older timer leaves the newcomer alone.
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+        if self.notice_generation == armed.generation {
             self.action_notice = None;
+            self.notice_timer_armed_for = None;
         }
-        self.notice_timer_armed_for = None;
     }
 
     /// The current banner generation, for tests that prove a replacement

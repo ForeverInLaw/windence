@@ -290,9 +290,9 @@ pub(super) struct OnboardingWindow {
     session: Entity<session::Session>,
     last_error: Option<String>,
     action_notice: Option<Notice>,
-    /// Marks the notice a dismiss timer was armed for; see Workspace's field
-    /// of the same name for why the pair keeps the dismissal honest.
-    notice_timer_armed_for: Option<Notice>,
+    /// What the last armed dismiss timer may clear; see Workspace's field
+    /// of the same name for why the generation keeps the dismissal honest.
+    notice_timer_armed_for: Option<ArmedNotice>,
     /// How many notices have gone up. Keys the banner's arrival animation.
     notice_generation: usize,
     _appearance_subscription: Subscription,
@@ -300,7 +300,9 @@ pub(super) struct OnboardingWindow {
 
 impl OnboardingWindow {
     /// Shows a notice that no backend event will resolve, arming the dismiss
-    /// timer for a confirmation. Mirrors the workspace's notice methods.
+    /// timer for a confirmation. Mirrors the workspace's notice methods: the
+    /// timer carries its own generation, so it only clears the banner when
+    /// no newer notice has gone up since.
     fn show_notice(&mut self, message: String, severity: NoticeSeverity, cx: &mut Context<Self>) {
         let notice = Notice::Timed(NoticeItem { message, severity });
         self.notice_timer_armed_for = self
@@ -310,27 +312,29 @@ impl OnboardingWindow {
         self.notice_generation += 1;
         self.action_notice = Some(notice.clone());
         if notice.auto_dismisses() {
-            self.notice_timer_armed_for = Some(notice);
+            let armed = ArmedNotice {
+                generation: self.notice_generation,
+            };
+            self.notice_timer_armed_for = Some(armed);
             let task = cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
-                this.update(cx, |this, _| this.dismiss_expired_notice())
+                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
                     .ok();
             });
             task.detach();
         }
     }
 
-    /// The timer's callback: clears the notice only when it is still the one
-    /// the timer was set for.
-    fn dismiss_expired_notice(&mut self) {
-        if self.notice_timer_armed_for.is_some()
-            && self.action_notice == self.notice_timer_armed_for
-        {
+    /// A timer's callback: clears the banner only for the notice the timer
+    /// was armed for. The generation moved on whenever another notice went
+    /// up, so an older timer leaves the newcomer alone.
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+        if self.notice_generation == armed.generation {
             self.action_notice = None;
+            self.notice_timer_armed_for = None;
         }
-        self.notice_timer_armed_for = None;
     }
 
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {

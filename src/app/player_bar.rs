@@ -218,9 +218,11 @@ impl PlayerBar {
         let palette = appearance::Appearance::palette(cx);
         let content_width = self.content_width;
         let compact = uses_compact_player_layout(content_width);
-        // The drawn slider's width per tier: the full tier keeps the fixed
-        // width its centre box reserves, the compact tier takes what the
-        // content leaves, and below the timeline floor the timeline folds.
+        // The drawn slider's width per tier: the compact tier takes what
+        // the content leaves, at least the slider minimum, and below the
+        // timeline floor the timeline folds and only the transport shows.
+        // The full tier keeps the fixed width its centre box already
+        // reserves, which the floor math always grants.
         let timeline = if compact {
             compact_progress_slider_width(content_width)
         } else {
@@ -292,10 +294,9 @@ impl PlayerBar {
             .child(
                 div()
                     .w(px(match timeline {
-                        Some(slider_width) if compact => {
+                        Some(slider_width) => {
                             slider_width + 2. * PROGRESS_TIME_WIDTH + 2. * PROGRESS_GAP
                         }
-                        Some(_) => PLAYER_CENTER_WIDTH,
                         // The timeline folded away: the transport stands
                         // alone at its own width.
                         None => TRANSPORT_CLUSTER_WIDTH,
@@ -341,6 +342,7 @@ impl PlayerBar {
                             .child(
                                 components::button(palette, "play-toggle")
                                     .test_support()
+                                    .aria_label(if playing { "Pause" } else { "Play" })
                                     .size(px(TRANSPORT_BUTTON_SIZE))
                                     .rounded(px(TRANSPORT_BUTTON_SIZE / 2.))
                                     .bg(rgb(palette.text_primary))
@@ -404,6 +406,7 @@ impl PlayerBar {
                                         .id("progress-slider")
                                         .test_support()
                                         .role(gpui_kit::Role::Slider)
+                                        .aria_label("Playback position")
                                         .key_context("ProgressSlider")
                                         .track_focus(&self.progress_focus)
                                         .tab_stop(true)
@@ -507,13 +510,15 @@ impl PlayerBar {
                             })),
                     )
                     // The volume slider renders in both tiers, so its
-                    // keyboard path exists at every width; the compact
-                    // right cluster reserves its space in the tier math.
+                    // keyboard path exists at every width; the tier math
+                    // stays honest because the compact floor accounts for
+                    // the slider's own minimum only.
                     .child(
                         div()
                             .id("volume-slider")
                             .test_support()
                             .role(gpui_kit::Role::Slider)
+                            .aria_label("Volume")
                             .key_context("VolumeSlider")
                             .track_focus(&self.volume_focus)
                             .tab_stop(true)

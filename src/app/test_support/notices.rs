@@ -160,6 +160,43 @@ fn a_replacing_notice_is_safe_from_the_previous_timer() {
     );
 }
 
+/// A second confirmation with the same words still gets its own lifetime:
+/// the first timer must not close it early, and its own timer must close
+/// it once that lifetime has passed.
+#[test]
+fn an_identical_confirmation_gets_its_own_lifetime() {
+    let mut fixture = Fixture::new();
+    fixture.workspace(|workspace, _, cx| {
+        workspace.show_notice(
+            "Redirect URI copied".to_owned(),
+            NoticeSeverity::Confirmation,
+            cx,
+        );
+    });
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME / 2);
+    fixture.workspace(|workspace, _, cx| {
+        workspace.show_notice(
+            "Redirect URI copied".to_owned(),
+            NoticeSeverity::Confirmation,
+            cx,
+        );
+    });
+
+    // The first timer fires here; the second banner must still be up.
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME / 2);
+    fixture.cx.run_until_parked();
+    assert_eq!(
+        fixture.banner_label().as_deref(),
+        Some("Redirect URI copied"),
+        "the first timer must not close an identical confirmation early"
+    );
+
+    // The second banner's own timer then closes it.
+    fixture.cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME / 2);
+    fixture.cx.run_until_parked();
+    assert_eq!(fixture.banner_label(), None);
+}
+
 /// The radio pending notice is event-managed: no timer closes it.
 #[test]
 fn the_radio_pending_notice_is_never_timed() {

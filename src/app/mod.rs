@@ -357,13 +357,12 @@ const COMPACT_BAR_FIXED_WIDTH: f32 = 2. * PLAYER_BAR_PADDING
     + COMPACT_PLAYER_LEFT_WIDTH
     + TRANSPORT_CLUSTER_WIDTH
     + COMPACT_PLAYER_RIGHT_WIDTH;
-/// The least the compact centre needs for the timeline to be worth
-/// showing: the slider plus the two time labels and their gaps.
-const PLAYER_CENTER_MIN_WIDTH: f32 =
-    PROGRESS_SLIDER_WIDTH + 2. * PROGRESS_TIME_WIDTH + 2. * PROGRESS_GAP;
 /// Below this content width the player bar's timeline (the progress slider
 /// and its time labels) folds away; artwork and transport keep working.
-const PLAYER_TIMELINE_FLOOR: f32 = COMPACT_BAR_FIXED_WIDTH + PLAYER_CENTER_MIN_WIDTH;
+/// The floor sits inside the compact tier: the compact slider always shows
+/// with its minimum at the floor, so the timeline only folds where the
+/// content cannot spare even that.
+const PLAYER_TIMELINE_FLOOR: f32 = COMPACT_BAR_FIXED_WIDTH + PROGRESS_SLIDER_MIN_WIDTH;
 /// The least width the timeline's slider keeps when it shows at all.
 const PROGRESS_SLIDER_MIN_WIDTH: f32 = 160.;
 
@@ -456,6 +455,15 @@ struct NoticeItem {
     severity: NoticeSeverity,
 }
 
+/// What one confirmation timer is allowed to dismiss: the notice generation
+/// it went up at. Two confirmations with the same words compare equal, so
+/// the notice alone cannot keep one timer from closing the next; the
+/// generation tells them apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ArmedNotice {
+    generation: usize,
+}
+
 impl NoticeItem {
     fn severity(&self) -> NoticeSeverity {
         self.severity
@@ -505,8 +513,8 @@ fn volume_for_pointer(pointer_x: f32, window_width: f32) -> f32 {
 /// centred on the content and the slider keeps `PROGRESS_SLIDER_WIDTH` —
 /// the same width the centre box reserves for it, so the drawn track and
 /// this math agree. In the compact tier the slider takes what the content
-/// has left over. Below the timeline floor the slider is not on screen,
-/// so this never runs for one.
+/// has left over, floored at the slider minimum. Below the timeline floor
+/// the slider is not on screen, so this never runs for one.
 fn seek_for_pointer(
     pointer_x: f32,
     window_width: f32,
@@ -610,12 +618,13 @@ pub fn run() {
 mod tests {
     use super::{
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
-        NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR, PROGRESS_SLIDER_MIN_WIDTH,
-        PROGRESS_SLIDER_WIDTH, SIDEBAR_CONTENT_PAD, SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET,
-        TRAFFIC_LIGHT_CLUSTER_WIDTH, compact_progress_slider_width, interpolate_sidebar_width,
-        resolve_dark_mode, seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad,
-        sidebar_transition_duration, traffic_light_position, uses_compact_content_layout,
-        uses_compact_player_layout, volume_for_pointer,
+        COMPACT_PLAYER_BREAKPOINT, NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR,
+        PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_SLIDER_WIDTH, SIDEBAR_CONTENT_PAD,
+        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRAFFIC_LIGHT_CLUSTER_WIDTH,
+        compact_progress_slider_width, interpolate_sidebar_width, resolve_dark_mode,
+        seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
+        traffic_light_position, uses_compact_content_layout, uses_compact_player_layout,
+        volume_for_pointer,
     };
     use gpui_kit::WindowAppearance;
     use spotify_gpui_client::storage::ThemePreference;
@@ -680,6 +689,12 @@ mod tests {
     #[test]
     fn timeline_folds_below_the_floor_and_fills_the_space_above_it() {
         let floor = PLAYER_TIMELINE_FLOOR;
+        // The floor is only honest inside the compact tier; above the tier
+        // edge the full tier always shows the timeline anyway.
+        assert!(
+            floor < COMPACT_PLAYER_BREAKPOINT,
+            "the floor must stay in the tier it guards"
+        );
         // Just below the floor: no slider.
         assert_eq!(compact_progress_slider_width(floor - 1.), None);
         // Just above it: the slider keeps its minimum.

@@ -1,7 +1,7 @@
 use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
 use crate::app::{
-    NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets, onboarding,
-    services, uses_compact_player_layout, windows,
+    NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets,
+    compact_progress_slider_width, onboarding, services, uses_compact_player_layout, windows,
 };
 use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
@@ -417,11 +417,11 @@ fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback(
 /// collapsed, plus the default 1280 window in the full player tier.
 ///
 /// The compact bar's fixed parts (paddings, clusters, transport, and the
-/// right cluster with the volume slider) sum to `COMPACT_BAR_FIXED_WIDTH`,
-/// so the timeline floor sits above every compact cell here: the timeline
-/// folds in that tier and the drawn slider's width comes from the content.
-/// The full tier draws the fixed `PROGRESS_SLIDER_WIDTH` instead, which
-/// its centre box reserves, and the volume slider shows in both tiers.
+/// right cluster with the volume slider) sum to `COMPACT_BAR_FIXED_WIDTH`;
+/// the floor adds the slider minimum on top, so the timeline only folds on
+/// the narrowest compact contents. Wider compact contents and the full
+/// tier show the slider at the width the tier math grants, and the volume
+/// slider shows in both tiers.
 const MATRIX: [(f32, bool); 5] = [
     (720., false),
     (720., true),
@@ -449,21 +449,29 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
             backend,
         };
         fixture.update(|window, _| {
-            // The timeline folds below the floor; in the full tier it
-            // always shows, at the width the centre box reserves.
+            // The bar folds the timeline below the floor, so the test does
+            // too: `None` means no slider on screen, `Some` its width.
             let slider = window.try_find("progress-slider");
-            if compact {
-                assert!(
-                    slider.is_none(),
-                    "timeline must fold in the compact tier at width {width}, collapsed: {collapsed}, content {content}"
-                );
+            let expected = if compact {
+                compact_progress_slider_width(content)
             } else {
-                let slider = slider.as_ref().expect("the full tier shows the timeline");
-                assert_eq!(
-                    f32::from(slider.bounds().size.width),
-                    PROGRESS_SLIDER_WIDTH,
-                    "the full tier's drawn slider keeps the width the centre box reserves"
-                );
+                Some(PROGRESS_SLIDER_WIDTH)
+            };
+            match (slider.as_ref(), expected) {
+                (None, None) => (),
+                (Some(slider), Some(expected)) => {
+                    assert_eq!(
+                        f32::from(slider.bounds().size.width),
+                        expected,
+                        "the drawn slider at width {width}, collapsed: {collapsed}, content {content}"
+                    );
+                }
+                (None, Some(_)) => panic!(
+                    "timeline must show at width {width}, collapsed: {collapsed}, content {content}"
+                ),
+                (Some(_), None) => panic!(
+                    "timeline must fold below the floor at width {width}, collapsed: {collapsed}, content {content}"
+                ),
             }
             // Transport keeps working wherever the timeline folded.
             if slider.is_none() {
@@ -523,6 +531,11 @@ fn icon_buttons_announce_their_actions_in_human_words() {
             ("volume", "Volume"),
             ("queue-toggle", "Queue"),
             ("shuffle-toggle", "Shuffle"),
+            // The transport button is state-dependent: the fixture starts
+            // paused, so it offers to play.
+            ("play-toggle", "Play"),
+            ("progress-slider", "Playback position"),
+            ("volume-slider", "Volume"),
         ];
         for (id, label) in expected {
             assert_eq!(
@@ -920,13 +933,16 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
     fixture.no_commands();
 
     // A click in the lower half of the 20px band, halfway along the track:
-    // the pointer math is unchanged, so this lands at half of 240s.
+    // the full tier's fixed 340px track puts that at half of 240s.
     fixture.update(|window, cx| {
         window.click_at("progress-slider", point(px(170.), px(15.)), cx);
     });
     match fixture.backend.commands.try_recv().expect("seek command") {
         BackendCommand::Seek(position) => {
-            assert_eq!(position, 120_000, "a mid-band click must still seek");
+            assert_eq!(
+                position, 124_235,
+                "a mid-band click must still seek along the drawn track"
+            );
         }
         command => panic!("unexpected command: {command:?}"),
     }
