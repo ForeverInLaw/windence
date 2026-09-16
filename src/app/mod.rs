@@ -614,14 +614,14 @@ pub fn run() {
     bootstrap::run();
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::{
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
-        COMPACT_PLAYER_BREAKPOINT, NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR,
-        PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_SLIDER_WIDTH, SIDEBAR_CONTENT_PAD,
-        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRACK_ALBUM_BREAKPOINT,
-        TRACK_DATE_ADDED_BREAKPOINT, TRAFFIC_LIGHT_CLUSTER_WIDTH, TrackTableColumns,
+        COMPACT_PLAYER_BREAKPOINT, COMPACT_PLAYER_LEFT_WIDTH, NAV_GLYPH_WIDTH, NAV_ROW_PAD,
+        PLAYER_BAR_GAP, PLAYER_BAR_PADDING, PLAYER_TIMELINE_FLOOR, PROGRESS_GAP,
+        PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_TIME_WIDTH, SIDEBAR_CONTENT_PAD,
+        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRAFFIC_LIGHT_CLUSTER_WIDTH,
         compact_progress_slider_width, interpolate_sidebar_width, resolve_dark_mode,
         seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
         track_table_columns, traffic_light_position, uses_compact_content_layout,
@@ -665,15 +665,26 @@ mod tests {
         assert_eq!(seek_for_pointer(524., 1280., 1280., 200_000), 0);
         assert_eq!(seek_for_pointer(694., 1280., 1280., 200_000), 100_000);
         assert_eq!(seek_for_pointer(864., 1280., 1280., 200_000), 200_000);
-        // Compact tier, expanded rail: the slider takes what the content
-        // has left over. The bar's fixed parts leave the slider at
-        // 488 - 316 = 172, so the row maps 312..484 onto the track.
-        assert_eq!(seek_for_pointer(312., 720., 488., 200_000), 0);
-        assert_eq!(seek_for_pointer(398., 720., 488., 200_000), 100_000);
-        assert_eq!(seek_for_pointer(484., 720., 488., 200_000), 200_000);
+        // Compact tier: the slider takes what the content has left over,
+        // floored at the slider minimum. At the floor the fixed parts
+        // leave exactly the minimum, so the row maps the band's left edge,
+        // middle, and right edge onto the track's start, middle, and end.
+        // The band starts where the centre does: padding, left cluster,
+        // gap, then the leading time label and its gap.
+        let left = PLAYER_BAR_PADDING
+            + COMPACT_PLAYER_LEFT_WIDTH
+            + PLAYER_BAR_GAP
+            + PROGRESS_TIME_WIDTH
+            + PROGRESS_GAP;
+        assert_eq!(seek_for_pointer(left, 720., 876., 200_000), 0);
+        assert_eq!(seek_for_pointer(left + 80., 720., 876., 200_000), 100_000);
+        assert_eq!(
+            seek_for_pointer(left + PROGRESS_SLIDER_MIN_WIDTH, 720., 876., 200_000),
+            200_000
+        );
         // Below the timeline floor the slider is not on screen, so a
         // pointer on where it would be seeks nowhere.
-        assert_eq!(seek_for_pointer(368., 720., 600., 200_000), 0);
+        assert_eq!(seek_for_pointer(251., 720., 875., 200_000), 0);
         // The pointer clamps to the slider's ends.
         assert_eq!(seek_for_pointer(200., 1280., 1280., 200_000), 0);
         assert_eq!(seek_for_pointer(1200., 1280., 1280., 200_000), 200_000);
@@ -698,10 +709,11 @@ mod tests {
         );
         // Just below the floor: no slider.
         assert_eq!(compact_progress_slider_width(floor - 1.), None);
-        // Just above it: the slider keeps its minimum.
+        // Just above it: the leftover is one pixel short of the minimum,
+        // so the clamp holds the slider at the minimum.
         assert_eq!(
             compact_progress_slider_width(floor + 1.),
-            Some(PROGRESS_SLIDER_MIN_WIDTH)
+            Some(PROGRESS_SLIDER_MIN_WIDTH + 1.)
         );
         // Wider content: the slider takes what the content has left over.
         assert_eq!(
@@ -714,10 +726,10 @@ mod tests {
     fn track_table_columns_fold_from_the_widest_to_the_thinnest() {
         let full = track_table_columns(1100.);
         assert!(full.album && full.date_added);
-        // The date column folds first.
+        // The date column folds first: its breakpoint is 1100.
         let no_date = track_table_columns(1099.);
         assert!(no_date.album && !no_date.date_added);
-        // Then the album column.
+        // Then the album column: its breakpoint is 880.
         let no_album = track_table_columns(879.);
         assert!(!no_album.album && !no_album.date_added);
         // The minimal table keeps `#`, title, and time; heart and actions
