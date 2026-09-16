@@ -620,11 +620,12 @@ mod tests {
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
         COMPACT_PLAYER_BREAKPOINT, NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR,
         PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_SLIDER_WIDTH, SIDEBAR_CONTENT_PAD,
-        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRAFFIC_LIGHT_CLUSTER_WIDTH,
+        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRACK_ALBUM_BREAKPOINT,
+        TRACK_DATE_ADDED_BREAKPOINT, TRAFFIC_LIGHT_CLUSTER_WIDTH, TrackTableColumns,
         compact_progress_slider_width, interpolate_sidebar_width, resolve_dark_mode,
         seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
-        traffic_light_position, uses_compact_content_layout, uses_compact_player_layout,
-        volume_for_pointer,
+        track_table_columns, traffic_light_position, uses_compact_content_layout,
+        uses_compact_player_layout, volume_for_pointer,
     };
     use gpui_kit::WindowAppearance;
     use spotify_gpui_client::storage::ThemePreference;
