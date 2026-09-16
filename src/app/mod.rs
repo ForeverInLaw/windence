@@ -202,7 +202,7 @@ const TRACK_DATE_ADDED_BREAKPOINT: f32 = 1100.;
 const TRACK_ALBUM_BREAKPOINT: f32 = 880.;
 
 /// Which optional columns of a track table fit the content's width.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TrackTableColumns {
     album: bool,
     date_added: bool,
