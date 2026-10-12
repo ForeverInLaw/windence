@@ -40,7 +40,7 @@ LicenseFile={#SourceDir}LICENSE
 SetupIconFile={#SourceDir}assets\AppIcon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
-OutputDir={#SourceDir}dist
+OutputDir={#SourceDir}dist\development
 OutputBaseFilename={#AppName}-{#AppVersion}-windows-x64-setup
 Compression=lzma2/max
 SolidCompression=yes
@@ -57,7 +57,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#SourceDir}target\release\spotify-gpui-client.exe"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignoreversion
 ; The one runtime library the binary imports that Windows does not ship
 ; itself. Kept beside the app so nothing has to be installed separately.
-Source: "{#SourceDir}dist\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}dist\development\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 

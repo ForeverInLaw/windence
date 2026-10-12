@@ -40,7 +40,7 @@ try {
         Build-WindowsRelease
     }
 
-    $dist = Join-Path $root 'dist'
+    $dist = Join-Path $root 'dist\development'
     $stage = Join-Path $dist "Cadence-$version-windows-x64"
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
     Copy-WindowsPayload -Root $root -Directory $stage -ExecutableName 'Cadence.exe'

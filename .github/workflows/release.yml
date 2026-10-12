@@ -62,6 +62,9 @@ jobs:
           key: windows-x64-release
           cache-on-failure: true
 
+      - name: Check Store submission guards
+        run: scripts\test-store-submission.ps1
+
       - name: Build the installer and the zip
         run: |
           # On a manual run the ref is a branch, and there is no tag to check.
@@ -95,7 +98,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: cadence-windows-x64
-          path: dist/Cadence-*
+          path: dist/development/Cadence-*
           if-no-files-found: error
           retention-days: 14
 
@@ -108,7 +111,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
         run: |
-          $zip = @(Get-ChildItem dist -File -Filter 'Cadence-*-windows-x64.zip')
+          $zip = @(Get-ChildItem dist\development -File -Filter 'Cadence-*-windows-x64.zip')
           if ($zip.Count -ne 1) { throw 'Expected one packaged Windows ZIP' }
           powershell.exe -NoProfile -File scripts\capture-windows-ui.ps1 `
             -BaselineRunId $env:BASELINE_RUN_ID -FinalZip $zip[0].FullName `
@@ -132,3 +135,45 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/store/*.msix
+
+  store:
+    name: Submit Microsoft Store update
+    needs: windows
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-') && vars.STORE_PUBLISH_ENABLED == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: store
+    concurrency:
+      group: microsoft-store-stable
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a release from the Windows branch
+        run: |
+          git merge-base --is-ancestor HEAD origin/windows-port
+          if ($LASTEXITCODE -ne 0) { throw 'Merge into windows-port before tagging a Store release' }
+      - uses: actions/download-artifact@v7
+        with:
+          name: windence-store-x64
+          path: dist/store
+      - name: Install the Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+      - name: Check identity and submit the stable package
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $package = @(Get-ChildItem dist\store -Filter '*.msix')
+          if ($package.Count -ne 1) { throw 'Expected one Store artifact' }
+          scripts\publish-store.ps1 -PackagePath $package[0].FullName -ExpectedVersion $env:RELEASE_TAG
