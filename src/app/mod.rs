@@ -7,8 +7,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+#[cfg(test)]
+use gpui_kit::component::Root;
 use gpui_kit::component::{
-    Root, Sizable, Theme, WindowExt,
+    Sizable, Theme, WindowExt,
     avatar::Avatar,
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
