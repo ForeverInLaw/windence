@@ -6,11 +6,17 @@ name: Release
 #   git tag -a v0.5.0 -m "Cadence 0.5.0" && git push origin v0.5.0
 #
 # Start it by hand from the Actions tab to build the installer without
-# publishing anything. The job stops after the artifact upload.
+# publishing anything. An optional baseline run also captures onboarding.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: Successful Release run to compare native onboarding (optional)
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -39,6 +45,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     permissions:
+      actions: read # download the optional baseline artifact
       contents: write # create the release
       id-token: write # sign the build provenance
       attestations: write # store it
@@ -73,6 +80,32 @@ jobs:
           name: cadence-windows-x64
           path: dist/Cadence-*
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Capture native onboarding
+        id: native_capture
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_run_id != ''
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          $zip = @(Get-ChildItem dist -File -Filter 'Cadence-*-windows-x64.zip')
+          if ($zip.Count -ne 1) { throw 'Expected one packaged Windows ZIP' }
+          powershell.exe -NoProfile -File scripts\capture-windows-ui.ps1 `
+            -BaselineRunId $env:BASELINE_RUN_ID -FinalZip $zip[0].FullName `
+            -OutputDirectory "$env:RUNNER_TEMP\cadence-native-ui"
+          if ($LASTEXITCODE -ne 0) { throw 'Native capture failed; see its report artifact' }
+
+      - name: Upload native capture report
+        if: always() && steps.native_capture.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: cadence-native-onboarding
+          path: ${{ runner.temp }}/cadence-native-ui
+          if-no-files-found: warn
           retention-days: 14
 
       # Lets anyone confirm the download was built here, from this commit:
