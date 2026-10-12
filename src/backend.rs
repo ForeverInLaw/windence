@@ -3417,7 +3417,7 @@ impl Radio {
                     .as_deref()
                     .context("radio seed has no Spotify track URI")?;
                 let uris = player.radio_track_uris(seed_uri).await?;
-                let recommendations = spotify.resolve_track_uris(&uris).await?;
+                let recommendations = spotify.resolve_playable_track_uris(&uris).await?;
                 build_radio_context(seed, recommendations)
             })
             .await
@@ -4614,7 +4614,7 @@ async fn recommendation_tracks(
     seed_uri: &str,
 ) -> Result<Vec<Track>> {
     let uris = player.radio_track_uris(seed_uri).await?;
-    spotify.resolve_track_uris(&uris).await
+    spotify.resolve_playable_track_uris(&uris).await
 }
 
 fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<Track>> {
