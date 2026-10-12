@@ -7,8 +7,9 @@ use gpui_kit::InputEvent as _;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    App, AppContext as _, HeadlessAppContext, KeyUpEvent, Keystroke, NoopTextSystem, WeakEntity,
-    Window, WindowHandle, point, px, size,
+    App, AppContext as _, HeadlessAppContext, KeyUpEvent, Keystroke, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, NoopTextSystem, WeakEntity, Window, WindowHandle, point, px,
+    size,
 };
 use spotify_gpui_client::backend::{BackendCommand, BackendEvent};
 use spotify_gpui_client::model;
@@ -141,6 +142,47 @@ impl Fixture {
             let keystroke = Keystroke::parse(key).expect("fixture key");
             window.dispatch_keystroke(keystroke.clone(), cx);
             window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+        });
+    }
+
+    fn begin_scrub(&mut self) -> gpui_kit::Point<gpui_kit::Pixels> {
+        let position = self.update(|window, _| window.find("progress-slider").bounds().center());
+        self.update(|window, cx| {
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position,
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        position
+    }
+
+    fn release_scrub(&mut self, position: gpui_kit::Point<gpui_kit::Pixels>) {
+        self.update(|window, cx| {
+            window.dispatch_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
         });
     }
 }
@@ -1111,13 +1153,185 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
     match fixture.backend.commands.try_recv().expect("seek command") {
         BackendCommand::Seek(position) => {
             assert_eq!(
-                position, 124_235,
+                position, 120_000,
                 "a mid-band click must still seek along the drawn track"
             );
         }
         command => panic!("unexpected command: {command:?}"),
     }
     fixture.no_commands();
+}
+
+#[test]
+fn dragging_progress_previews_without_seeking_until_release() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let (start, end) = fixture.update(|window, _| {
+        let bounds = window.find("progress-slider").bounds();
+        (
+            bounds.center(),
+            point(bounds.right() - px(85.), bounds.center().y),
+        )
+    });
+    fixture.update(|window, cx| {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: start,
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    fixture.no_commands();
+    fixture.update(|window, cx| {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: end,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    fixture.update(|window, _| {
+        assert_eq!(window.find("progress-slider").value(), Some("3:00 of 4:00"))
+    });
+    fixture.no_commands();
+    fixture.update(|window, cx| {
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: end,
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Seek(180_000))
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn escape_cancels_progress_preview_without_a_seek() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let position = fixture.begin_scrub();
+    fixture.press("escape");
+    fixture.release_scrub(position);
+    fixture.no_commands();
+    fixture.update(|window, _| {
+        assert_eq!(window.find("progress-slider").value(), Some("0:00 of 4:00"))
+    });
+}
+
+#[test]
+fn restarting_same_track_cancels_inflight_progress_gesture() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let position = fixture.begin_scrub();
+    fixture.start_track(track(0));
+    fixture.release_scrub(position);
+    fixture.no_commands();
+    fixture.update(|window, _| {
+        assert_eq!(window.find("progress-slider").value(), Some("0:00 of 4:00"))
+    });
+}
+
+#[test]
+fn releasing_progress_outside_its_bounds_clamps_and_seeks_once() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    for (right, expected) in [(true, 240_000), (false, 0)] {
+        fixture.begin_scrub();
+        let end = fixture.update(|window, _| {
+            let bounds = window.find("progress-slider").bounds();
+            point(
+                if right {
+                    bounds.right() + px(80.)
+                } else {
+                    bounds.left() - px(80.)
+                },
+                bounds.center().y,
+            )
+        });
+        fixture.update(|window, cx| {
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: end,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        fixture.no_commands();
+        fixture.release_scrub(end);
+        match fixture.backend.commands.try_recv().expect("release seek") {
+            BackendCommand::Seek(position) => assert_eq!(position, expected),
+            other => panic!("expected seek, got {other:?}"),
+        }
+        fixture.no_commands();
+    }
+}
+
+#[test]
+fn progress_midpoint_stays_correct_across_resize_and_sidebar_tiers() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    for (width, collapsed) in
+        MATRIX
+            .into_iter()
+            .chain([(1136., false), (1135., false), (1280., true)])
+    {
+        fixture.update(|window, cx| {
+            window.resize(size(px(width), px(820.)));
+            fixture_workspace(cx).update(cx, |workspace, cx| {
+                workspace
+                    .sidebar
+                    .update(cx, |sidebar, cx| sidebar.set_collapsed(collapsed, cx));
+            });
+        });
+        let shown = fixture.update(|window, cx| {
+            let Some(slider) = window.try_find("progress-slider") else {
+                return false;
+            };
+            window.click_at(
+                "progress-slider",
+                point(slider.bounds().size.width / 2., px(15.)),
+                cx,
+            );
+            true
+        });
+        if shown {
+            match fixture.backend.commands.try_recv().expect("midpoint seek") {
+                BackendCommand::Seek(position) => assert!(
+                    position.abs_diff(120_000) <= 1,
+                    "{width}, collapsed={collapsed}: {position}"
+                ),
+                other => panic!("expected seek, got {other:?}"),
+            }
+        }
+        fixture.no_commands();
+    }
 }
 
 /// Folding the rail on the running window re-derives the tiers without any

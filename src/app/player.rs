@@ -40,6 +40,7 @@ pub(super) struct Player {
     restore: Option<(u32, bool)>,
     /// The current play still needs a history entry when playback is confirmed.
     history_pending: bool,
+    playback_generation: u64,
     position_ms: u32,
     saved_position_ms: u32,
     volume: f32,
@@ -68,6 +69,7 @@ impl Player {
             shuffle_smart_supported: false,
             restore: None,
             history_pending: false,
+            playback_generation: 0,
             position_ms: 0,
             saved_position_ms: 0,
             volume,
@@ -130,6 +132,11 @@ impl Player {
     /// Whether the toggle's Smart Shuffle state may act on this context.
     pub(super) fn shuffle_smart_supported(&self) -> bool {
         self.shuffle_smart_supported
+    }
+
+    /// Changes for each new play, including replaying the same track.
+    pub(super) fn playback_generation(&self) -> u64 {
+        self.playback_generation
     }
 
     pub(super) fn position_ms(&self) -> u32 {
@@ -470,6 +477,7 @@ impl Player {
     }
 
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+        self.playback_generation = self.playback_generation.wrapping_add(1);
         self.now_playing = None;
         self.now_playing_injected = false;
         self.context = Arc::default();
@@ -591,6 +599,7 @@ impl Player {
                 injected,
                 position_ms,
             } => {
+                self.playback_generation = self.playback_generation.wrapping_add(1);
                 self.adopt_context(current, next, injected);
                 self.position_ms = position_ms;
                 self.saved_position_ms = position_ms;
@@ -613,6 +622,7 @@ impl Player {
                     self.history_pending = true;
                 }
                 if changed || new_play {
+                    self.playback_generation = self.playback_generation.wrapping_add(1);
                     self.loading = true;
                     self.position_ms = 0;
                     self.saved_position_ms = 0;

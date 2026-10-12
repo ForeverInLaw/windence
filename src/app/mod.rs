@@ -180,10 +180,8 @@ fn resolve_dark_mode(preference: ThemePreference, appearance: WindowAppearance) 
 pub(super) const VOLUME_SLIDER_WIDTH: f32 = 120.;
 const VOLUME_SLIDER_RIGHT_INSET: f32 = 144.;
 const PLAYER_LEFT_WIDTH: f32 = 360.;
-const PLAYER_CENTER_WIDTH: f32 = 440.;
 const PLAYER_RIGHT_WIDTH: f32 = 240.;
-/// The full-tier progress slider's width: what the centre box reserves
-/// for it, so the drawn track and the seek math agree.
+/// The fixed width the full-tier centre cluster reserves for the drawn track.
 pub(super) const PROGRESS_SLIDER_WIDTH: f32 = 340.;
 const PROGRESS_TIME_WIDTH: f32 = 36.;
 const PROGRESS_GAP: f32 = 8.;
@@ -506,40 +504,6 @@ fn volume_for_pointer(pointer_x: f32, window_width: f32) -> f32 {
     ((pointer_x - (window_width - VOLUME_SLIDER_RIGHT_INSET)) / VOLUME_SLIDER_WIDTH).clamp(0., 1.)
 }
 
-/// Maps a pointer position to a track position on the progress slider.
-///
-/// The window width says how wide the whole window is; the content width
-/// says what the bar spans. In the full tier the bar's centre cluster is
-/// centred on the content and the slider keeps `PROGRESS_SLIDER_WIDTH` —
-/// the same width the centre box reserves for it, so the drawn track and
-/// this math agree. In the compact tier the slider takes what the content
-/// has left over, floored at the slider minimum. Below the timeline floor
-/// the slider is not on screen, so this never runs for one.
-fn seek_for_pointer(
-    pointer_x: f32,
-    window_width: f32,
-    content_width: f32,
-    duration_ms: u32,
-) -> u32 {
-    let compact = uses_compact_player_layout(content_width);
-    let slider_width = if compact {
-        compact_progress_slider_width(content_width)
-    } else {
-        Some(PROGRESS_SLIDER_WIDTH)
-    };
-    let Some(slider_width) = slider_width else {
-        return 0;
-    };
-    let center_left = if compact {
-        PLAYER_BAR_PADDING + COMPACT_PLAYER_LEFT_WIDTH + PLAYER_BAR_GAP
-    } else {
-        window_width / 2. + (PLAYER_LEFT_WIDTH - PLAYER_RIGHT_WIDTH - PLAYER_CENTER_WIDTH) / 2.
-    };
-    let left = center_left + PROGRESS_TIME_WIDTH + PROGRESS_GAP;
-    let fraction = ((pointer_x - left) / slider_width).clamp(0., 1.);
-    (fraction * duration_ms as f32) as u32
-}
-
 fn format_duration(duration_ms: u32) -> String {
     let seconds = duration_ms / 1000;
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -601,6 +565,7 @@ mod page;
 mod player;
 mod player_bar;
 mod router;
+mod scrubber;
 mod services;
 mod session;
 mod settings;
@@ -618,12 +583,10 @@ pub fn run() {
 mod tests {
     use super::{
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
-        COMPACT_PLAYER_BREAKPOINT, COMPACT_PLAYER_LEFT_WIDTH, NAV_GLYPH_WIDTH, NAV_ROW_PAD,
-        PLAYER_BAR_GAP, PLAYER_BAR_PADDING, PLAYER_TIMELINE_FLOOR, PROGRESS_GAP,
-        PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_TIME_WIDTH, SIDEBAR_CONTENT_PAD,
-        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRAFFIC_LIGHT_CLUSTER_WIDTH,
-        compact_progress_slider_width, interpolate_sidebar_width, resolve_dark_mode,
-        seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
+        COMPACT_PLAYER_BREAKPOINT, NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR,
+        PROGRESS_SLIDER_MIN_WIDTH, SIDEBAR_CONTENT_PAD, SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET,
+        TRAFFIC_LIGHT_CLUSTER_WIDTH, compact_progress_slider_width, interpolate_sidebar_width,
+        resolve_dark_mode, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
         track_table_columns, traffic_light_position, uses_compact_content_layout,
         uses_compact_player_layout, volume_for_pointer,
     };
@@ -657,37 +620,6 @@ mod tests {
         assert_eq!(volume_for_pointer(1100., window_width), 0.);
         assert_eq!(volume_for_pointer(1196., window_width), 0.5);
         assert_eq!(volume_for_pointer(1300., window_width), 1.);
-    }
-
-    #[test]
-    fn pointer_position_is_mapped_to_track_duration() {
-        // Full tier: the centre cluster is centred on the content.
-        assert_eq!(seek_for_pointer(524., 1280., 1280., 200_000), 0);
-        assert_eq!(seek_for_pointer(694., 1280., 1280., 200_000), 100_000);
-        assert_eq!(seek_for_pointer(864., 1280., 1280., 200_000), 200_000);
-        // Compact tier: the slider takes what the content has left over,
-        // floored at the slider minimum. At the floor the fixed parts
-        // leave exactly the minimum, so the row maps the band's left edge,
-        // middle, and right edge onto the track's start, middle, and end.
-        // The band starts where the centre does: padding, left cluster,
-        // gap, then the leading time label and its gap.
-        let left = PLAYER_BAR_PADDING
-            + COMPACT_PLAYER_LEFT_WIDTH
-            + PLAYER_BAR_GAP
-            + PROGRESS_TIME_WIDTH
-            + PROGRESS_GAP;
-        assert_eq!(seek_for_pointer(left, 720., 876., 200_000), 0);
-        assert_eq!(seek_for_pointer(left + 80., 720., 876., 200_000), 100_000);
-        assert_eq!(
-            seek_for_pointer(left + PROGRESS_SLIDER_MIN_WIDTH, 720., 876., 200_000),
-            200_000
-        );
-        // Below the timeline floor the slider is not on screen, so a
-        // pointer on where it would be seeks nowhere.
-        assert_eq!(seek_for_pointer(251., 720., 875., 200_000), 0);
-        // The pointer clamps to the slider's ends.
-        assert_eq!(seek_for_pointer(200., 1280., 1280., 200_000), 0);
-        assert_eq!(seek_for_pointer(1200., 1280., 1280., 200_000), 200_000);
     }
 
     #[test]
