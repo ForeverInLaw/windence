@@ -166,3 +166,35 @@ The Store publishing job was skipped. The repository publishing flag is unset.
 No Store submission or public release was created. Client Windows 10/11,
 authenticated playback and Store-delivered migration/update checks remain open.
 GitHub retains this artifact until 2026-10-26; it can be rebuilt from the branch.
+
+## Corrected public name, 1.3.1
+
+Source commit `07f3500`, checked on 2026-10-13:
+
+- The sidebar label, application menu and user-facing errors use Windence.
+- The development installer, ZIP, executable and shortcuts use Windence.
+  The Inno AppId stays the same, so an upgrade uses the previous installation
+  directory and profile. It removes only the old executable and generated
+  shortcuts. Store installation still does not remove another installation.
+- Shared payload packaging checks the actual EXE's product name, description
+  and original filename. Stale binary metadata stops packaging.
+- [Successful Release run](https://github.com/ForeverInLaw/windence/actions/runs/38320850270).
+- [Store artifact](https://github.com/ForeverInLaw/windence/actions/runs/38320850270/artifacts/11779320198),
+  `Windence-1.3.1-windows-x64.msix`, package version `1.3.1.0`.
+- MSIX SHA256 `918a34ab34c7c7f2cfb5fbf6f72f36eff974dbd29bd066e46c519dad75b0bf38`.
+- [Development artifact](https://github.com/ForeverInLaw/windence/actions/runs/38320850270/artifacts/11778444511)
+  contains `Windence-1.3.1-windows-x64-setup.exe` and the matching ZIP.
+- Checksums, unsigned MSIX identity and ZIP payload were verified after download.
+  CI built the installer, installed a separately test-signed MSIX and opened it
+  on Windows Server 2025. Portable tests, formatting, strict Clippy and actionlint
+  passed. The capture script accepted the previous Cadence-named ZIP and the new
+  Windence-named ZIP. Light and dark onboarding captures were inspected.
+
+An Inno upgrade on client Windows and the signed-in main window still need the
+owner's check. The data directory, credentials and single-instance identity
+retain their existing names. This change does not migrate user data.
+
+Close the previous player, install the new development build and check the
+sidebar, Task Manager and shortcuts. In Partner Center's draft, replace the
+1.3.0.0 package with the new 1.3.1.0 MSIX before certification. CI did not send
+the submission or publish the app.
