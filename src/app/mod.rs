@@ -567,6 +567,7 @@ mod page;
 mod playback_clock;
 mod player;
 mod player_bar;
+mod playlist_page;
 mod router;
 mod scrubber;
 mod services;

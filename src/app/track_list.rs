@@ -3,6 +3,12 @@ use super::*;
 use gpui_kit::{ScrollStrategy, TestSupportExt as _, UniformListScrollHandle};
 use page::PageEvent;
 
+pub(super) enum PlaylistListEvent {
+    LoadMore,
+    Complete,
+    Play(usize),
+}
+
 /// What a track list is showing.
 ///
 /// `id` is the sort persistence key and the identity the DJ rules test; a
@@ -67,9 +73,15 @@ pub(super) struct TrackList {
     /// sidebar. The column tiers read it instead of the window width, so
     /// collapsing the rail widens the table the same frame.
     content_width: f32,
+    delegate_play: bool,
+    has_more: bool,
+    paging_busy: bool,
+    scrolled_for_more: bool,
+    more_requested: bool,
 }
 
 impl EventEmitter<PageEvent> for TrackList {}
+impl EventEmitter<PlaylistListEvent> for TrackList {}
 
 impl TrackList {
     pub(super) fn new(cx: &mut App) -> Self {
@@ -89,6 +101,11 @@ impl TrackList {
             image_cache: services::AppServices::image_cache(cx),
             // Replaced with the real value before the first paint.
             content_width: 0.,
+            delegate_play: false,
+            has_more: false,
+            paging_busy: false,
+            scrolled_for_more: false,
+            more_requested: false,
         }
     }
 
@@ -141,6 +158,7 @@ impl TrackList {
         self.listed = listed;
         self.context = context;
         self.menu_open = None;
+        self.more_requested = false;
         self.refresh_order();
         cx.notify();
     }
@@ -197,6 +215,30 @@ impl TrackList {
             .collect()
     }
 
+    pub(super) fn sorted_position(&self, default_index: usize) -> Option<usize> {
+        self.order.iter().position(|&index| index == default_index)
+    }
+
+    pub(super) fn sorted(&self) -> bool {
+        self.sort.is_some()
+    }
+
+    pub(super) fn set_paging(&mut self, has_more: bool, busy: bool, cx: &mut Context<Self>) {
+        self.delegate_play = true;
+        if self.has_more == has_more && self.paging_busy == busy {
+            return;
+        }
+        self.has_more = has_more;
+        self.paging_busy = busy;
+        if !busy {
+            self.more_requested = false;
+        }
+        if busy || !has_more {
+            self.scrolled_for_more = false;
+        }
+        cx.notify();
+    }
+
     /// Moves `column`'s header to its next state and remembers the choice.
     fn toggle_sort(&mut self, column: model::ListSortColumn, cx: &mut Context<Self>) {
         let Some(key) = self.context.id.clone() else {
@@ -206,6 +248,9 @@ impl TrackList {
         services::AppServices::set_list_sort(&key, self.sort, cx);
         self.menu_open = None;
         self.refresh_order();
+        if self.has_more {
+            cx.emit(PlaylistListEvent::Complete);
+        }
         cx.notify();
     }
 
@@ -282,6 +327,12 @@ impl TrackList {
 
     /// Starts the selected occurrence in the complete sorted context.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.delegate_play {
+            if let Some(&default_index) = self.order.get(index) {
+                cx.emit(PlaylistListEvent::Play(default_index));
+            }
+            return;
+        }
         let tracks = self.sorted_context_tracks();
         let kind = self.context.kind;
         let uri = self.context.uri.clone();
@@ -474,6 +525,7 @@ impl Render for TrackList {
         };
         div()
             .id("track-list")
+            .test_support()
             .flex_1()
             .min_h_0()
             // Grow to the rows, not past them: `flex_1` fills the space a
@@ -485,6 +537,12 @@ impl Render for TrackList {
             .flex_col()
             .rounded(px(track_row::LIST_CORNER_RADIUS))
             .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                if this.has_more && !this.paging_busy && !this.more_requested {
+                    this.scrolled_for_more = true;
+                    cx.notify();
+                }
+            }))
             .border_1()
             .border_color(rgb(palette.border))
             .child(track_row::track_list_header(
@@ -511,6 +569,16 @@ impl Render for TrackList {
                             .expect("show sets the id before first paint"),
                         self.visible.len(),
                         cx.processor(move |this, range: Range<usize>, _, cx| {
+                            if this.has_more
+                                && !this.paging_busy
+                                && this.scrolled_for_more
+                                && !this.more_requested
+                                && range.end >= this.visible.len()
+                            {
+                                this.more_requested = true;
+                                this.scrolled_for_more = false;
+                                cx.emit(PlaylistListEvent::LoadMore);
+                            }
                             range.map(|index| this.row(index, columns, cx)).collect()
                         }),
                     )

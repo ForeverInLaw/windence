@@ -309,6 +309,13 @@ impl Workspace {
     /// listener ended up, whichever way the route changed.
     fn settle_navigation(&mut self, cx: &mut Context<Self>) {
         let route = self.router.route();
+        self.playlist.update(cx, |page, cx| {
+            if route == Route::Playlist {
+                page.resume(cx);
+            } else {
+                page.suspend(cx);
+            }
+        });
         let pinned_origin = self.router.pinned_origin();
         // The playlist page is shared by every playlist; only DJ X's row in
         // the sidebar highlights on it.
