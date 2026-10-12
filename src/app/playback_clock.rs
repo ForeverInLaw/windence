@@ -4,8 +4,8 @@ const SETTLE_TOLERANCE_MS: u32 = 1_000;
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 const DRIFT_IGNORE_MS: u32 = 250;
 
-/// Holds the latest accepted or requested position against reports sampled
-/// before a seek. Only accepted reports may reach persistence or SMTC.
+/// Smooths display ticks and briefly protects a new context from older reports.
+/// Player separately rejects reports sampled before a seek or restore.
 pub(super) struct PlaybackClock {
     accepted_ms: u32,
     display_anchor_ms: u32,
@@ -60,7 +60,12 @@ impl PlaybackClock {
         self.settling_until = Some(now + SETTLE_TIMEOUT);
     }
 
-    pub(super) fn report(&mut self, position_ms: u32, now: Instant) -> bool {
+    pub(super) fn report(&mut self, position_ms: u32, now: Instant, after_request: bool) -> bool {
+        if after_request {
+            // This subscription started after the request was processed. A
+            // different position is authoritative even when a seek failed.
+            self.settling_until = None;
+        }
         let displayed_ms = self.display_position_ms(now);
         if let Some(until) = self.settling_until {
             if now < until && position_ms.abs_diff(displayed_ms) > SETTLE_TOLERANCE_MS {

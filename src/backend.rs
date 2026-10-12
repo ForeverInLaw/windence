@@ -390,6 +390,7 @@ pub enum BackendCommand {
     RestorePlayback {
         position_ms: u32,
         playing: bool,
+        request_id: u64,
     },
     /// Adds or removes a track in the account's Spotify Liked Songs.
     SetLiked {
@@ -418,7 +419,10 @@ pub enum BackendCommand {
     Pause,
     Next,
     Previous,
-    Seek(u32),
+    Seek {
+        position_ms: u32,
+        request_id: u64,
+    },
     SavePlaybackPosition {
         spotify_uri: String,
         position_ms: u32,
@@ -453,6 +457,7 @@ pub enum BackendEvent {
     PlaybackRestored {
         position_ms: u32,
         playing: bool,
+        request_id: u64,
     },
     PlaybackSettled,
     QueueEnded,
@@ -519,6 +524,8 @@ pub enum BackendEvent {
     PositionChanged {
         spotify_uri: String,
         position_ms: u32,
+        /// Some only for a subscription registered after this position request.
+        request_id: Option<u64>,
     },
     PlaybackContext {
         current: Track,
@@ -1372,7 +1379,11 @@ impl Worker {
             BackendCommand::RestorePlayback {
                 position_ms,
                 playing,
-            } => self.restore_playback(position_ms, playing).await,
+                request_id,
+            } => {
+                self.restore_playback(position_ms, playing, request_id)
+                    .await
+            }
             BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
             BackendCommand::SetPinned { uri, pinned } => self.set_pinned(uri, pinned).await,
             BackendCommand::SetPlaylistSaved { uri, saved } => {
@@ -1390,7 +1401,10 @@ impl Worker {
                 self.silence_narration();
                 self.previous_track().await
             }
-            BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
+            BackendCommand::Seek {
+                position_ms,
+                request_id,
+            } => self.seek(position_ms, request_id).await,
             BackendCommand::SavePlaybackPosition {
                 spotify_uri,
                 position_ms,
@@ -1938,7 +1952,12 @@ impl Worker {
         Ok(())
     }
 
-    async fn restore_playback(&mut self, position_ms: u32, playing: bool) -> Result<()> {
+    async fn restore_playback(
+        &mut self,
+        position_ms: u32,
+        playing: bool,
+        request_id: u64,
+    ) -> Result<()> {
         let result = restore_context_track(
             &self.connection.player,
             &self.queue.shuffle,
@@ -1952,9 +1971,11 @@ impl Worker {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return result;
         }
+        self.connection.observe_positions(request_id, &self.events);
         let _ = self.events.send(BackendEvent::PlaybackRestored {
             position_ms,
             playing,
+            request_id,
         });
         // The restore performed a fresh load; the ended special-casing must
         // not survive it, or seeks would be swallowed against a live player.
@@ -2284,13 +2305,14 @@ impl Worker {
         self.maybe_prefetch_injections().await;
     }
 
-    async fn seek(&mut self, position_ms: u32) -> Result<()> {
+    async fn seek(&mut self, position_ms: u32, request_id: u64) -> Result<()> {
         // While ended, seek() would be a no-op too; remember the position for
         // the reload that Resume performs.
         if !self.queue.ended {
             self.connected_player()
                 .map(|player| player.seek(position_ms))?;
         }
+        self.connection.observe_positions(request_id, &self.events);
         self.queue.position_ms = position_ms;
         if let Err(error) = self.store.update_playback_position(position_ms).await {
             send_error(&self.events, error);
@@ -3697,6 +3719,7 @@ fn connect_settlement(pending: Option<PendingPlay>, connect_restoring: bool) -> 
 struct PlaybackConnection {
     player: Option<Playback>,
     observer: Option<tokio::task::JoinHandle<()>>,
+    position_observer: Option<tokio::task::JoinHandle<()>>,
     reconnect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     connect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     reconnect_pending: bool,
@@ -3708,12 +3731,20 @@ struct PlaybackConnection {
     pending_play: Option<PendingPlay>,
 }
 
+impl Drop for PlaybackConnection {
+    fn drop(&mut self) {
+        self.disconnect();
+        self.abort_attempts();
+    }
+}
+
 impl PlaybackConnection {
     fn disconnect(&mut self) {
         if let Some(player) = self.player.take() {
             player.stop();
         }
         abort_task(&mut self.observer);
+        abort_task(&mut self.position_observer);
     }
 
     fn adopt(
@@ -3722,8 +3753,23 @@ impl PlaybackConnection {
         events: &UnboundedSender<BackendEvent>,
         unavailable: &UnboundedSender<String>,
     ) {
+        abort_task(&mut self.observer);
+        abort_task(&mut self.position_observer);
         self.observer = Some(observe_playback(&player, events, unavailable.clone()));
         self.player = Some(player);
+    }
+
+    /// AddEventSender follows Seek or Load on the player's command stream.
+    /// This channel contains no positions sampled before that request.
+    fn observe_positions(&mut self, request_id: u64, events: &UnboundedSender<BackendEvent>) {
+        abort_task(&mut self.position_observer);
+        if let Some(player) = &self.player {
+            self.position_observer = Some(observe_requested_positions(
+                player.events(),
+                request_id,
+                events.clone(),
+            ));
+        }
     }
 
     fn abort_attempts(&mut self) {
@@ -4429,6 +4475,52 @@ fn observe_playback(
     })
 }
 
+/// Keeps the main subscription's state and failure events intact while replacing
+/// only the position source after a seek or restore.
+fn observe_requested_positions(
+    mut player_events: UnboundedReceiver<PlayerEvent>,
+    request_id: u64,
+    events: UnboundedSender<BackendEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(event) = player_events.recv().await {
+            let (track_id, position_ms) = match event {
+                PlayerEvent::PositionChanged {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::PositionCorrection {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Seeked {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Playing {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Paused {
+                    track_id,
+                    position_ms,
+                    ..
+                } => (track_id, position_ms),
+                _ => continue,
+            };
+            let _ = events.send(BackendEvent::PositionChanged {
+                spotify_uri: track_id.to_string(),
+                position_ms,
+                request_id: Some(request_id),
+            });
+        }
+    })
+}
+
 /// Maps one raw player event to the backend event that carries the same
 /// information, if any.
 fn map_player_event(
@@ -4448,6 +4540,7 @@ fn map_player_event(
             let _ = event_sender.send(BackendEvent::PositionChanged {
                 spotify_uri: track_id.to_string(),
                 position_ms,
+                request_id: None,
             });
             Some(BackendEvent::Playing {
                 spotify_uri: track_id.to_string(),
@@ -4461,6 +4554,7 @@ fn map_player_event(
             let _ = event_sender.send(BackendEvent::PositionChanged {
                 spotify_uri: track_id.to_string(),
                 position_ms,
+                request_id: None,
             });
             Some(BackendEvent::Paused {
                 spotify_uri: track_id.to_string(),
@@ -4497,6 +4591,7 @@ fn map_player_event(
         } => Some(BackendEvent::PositionChanged {
             spotify_uri: track_id.to_string(),
             position_ms,
+            request_id: None,
         }),
         _ => None,
     }
@@ -4823,6 +4918,44 @@ mod tests {
             control_receiver.try_recv(),
             Ok(BackendCommand::Logout { generation: 1 })
         ));
+    }
+
+    #[tokio::test]
+    async fn requested_position_subscription_does_not_duplicate_state_and_closes_with_connection() {
+        use super::{Duration, PlayerEvent, SpotifyUri, observe_requested_positions};
+        let track_id = SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let (source, source_events) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let mut connection = PlaybackConnection::default();
+        connection
+            .position_observer
+            .replace(observe_requested_positions(source_events, 77, events));
+        source
+            .send(PlayerEvent::Unavailable {
+                play_request_id: 1,
+                track_id: track_id.clone(),
+            })
+            .unwrap();
+        source
+            .send(PlayerEvent::Paused {
+                play_request_id: 1,
+                track_id: track_id.clone(),
+                position_ms: 10_000,
+            })
+            .unwrap();
+        assert!(matches!(
+            reports.recv().await,
+            Some(BackendEvent::PositionChanged { request_id: Some(77), position_ms: 10_000, spotify_uri })
+                if spotify_uri == track_id.to_string()
+        ));
+        assert!(matches!(
+            reports.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(1), source.closed())
+            .await
+            .expect("dropping a connection must release its position subscription");
     }
 
     #[tokio::test]
@@ -5345,10 +5478,10 @@ mod tests {
         assert!(!PlaybackConnection::default().is_connecting());
 
         // A connect attempt with no player yet is the connecting window.
-        let mut connection = PlaybackConnection {
-            connect: Some(tokio::spawn(std::future::pending())),
-            ..PlaybackConnection::default()
-        };
+        let mut connection = PlaybackConnection::default();
+        connection
+            .connect
+            .replace(tokio::spawn(std::future::pending()));
         assert!(connection.is_connecting());
         connection.hold_play(vec![track()], 0, false, ContextKind::Collection);
         let held = connection.pending_play.as_ref().unwrap();
@@ -5382,7 +5515,7 @@ mod tests {
         replacement.spotify_uri = Some("spotify:track:next".to_owned());
         connection.hold_play(vec![replacement], 1, true, ContextKind::Album);
 
-        let held = connection.pending_play.unwrap();
+        let held = connection.pending_play.as_ref().unwrap();
         assert_eq!(held.index, 1);
         assert!(held.shuffled);
         assert_eq!(held.kind, ContextKind::Album);
@@ -5396,21 +5529,18 @@ mod tests {
     #[tokio::test]
     async fn only_a_connection_in_flight_counts_as_connecting() {
         // A reconnect attempt with no session yet is the connecting window.
-        let mut connection = PlaybackConnection {
-            reconnect: Some(tokio::spawn(std::future::pending())),
-            ..PlaybackConnection::default()
-        };
+        let mut connection = PlaybackConnection::default();
+        connection
+            .reconnect
+            .replace(tokio::spawn(std::future::pending()));
         assert!(connection.is_connecting());
         connection.abort_attempts();
         assert!(!connection.is_connecting());
 
         // Without a task in flight nothing is connecting, even with the
         // reconnect_pending note left over for the health tick.
-        let idle = PlaybackConnection {
-            reconnect_pending: true,
-            ..PlaybackConnection::default()
-        };
-        assert!(!idle.is_connecting());
+        connection.reconnect_pending = true;
+        assert!(!connection.is_connecting());
         // The player-exists case is not constructible here: a `Playback`
         // needs a live Spotify session, so it is covered by the
         // play-context hold check, which reads the same predicate.

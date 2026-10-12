@@ -45,6 +45,8 @@ pub(super) struct Player {
     /// Confirmed plays wait for backend capacity in order, even after a context changes.
     history_delivery: Option<gpui_kit::Task<()>>,
     playback_generation: u64,
+    position_request_sequence: u64,
+    position_request_id: Option<u64>,
     clock: playback_clock::PlaybackClock,
     saved_position_ms: u32,
     volume: f32,
@@ -76,6 +78,8 @@ impl Player {
             history_pending: false,
             history_delivery: None,
             playback_generation: 0,
+            position_request_sequence: 0,
+            position_request_id: None,
             clock: playback_clock::PlaybackClock::new(),
             saved_position_ms: 0,
             volume,
@@ -266,7 +270,15 @@ impl Player {
     }
 
     pub(super) fn seek(&mut self, position_ms: u32, cx: &mut Context<Self>) {
-        if self.send(BackendCommand::Seek(position_ms), cx) {
+        let request_id = next_request_id(&mut self.position_request_sequence);
+        if self.send(
+            BackendCommand::Seek {
+                position_ms,
+                request_id,
+            },
+            cx,
+        ) {
+            self.position_request_id = Some(request_id);
             self.clock.seek(position_ms, cx.background_executor().now());
         }
         cx.notify();
@@ -324,6 +336,7 @@ impl Player {
             cx,
         );
         if started {
+            self.position_request_id = None;
             self.clock.reset(0, cx.background_executor().now());
             self.clock
                 .set_playing(false, cx.background_executor().now());
@@ -340,6 +353,7 @@ impl Player {
         self.context_kind = ContextKind::Collection;
         let started = self.send(BackendCommand::PlayDj, cx);
         if started {
+            self.position_request_id = None;
             self.clock.reset(0, cx.background_executor().now());
             self.clock
                 .set_playing(false, cx.background_executor().now());
@@ -475,7 +489,12 @@ impl Player {
     }
 
     fn save_position_if_moved(&mut self, spotify_uri: String, position_ms: u32) {
-        if position_ms.abs_diff(self.saved_position_ms) < POSITION_SAVE_INTERVAL_MS {
+        let interval = if self.playing {
+            POSITION_SAVE_INTERVAL_MS
+        } else {
+            1
+        };
+        if position_ms.abs_diff(self.saved_position_ms) < interval {
             return;
         }
         self.backend.send(BackendCommand::SavePlaybackPosition {
@@ -522,6 +541,7 @@ impl Player {
         self.shuffle_supported = false;
         self.shuffle_smart_supported = false;
         self.restore = None;
+        self.position_request_id = None;
         self.history_pending = false;
         self.clock.reset(0, cx.background_executor().now());
         self.clock
@@ -555,10 +575,17 @@ impl Player {
                 self.error = None;
                 self.backend.send(BackendCommand::SetVolume(self.volume));
                 if let Some((position_ms, playing)) = self.restore {
-                    self.backend.send(BackendCommand::RestorePlayback {
-                        position_ms,
-                        playing,
-                    });
+                    let request_id = next_request_id(&mut self.position_request_sequence);
+                    if self.deliver(
+                        BackendCommand::RestorePlayback {
+                            position_ms,
+                            playing,
+                            request_id,
+                        },
+                        cx,
+                    ) {
+                        self.position_request_id = Some(request_id);
+                    }
                 } else {
                     self.loading = false;
                 }
@@ -566,7 +593,11 @@ impl Player {
             BackendEvent::PlaybackRestored {
                 position_ms,
                 playing,
+                request_id,
             } => {
+                if self.position_request_id != Some(request_id) {
+                    return None;
+                }
                 self.clock.seek(position_ms, cx.background_executor().now());
                 self.clock
                     .set_playing(playing, cx.background_executor().now());
@@ -640,12 +671,16 @@ impl Player {
             BackendEvent::PositionChanged {
                 spotify_uri,
                 position_ms,
+                request_id,
             } => {
                 if self.restore.is_none()
                     && self.live_track_matches(&spotify_uri)
-                    && self
-                        .clock
-                        .report(position_ms, cx.background_executor().now())
+                    && request_id == self.position_request_id
+                    && self.clock.report(
+                        position_ms,
+                        cx.background_executor().now(),
+                        request_id.is_some(),
+                    )
                 {
                     self.save_position_if_moved(spotify_uri, self.position_ms());
                 }
@@ -657,6 +692,7 @@ impl Player {
                 position_ms,
             } => {
                 self.playback_generation = self.playback_generation.wrapping_add(1);
+                self.position_request_id = None;
                 self.adopt_context(current, next, injected);
                 self.clock
                     .reset(position_ms, cx.background_executor().now());
@@ -683,13 +719,20 @@ impl Player {
                     self.history_pending = true;
                 }
                 if changed || new_play {
+                    // A restore may replace the current track before its
+                    // acknowledgement and post-load positions arrive.
+                    if new_play || self.restore.is_none() {
+                        self.position_request_id = None;
+                    }
                     self.playback_generation = self.playback_generation.wrapping_add(1);
                     self.loading = true;
                     self.clock.seek(0, cx.background_executor().now());
                     self.clock
                         .set_playing(false, cx.background_executor().now());
                     self.saved_position_ms = 0;
-                    self.restore = None;
+                    if new_play {
+                        self.restore = None;
+                    }
                 }
             }
             BackendEvent::ShuffleChanged {

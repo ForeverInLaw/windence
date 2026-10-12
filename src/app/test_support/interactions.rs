@@ -169,6 +169,22 @@ impl Fixture {
         });
     }
 
+    fn seek(&mut self, position_ms: u32) -> u64 {
+        self.update(|_, cx| {
+            services::AppServices::player(cx).update(cx, |player, cx| player.seek(position_ms, cx))
+        });
+        match self.backend.commands.try_recv().expect("seek request") {
+            BackendCommand::Seek {
+                position_ms: requested,
+                request_id,
+            } => {
+                assert_eq!(requested, position_ms);
+                request_id
+            }
+            other => panic!("expected seek request, got {other:?}"),
+        }
+    }
+
     fn history_entry(&mut self) -> model::Track {
         match self.backend.commands.try_recv().expect("history entry") {
             BackendCommand::MarkPlayed(played) => played,
@@ -428,14 +444,24 @@ fn a_paused_restore_waits_for_resume_before_recording_history() {
     };
     fixture.playback_event(BackendEvent::PlaybackReconnecting);
     fixture.playback_event(BackendEvent::PlaybackReconnected);
-    assert!(matches!(
-        fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::RestorePlayback { playing: false, .. })
-    ));
+    let request_id = match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("restore request")
+    {
+        BackendCommand::RestorePlayback {
+            request_id,
+            playing: false,
+            ..
+        } => request_id,
+        other => panic!("expected restore request, got {other:?}"),
+    };
     fixture.playback_event(playing());
     fixture.no_commands();
 
     fixture.playback_event(BackendEvent::PlaybackRestored {
+        request_id,
         position_ms: 60_000,
         playing: false,
     });
@@ -510,13 +536,23 @@ fn pause_resume_reconnect_and_queue_edits_keep_one_history_entry_per_play() {
 
     fixture.playback_event(BackendEvent::PlaybackReconnecting);
     fixture.playback_event(BackendEvent::PlaybackReconnected);
-    assert!(matches!(
-        fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::RestorePlayback { playing: true, .. })
-    ));
+    let request_id = match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("restore request")
+    {
+        BackendCommand::RestorePlayback {
+            request_id,
+            playing: true,
+            ..
+        } => request_id,
+        other => panic!("expected restore request, got {other:?}"),
+    };
     fixture.playback_event(playing());
     fixture.no_commands();
     fixture.playback_event(BackendEvent::PlaybackRestored {
+        request_id,
         position_ms: 0,
         playing: true,
     });
@@ -1105,7 +1141,10 @@ fn progress_slider_keys_seek_at_documented_steps() {
     // Left and Right step 5 seconds from wherever playback stands. The
     // snapshot leaves playback at the track's start.
     let seeked = |command| match command {
-        BackendCommand::Seek(position) => position,
+        BackendCommand::Seek {
+            position_ms: position,
+            ..
+        } => position,
         other => panic!("expected a seek, got {other:?}"),
     };
     fixture.press("left");
@@ -1274,7 +1313,10 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
         window.click_at("progress-slider", point(px(170.), px(15.)), cx);
     });
     match fixture.backend.commands.try_recv().expect("seek command") {
-        BackendCommand::Seek(position) => {
+        BackendCommand::Seek {
+            position_ms: position,
+            ..
+        } => {
             assert_eq!(
                 position, 120_000,
                 "a mid-band click must still seek along the drawn track"
@@ -1303,7 +1345,10 @@ fn dragging_progress_previews_without_seeking_until_release() {
     fixture.release_scrub(end);
     assert!(matches!(
         fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::Seek(180_000))
+        Ok(BackendCommand::Seek {
+            position_ms: 180_000,
+            ..
+        })
     ));
     fixture.no_commands();
 }
@@ -1371,7 +1416,7 @@ fn rapid_pause_then_resume_survives_queued_pause_confirmation() {
 }
 
 #[test]
-fn stale_seek_tick_cannot_change_or_save_position() {
+fn delayed_seek_tick_cannot_change_or_save_position() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
     fixture.update(|_, cx| {
@@ -1379,9 +1424,16 @@ fn stale_seek_tick_cannot_change_or_save_position() {
     });
     assert!(matches!(
         fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::Seek(120_000))
+        Ok(BackendCommand::Seek {
+            position_ms: 120_000,
+            ..
+        })
     ));
+    fixture
+        .cx
+        .advance_clock(std::time::Duration::from_millis(2_001));
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 10_000,
     });
@@ -1407,6 +1459,7 @@ fn replaying_same_track_drops_position_sampled_before_new_play() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 90_000,
     });
@@ -1419,6 +1472,7 @@ fn replaying_same_track_drops_position_sampled_before_new_play() {
     ));
     fixture.start_track(track(0));
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 90_100,
     });
@@ -1468,6 +1522,7 @@ fn close_and_system_position_keep_accepted_reports_when_display_ignores_jitter()
             .cx
             .advance_clock(std::time::Duration::from_millis(elapsed));
         fixture.playback_event(BackendEvent::PositionChanged {
+            request_id: None,
             spotify_uri: track(0).spotify_uri.unwrap(),
             position_ms,
         });
@@ -1505,14 +1560,9 @@ fn pause_and_reconnect_keep_latest_accepted_position_against_late_ticks() {
         spotify_uri: track(0).spotify_uri.unwrap(),
     });
     fixture.history_entry();
-    fixture.update(|_, cx| {
-        services::AppServices::player(cx).update(cx, |player, cx| player.seek(60_000, cx))
-    });
-    assert!(matches!(
-        fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::Seek(60_000))
-    ));
+    let request_id = fixture.seek(60_000);
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(request_id),
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 60_100,
     });
@@ -1524,10 +1574,12 @@ fn pause_and_reconnect_keep_latest_accepted_position_against_late_ticks() {
         })
     ));
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(request_id),
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 60_150,
     });
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 10_000,
     });
@@ -1542,12 +1594,32 @@ fn pause_and_reconnect_keep_latest_accepted_position_against_late_ticks() {
             ..
         })
     ));
+    fixture.playback_event(BackendEvent::PlaybackReconnecting);
+    fixture.playback_event(BackendEvent::PlaybackReconnected);
+    let request_id = match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("restore request")
+    {
+        BackendCommand::RestorePlayback {
+            request_id,
+            position_ms: 60_150,
+            playing: false,
+        } => request_id,
+        other => panic!("expected paused restore, got {other:?}"),
+    };
     fixture.playback_event(BackendEvent::PlaybackRestored {
+        request_id,
         position_ms: 60_150,
         playing: false,
     });
+    fixture
+        .cx
+        .advance_clock(std::time::Duration::from_millis(2_001));
     // Backend Playing maps to this position report before its state event.
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 10_000,
     });
@@ -1572,27 +1644,20 @@ fn pause_and_reconnect_keep_latest_accepted_position_against_late_ticks() {
         fixture.backend.commands.try_recv(),
         Ok(BackendCommand::RestorePlayback {
             position_ms: 60_150,
-            playing: false
+            playing: false,
+            ..
         })
     ));
     fixture.no_commands();
 }
 
 #[test]
-fn unapplied_seek_adopts_real_position_after_settling_timeout() {
+fn unapplied_seek_adopts_fresh_real_position() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
-    fixture.update(|_, cx| {
-        services::AppServices::player(cx).update(cx, |player, cx| player.seek(120_000, cx))
-    });
-    assert!(matches!(
-        fixture.backend.commands.try_recv(),
-        Ok(BackendCommand::Seek(120_000))
-    ));
-    fixture
-        .cx
-        .advance_clock(std::time::Duration::from_millis(2_001));
+    let request_id = fixture.seek(120_000);
     fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(request_id),
         spotify_uri: track(0).spotify_uri.unwrap(),
         position_ms: 10_000,
     });
@@ -1610,6 +1675,123 @@ fn unapplied_seek_adopts_real_position_after_settling_timeout() {
                 .read(cx)
                 .position_snapshot(),
             Some(10_000)
+        );
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn repeated_seeks_accept_only_the_latest_request_and_current_track() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    let first = fixture.seek(60_000);
+    let latest = fixture.seek(120_000);
+    fixture.cx.advance_clock(std::time::Duration::from_secs(3));
+    for (request_id, current, position_ms) in [
+        (Some(first), track(0), 60_000),
+        (Some(latest), track(1), 180_000),
+        (None, track(0), 10_000),
+    ] {
+        fixture.playback_event(BackendEvent::PositionChanged {
+            request_id,
+            spotify_uri: current.spotify_uri.unwrap(),
+            position_ms,
+        });
+    }
+    fixture.no_commands();
+    fixture.update(|_, cx| {
+        assert_eq!(
+            services::AppServices::player(cx)
+                .read(cx)
+                .position_snapshot(),
+            Some(120_000)
+        );
+    });
+    fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(latest),
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 120_200,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 120_200,
+            ..
+        })
+    ));
+    fixture.start_track(track(1));
+    fixture.cx.advance_clock(std::time::Duration::from_secs(3));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(latest),
+        spotify_uri: track(1).spotify_uri.unwrap(),
+        position_ms: 120_200,
+    });
+    fixture.no_commands();
+    fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: None,
+        spotify_uri: track(1).spotify_uri.unwrap(),
+        position_ms: 6_000,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 6_000,
+            ..
+        })
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn a_restore_can_update_the_current_track_without_losing_its_position_source() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.playback_event(BackendEvent::PlaybackReconnecting);
+    fixture.playback_event(BackendEvent::PlaybackReconnected);
+    let request_id = match fixture
+        .backend
+        .commands
+        .try_recv()
+        .expect("restore request")
+    {
+        BackendCommand::RestorePlayback { request_id, .. } => request_id,
+        other => panic!("expected restore request, got {other:?}"),
+    };
+    fixture.playback_event(BackendEvent::PlaybackContext {
+        current: track(1),
+        next: vec![],
+        injected: vec![false],
+        new_play: false,
+    });
+    fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(request_id),
+        spotify_uri: track(1).spotify_uri.unwrap(),
+        position_ms: 60_200,
+    });
+    fixture.no_commands();
+    fixture.playback_event(BackendEvent::PlaybackRestored {
+        request_id,
+        position_ms: 60_000,
+        playing: false,
+    });
+    fixture.playback_event(BackendEvent::PositionChanged {
+        request_id: Some(request_id),
+        spotify_uri: track(1).spotify_uri.unwrap(),
+        position_ms: 60_200,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 60_200,
+            ..
+        })
+    ));
+    fixture.update(|_, cx| {
+        assert_eq!(
+            services::AppServices::player(cx)
+                .read(cx)
+                .position_snapshot(),
+            Some(60_200)
         );
     });
     fixture.no_commands();
@@ -1636,7 +1818,10 @@ fn releasing_progress_outside_its_bounds_clamps_and_seeks_once() {
         fixture.no_commands();
         fixture.release_scrub(end);
         match fixture.backend.commands.try_recv().expect("release seek") {
-            BackendCommand::Seek(position) => assert_eq!(position, expected),
+            BackendCommand::Seek {
+                position_ms: position,
+                ..
+            } => assert_eq!(position, expected),
             other => panic!("expected seek, got {other:?}"),
         }
         fixture.no_commands();
@@ -1673,7 +1858,10 @@ fn progress_midpoint_stays_correct_across_resize_and_sidebar_tiers() {
         });
         if shown {
             match fixture.backend.commands.try_recv().expect("midpoint seek") {
-                BackendCommand::Seek(position) => assert!(
+                BackendCommand::Seek {
+                    position_ms: position,
+                    ..
+                } => assert!(
                     position.abs_diff(120_000) <= 1,
                     "{width}, collapsed={collapsed}: {position}"
                 ),
