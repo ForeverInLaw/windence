@@ -24,6 +24,13 @@ tests (185 library, 149 application). Linux passed 335 tests, build,
 strict Clippy and formatting. The ZIP and installer checksums match their
 SHA-256 sidecars; the ZIP contains the EXE, runtime DLL and notices.
 
+Further [PR #39](https://github.com/ForeverInLaw/windence/pull/39) review
+fixes at `0733bf7` clear stale playlist rows, redraw expired confirmations,
+and reject old position reports after seeking or restoring playback.
+Linux passed 340 tests, strict Clippy and formatting on that code. See
+the PR checks for Windows CI. The packaged `6ec7270` build above predates
+these fixes.
+
 The manual Release workflow builds `cadence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
 ZIP includes required runtime DLLs; copying only the EXE is insufficient.
@@ -49,10 +56,16 @@ executable. Keep the same account and preferences for the comparison.
       restores the rows, and another playlist starts with an empty query.
       After sorting and filtering, a row starts the selected occurrence in
       the full playlist queue, including duplicate songs. Search after
-      scrolling returns to the first matching row.
+      scrolling returns to the first matching row. While another playlist
+      loads, Play and Shuffle cannot start the previous playlist. The same
+      holds if loading fails or the new playlist is empty.
+- [ ] Copy the redirect URI in onboarding. Its confirmation disappears
+      after four seconds without mouse or keyboard input. Timed
+      confirmations in the main window also disappear without input.
 - [ ] Drag progress within and outside its bounds. Release seeks once.
       Escape and changing the track cancel the gesture. Seek, pause, close
-      and reopen without restoring an older playback position.
+      and reopen without restoring an older playback position. A delayed
+      pre-seek report must not move the position back after two seconds.
 - [ ] SMTC shows metadata and handles playback and seek. It attaches to a
       reopened main window.
 - [ ] Ordinary music and DJ narration play. Switching the default output or
