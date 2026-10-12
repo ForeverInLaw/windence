@@ -1,5 +1,6 @@
 use super::*;
 
+use gpui_kit::TestSupportExt as _;
 use page::PageEvent;
 
 /// What a track list is showing.
@@ -46,6 +47,9 @@ pub(super) struct TrackList {
     listed: Arc<[model::ListedTrack]>,
     /// Display position to index into `listed`; identity while unsorted.
     order: Arc<[usize]>,
+    /// Visible row positions in the full sorted order. Filtering never changes the queue.
+    visible: Vec<usize>,
+    filter_words: Vec<String>,
     /// What is being shown, and so how playback starting from a row is
     /// reported.
     context: ListContext,
@@ -72,6 +76,8 @@ impl TrackList {
             id: None,
             listed: Arc::default(),
             order: Arc::default(),
+            visible: Vec::new(),
+            filter_words: Vec::new(),
             context: ListContext::default(),
             sort: None,
             menu_open: None,
@@ -137,10 +143,44 @@ impl TrackList {
     /// every content or sort change, so the two can never disagree.
     fn refresh_order(&mut self) {
         self.order = model::list_order(&self.listed, self.sort).into();
+        self.refresh_visible();
     }
 
-    /// The context's tracks in displayed order — what the rows show right
-    /// now, and what starting playback from the top should play.
+    /// Filters visible rows while retaining the complete sorted playback context.
+    pub(super) fn set_filter(&mut self, query: &str, cx: &mut Context<Self>) {
+        let words = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        if self.filter_words == words {
+            return;
+        }
+        self.filter_words = words;
+        self.menu_open = None;
+        self.refresh_visible();
+        cx.notify();
+    }
+
+    fn refresh_visible(&mut self) {
+        self.visible = self
+            .order
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &default_index)| {
+                let track = &self.listed[default_index].track;
+                let matches = self.filter_words.is_empty() || {
+                    let fields =
+                        [&track.title, &track.artist, &track.album].map(|text| text.to_lowercase());
+                    self.filter_words
+                        .iter()
+                        .all(|word| fields.iter().any(|field| field.contains(word)))
+                };
+                matches.then_some(position)
+            })
+            .collect();
+    }
+
+    /// The complete sorted context. Search only hides rows and never narrows playback.
     pub(super) fn displayed_tracks(&self) -> Vec<model::Track> {
         self.order
             .iter()
@@ -181,10 +221,13 @@ impl TrackList {
 
     fn row(
         &mut self,
-        index: usize,
+        visible_index: usize,
         columns: TrackTableColumns,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Some(&index) = self.visible.get(visible_index) else {
+            return div().into_any_element();
+        };
         let Some(&default_index) = self.order.get(index) else {
             return div().into_any_element();
         };
@@ -229,8 +272,7 @@ impl TrackList {
         row.into_any_element()
     }
 
-    /// Plays from `index` as displayed: the queue starts as the visible
-    /// ordering of the context, sorted or default alike.
+    /// Starts the selected occurrence in the complete sorted context.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
         let tracks = self.displayed_tracks();
         let kind = self.context.kind;
@@ -428,7 +470,9 @@ impl Render for TrackList {
             .min_h_0()
             // Grow to the rows, not past them: `flex_1` fills the space a
             // long list needs, and this cap ends a short one at its last row.
-            .max_h(px(track_row::list_height(self.listed.len())))
+            .when(!self.visible.is_empty(), |list| {
+                list.max_h(px(track_row::list_height(self.visible.len())))
+            })
             .flex()
             .flex_col()
             .rounded(px(track_row::LIST_CORNER_RADIUS))
@@ -441,19 +485,29 @@ impl Render for TrackList {
                 active_sort,
                 actions,
             ))
-            .child(
-                uniform_list(
-                    self.id
-                        .clone()
-                        .expect("show sets the id before first paint"),
-                    self.listed.len(),
-                    cx.processor(move |this, range: Range<usize>, _, cx| {
-                        range.map(|index| this.row(index, columns, cx)).collect()
-                    }),
+            .when(self.visible.is_empty(), |list| {
+                list.child(
+                    components::empty_state(palette, "No tracks match your search")
+                        .id("track-list-no-results")
+                        .test_support()
+                        .aria_label("No tracks match your search"),
                 )
-                .flex_1()
-                .min_h_0(),
-            )
+            })
+            .when(!self.visible.is_empty(), |list| {
+                list.child(
+                    uniform_list(
+                        self.id
+                            .clone()
+                            .expect("show sets the id before first paint"),
+                        self.visible.len(),
+                        cx.processor(move |this, range: Range<usize>, _, cx| {
+                            range.map(|index| this.row(index, columns, cx)).collect()
+                        }),
+                    )
+                    .flex_1()
+                    .min_h_0(),
+                )
+            })
     }
 }
 

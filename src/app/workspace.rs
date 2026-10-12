@@ -108,7 +108,7 @@ impl Workspace {
         let recent = library_page(LibrarySection::Recent, cx);
         let playlists = cx.new(library_pages::PlaylistsPage::new);
         let search = cx.new(|cx| catalog::SearchPage::new(backend.clone(), cx));
-        let playlist = cx.new(|cx| catalog::PlaylistPage::new(backend.clone(), cx));
+        let playlist = cx.new(|cx| catalog::PlaylistPage::new(backend.clone(), window, cx));
         let artist = cx.new(|cx| catalog::ArtistPage::new(backend.clone(), cx));
         let album = cx.new(|cx| catalog::AlbumPage::new(backend.clone(), cx));
         subscriptions.extend([
