@@ -26,6 +26,7 @@ pub(super) struct Player {
     /// Whether the DJ station is what is playing. The station page shows
     /// the live queue while it is.
     station: bool,
+    /// The requested play state. Loading ends when the player confirms it.
     playing: bool,
     loading: bool,
     /// The shuffle toggle's value and whether it can act: a live,
@@ -37,6 +38,8 @@ pub(super) struct Player {
     shuffle_smart_supported: bool,
     /// Position and play state to reapply once a reconnected player is ready.
     restore: Option<(u32, bool)>,
+    /// The current play still needs a history entry when playback is confirmed.
+    history_pending: bool,
     position_ms: u32,
     saved_position_ms: u32,
     volume: f32,
@@ -64,6 +67,7 @@ impl Player {
             shuffle_supported: false,
             shuffle_smart_supported: false,
             restore: None,
+            history_pending: false,
             position_ms: 0,
             saved_position_ms: 0,
             volume,
@@ -155,6 +159,14 @@ impl Player {
             .as_ref()
             .and_then(|track| track.spotify_uri.as_deref())
             == Some(spotify_uri)
+    }
+
+    fn record_first_play(&mut self) {
+        if self.history_pending
+            && let Some(track) = self.now_playing.clone()
+        {
+            self.history_pending = !self.backend.send(BackendCommand::MarkPlayed(track));
+        }
     }
 
     /// Playback commands are dropped while a restore is in flight so they cannot
@@ -470,6 +482,7 @@ impl Player {
         self.shuffle_supported = false;
         self.shuffle_smart_supported = false;
         self.restore = None;
+        self.history_pending = false;
         self.position_ms = 0;
         self.saved_position_ms = 0;
         self.error = None;
@@ -523,15 +536,17 @@ impl Player {
             BackendEvent::QueueEnded => {
                 self.playing = false;
                 self.loading = false;
+                self.history_pending = false;
                 // A full bar with an armed Play button would lie: Play
                 // starts this track over (or from wherever the seeker goes).
                 self.position_ms = 0;
                 self.saved_position_ms = 0;
             }
             BackendEvent::Playing { spotify_uri } => {
-                if self.restore.is_none() && self.live_track_matches(&spotify_uri) {
-                    self.playing = true;
+                // A late Playing must not undo a pause or a paused restore.
+                if self.restore.is_none() && self.playing && self.live_track_matches(&spotify_uri) {
                     self.loading = false;
+                    self.record_first_play();
                 }
             }
             BackendEvent::Loading { spotify_uri } => {
@@ -581,17 +596,23 @@ impl Player {
                 self.saved_position_ms = position_ms;
                 self.playing = false;
                 self.loading = false;
+                self.history_pending = true;
             }
             BackendEvent::PlaybackContext {
                 current,
                 next,
                 injected,
+                new_play,
             } => {
                 let changed = self.now_playing.as_ref().is_none_or(|track| {
                     track.provider != current.provider || track.source_id != current.source_id
                 });
                 self.adopt_context(current, next, injected);
-                if changed {
+                if new_play {
+                    self.playing = true;
+                    self.history_pending = true;
+                }
+                if changed || new_play {
                     self.loading = true;
                     self.position_ms = 0;
                     self.saved_position_ms = 0;
@@ -619,6 +640,7 @@ impl Player {
                     self.queue_injected = Arc::default();
                     self.playing = false;
                     self.loading = false;
+                    self.history_pending = false;
                     // No live queue left for the toggle to act on.
                     self.shuffle_mode = ShuffleMode::Off;
                     self.shuffle_supported = false;
