@@ -391,7 +391,7 @@ impl AppServices {
     /// (macOS) there is nothing to bind, so this is never called.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     pub(super) fn attach_media_controls(handle: gpui_kit::AnyWindowHandle, cx: &mut App) {
-        if cx.global::<Self>().media_controls.is_some() {
+        if cx.global::<Self>().media_controls.is_none() {
             #[cfg(target_os = "windows")]
             {
                 let player = Self::player(cx);
