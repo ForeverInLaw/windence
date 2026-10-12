@@ -23,6 +23,7 @@ use crate::{
     model::{Album, Artist, HomeFeed, HomeShelfPage, ListedTrack, Playlist, Track, UserProfile},
     pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
+    playlist::PlaylistSnapshot,
     shuffle::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
         smart_admissible,
@@ -32,6 +33,8 @@ use crate::{
     },
     storage::{LibraryFingerprint, PlaybackSnapshot, Store},
 };
+
+mod playlist_fetch;
 
 const CATALOG_TIMEOUT_SECONDS: u64 = 30;
 const LIBRARY_TIMEOUT_SECONDS: u64 = 60;
@@ -279,6 +282,16 @@ impl BlockingStore {
 /// Where a catalog request sends its answer. Dropping the receiving half
 /// cancels the request: the reply simply goes nowhere.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T>>;
+
+#[derive(Debug)]
+pub enum PlaylistRequest {
+    NextPage,
+    /// Rechecks the version and resolves the full context before replying.
+    Complete {
+        respond: Reply<PlaylistSnapshot>,
+    },
+}
+
 #[derive(Debug)]
 /// The payload of a catalog page load.
 pub enum PlaylistContents {
@@ -343,6 +356,13 @@ pub enum BackendCommand {
     LoadPlaylist {
         playlist: Playlist,
         respond: Reply<PlaylistContents>,
+    },
+    /// Streams the cached prefix, its validation and explicitly requested pages.
+    /// Dropping either channel endpoint cancels the owned playlist task.
+    StreamPlaylist {
+        playlist: Playlist,
+        requests: Receiver<PlaylistRequest>,
+        updates: UnboundedSender<Result<PlaylistSnapshot>>,
     },
     LoadArtist {
         source_id: String,
@@ -1320,6 +1340,26 @@ impl Worker {
                         respond,
                     );
                 }
+                Ok(())
+            }
+            BackendCommand::StreamPlaylist {
+                playlist,
+                requests,
+                updates,
+            } => {
+                abort_task(&mut self.catalog.playlist);
+                self.catalog.playlist = Some(playlist_fetch::start(
+                    playlist_fetch::Context {
+                        spotify: self.spotify.clone(),
+                        playback: self.connection.player.clone(),
+                        playlist,
+                        store: self.store.clone(),
+                        generation: self.account_generation,
+                        current_generation: self.catalog_generation.clone(),
+                    },
+                    requests,
+                    updates,
+                ));
                 Ok(())
             }
             BackendCommand::LoadArtist { source_id, respond } => {

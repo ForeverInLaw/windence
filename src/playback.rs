@@ -156,7 +156,18 @@ struct PlaybackOAuthToken {
     refresh_token: String,
 }
 
+/// The internal endpoint returns raw URIs; metadata is resolved a page at a time.
+pub(crate) struct CuratedPlaylist {
+    pub revision: String,
+    content: playlist4_external::SelectedListContent,
+}
+
 impl Playback {
+    /// Spotify's account ID confirmed by the playback session's authentication.
+    pub(crate) fn account_id(&self) -> String {
+        self.session.username()
+    }
+
     pub(crate) async fn prepare_authorization() -> Result<PlaybackAuthorization> {
         let listener = TcpListener::bind("127.0.0.1:8898")
             .await
@@ -832,6 +843,101 @@ impl Playback {
                 ..listed
             })
             .collect())
+    }
+
+    pub(crate) async fn curated_playlist(&self, source_id: &str) -> Result<CuratedPlaylist> {
+        use base64::Engine as _;
+        use protobuf::Message as _;
+        let id = SpotifyId::from_base62(source_id).context("not a Spotify playlist id")?;
+        let body = self
+            .session
+            .spclient()
+            .get_playlist(&id)
+            .await
+            .context("Spotify playlist endpoint failed")?;
+        let content = playlist4_external::SelectedListContent::parse_from_bytes(&body)
+            .context("Spotify playlist returned an undecodable message")?;
+        if content.revision().is_empty() {
+            return Err(anyhow!("Spotify playlist returned no version"));
+        }
+        Ok(CuratedPlaylist {
+            revision: base64::engine::general_purpose::STANDARD.encode(content.revision()),
+            content,
+        })
+    }
+
+    pub(crate) async fn curated_playlist_page(
+        &self,
+        listing: &CuratedPlaylist,
+        offset: u32,
+    ) -> Result<crate::playlist::PlaylistPage> {
+        let content = &listing.content;
+        let start = u32::try_from(content.contents.pos())
+            .context("Spotify playlist returned a negative offset")?;
+        let total = match content.length {
+            Some(total) => {
+                u32::try_from(total).context("Spotify playlist returned a negative size")?
+            }
+            None if !content.contents.truncated() => start
+                .checked_add(u32::try_from(content.contents.items.len())?)
+                .context("Spotify playlist size overflowed")?,
+            None => {
+                return Err(anyhow!(
+                    "Spotify playlist returned a truncated listing without its size"
+                ));
+            }
+        };
+        let index = usize::try_from(
+            offset
+                .checked_sub(start)
+                .context("Spotify playlist listing starts after the requested page")?,
+        )?;
+        let available = content
+            .contents
+            .items
+            .get(index..)
+            .context("Spotify playlist listing does not contain the requested page")?;
+        let raw = &available[..available.len().min(crate::playlist::PAGE_SIZE as usize)];
+        let next_offset = offset
+            .checked_add(u32::try_from(raw.len())?)
+            .context("Spotify playlist offset overflowed")?;
+        if next_offset == offset && offset < total {
+            return Err(anyhow!(
+                "Spotify playlist listing is truncated before its end"
+            ));
+        }
+        let mut page_content = playlist4_external::SelectedListContent::new();
+        page_content.contents.mut_or_insert_default().items = raw.to_vec();
+        let entries = proto_convert::playlist_entries(&page_content);
+        let uris: Vec<_> = entries.iter().map(|(uri, _)| uri.clone()).collect();
+        let found: HashMap<_, _> = self
+            .tracks_for_uris(&uris)
+            .await?
+            .into_iter()
+            .filter_map(|listed| {
+                listed
+                    .track
+                    .spotify_uri
+                    .clone()
+                    .map(|uri| (uri, listed.track))
+            })
+            .collect();
+        let tracks = entries
+            .into_iter()
+            .filter_map(|(uri, added_at)| {
+                found
+                    .get(&uri)
+                    .cloned()
+                    .map(|track| model::ListedTrack { track, added_at })
+            })
+            .collect();
+        Ok(crate::playlist::PlaylistPage {
+            revision: listing.revision.clone(),
+            offset,
+            next_offset,
+            total,
+            tracks,
+        })
     }
 }
 

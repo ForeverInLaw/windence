@@ -7,8 +7,8 @@ use rspotify::{
     AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     model::{
         AlbumId, AlbumType, ArtistId, FullAlbum, FullArtist, FullTrack, Id, Image, LibraryId,
-        Market, PlayableItem, PlaylistId, SavedTrack, SearchResult, SearchType, SimplifiedAlbum,
-        SimplifiedArtist, SimplifiedPlaylist, SimplifiedTrack, TrackId,
+        Market, PlayableItem, PlaylistId, PlaylistItem, SavedTrack, SearchResult, SearchType,
+        SimplifiedAlbum, SimplifiedArtist, SimplifiedPlaylist, SimplifiedTrack, TrackId,
     },
     prelude::{BaseClient, OAuthClient},
     scopes,
@@ -263,10 +263,19 @@ fn normalized_client_id(client_id: &str) -> Option<String> {
 }
 
 #[derive(Clone)]
+struct AccountProfile {
+    id: String,
+    profile: UserProfile,
+}
+
+type AccountProfileCell = Arc<tokio::sync::OnceCell<AccountProfile>>;
+
+#[derive(Clone)]
 pub struct Spotify {
     client: AuthCodePkceSpotify,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<RateLimitGate>,
+    account_profile: Arc<std::sync::Mutex<AccountProfileCell>>,
 }
 
 impl Spotify {
@@ -305,6 +314,9 @@ impl Spotify {
             client,
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             gate: Arc::new(RateLimitGate::default()),
+            account_profile: Arc::new(std::sync::Mutex::new(
+                Arc::new(tokio::sync::OnceCell::new()),
+            )),
         })
     }
 
@@ -326,6 +338,7 @@ impl Spotify {
             .lock()
             .await
             .map_err(|_| anyhow!("could not lock Spotify token state"))? = None;
+        self.clear_account_profile();
         credential_worker::run(TokenVault::delete).await
     }
 
@@ -359,6 +372,7 @@ impl Spotify {
         timeout(TOKEN_REQUEST_TIMEOUT, self.client.request_token(&code))
             .await
             .context("Spotify token request timed out")??;
+        self.clear_account_profile();
         let token = self
             .client
             .token
@@ -473,17 +487,70 @@ impl Spotify {
     }
 
     pub async fn profile(&self) -> Result<UserProfile> {
-        self.gated(async {
-            let profile = self.client.current_user().await?;
-            Ok(UserProfile {
-                display_name: profile
-                    .display_name
-                    .unwrap_or_else(|| profile.id.id().to_owned()),
-                artwork_url: profile
-                    .images
-                    .and_then(|images| images.into_iter().next())
-                    .map(|image| image.url),
+        Ok(self.account_profile().await?.profile)
+    }
+
+    pub(crate) async fn account_id(&self) -> Result<String> {
+        Ok(self.account_profile().await?.id)
+    }
+
+    /// The startup profile and playlist cache share one authenticated /me read.
+    async fn account_profile(&self) -> Result<AccountProfile> {
+        let cell = self
+            .account_profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Ok(cell
+            .get_or_try_init(|| {
+                self.gated(async {
+                    let profile = self.client.current_user().await?;
+                    let id = profile.id.id().to_owned();
+                    Ok(AccountProfile {
+                        id: id.clone(),
+                        profile: UserProfile {
+                            display_name: profile.display_name.unwrap_or(id),
+                            artwork_url: profile
+                                .images
+                                .and_then(|images| images.into_iter().next())
+                                .map(|image| image.url),
+                        },
+                    })
+                })
             })
+            .await?
+            .clone())
+    }
+
+    fn clear_account_profile(&self) {
+        // Existing requests retain the old cell; the account generation fences
+        // their cache writes. New requests cannot read the old account id.
+        *self
+            .account_profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Arc::new(tokio::sync::OnceCell::new());
+    }
+
+    pub(crate) async fn playlist_revision(&self, source_id: &str) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        struct Revision {
+            snapshot_id: String,
+        }
+        let id = PlaylistId::from_id(source_id)?;
+        self.gated(async {
+            let body = self
+                .client
+                .api_get(
+                    &format!("playlists/{}", id.id()),
+                    &std::collections::HashMap::from([("fields", "snapshot_id")]),
+                )
+                .await?;
+            let revision: Revision = serde_json::from_str(&body)?;
+            if revision.snapshot_id.is_empty() {
+                bail!("Spotify playlist returned no version");
+            }
+            Ok(revision.snapshot_id)
         })
         .await
     }
@@ -530,24 +597,50 @@ impl Spotify {
             self.client
                 .playlist_items(playlist_id, None, None)
                 .map_err(anyhow::Error::from)
-                .and_then(|item| async move {
-                    let added_at = item.added_at;
-                    if item.is_local {
-                        return Ok(None);
-                    }
-                    match item.item {
-                        Some(PlayableItem::Track(track)) if track.id.is_some() => {
-                            let track = convert_track(track)?;
-                            Ok(track
-                                .is_displayable()
-                                .then_some(ListedTrack { track, added_at }))
-                        }
-                        _ => Ok(None),
-                    }
-                })
+                .and_then(|item| async move { convert_playlist_item(item) })
                 .try_filter_map(|listed| async move { Ok(listed) })
                 .try_collect()
                 .await
+        })
+        .await
+    }
+
+    pub(crate) async fn playlist_page(
+        &self,
+        source_id: &str,
+        revision: &str,
+        offset: u32,
+    ) -> Result<crate::playlist::PlaylistPage> {
+        let playlist_id = PlaylistId::from_id(source_id)?;
+        self.gated(async {
+            let page = self
+                .client
+                .playlist_items_manual(
+                    playlist_id,
+                    None,
+                    None,
+                    Some(crate::playlist::PAGE_SIZE),
+                    Some(offset),
+                )
+                .await?;
+            let raw_count =
+                u32::try_from(page.items.len()).context("Spotify playlist page is too large")?;
+            let next_offset = page
+                .offset
+                .checked_add(raw_count)
+                .context("Spotify playlist offset overflowed")?;
+            let tracks = page
+                .items
+                .into_iter()
+                .filter_map(|item| convert_playlist_item(item).transpose())
+                .collect::<Result<Vec<_>>>()?;
+            Ok(crate::playlist::PlaylistPage {
+                revision: revision.to_owned(),
+                offset: page.offset,
+                next_offset,
+                total: page.total,
+                tracks,
+            })
         })
         .await
     }
@@ -726,6 +819,22 @@ impl Spotify {
             .await
             .map_err(|_| anyhow!("could not lock Spotify token state"))? = Some(refreshed);
         Ok(())
+    }
+}
+
+fn convert_playlist_item(item: PlaylistItem) -> Result<Option<ListedTrack>> {
+    if item.is_local {
+        return Ok(None);
+    }
+    match item.item {
+        Some(PlayableItem::Track(track)) if track.id.is_some() && !track.is_local => {
+            let track = convert_track(track)?;
+            Ok(track.is_displayable().then_some(ListedTrack {
+                track,
+                added_at: item.added_at,
+            }))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -913,7 +1022,7 @@ impl TokenVault {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         ClientIdSource, Duration, ErrorKind, NotAuthorized, RateLimitGate, anyhow, artwork_url,
         classify_error, resolve_configuration, valid_client_id,
@@ -922,23 +1031,37 @@ mod tests {
 
     /// A local Spotify endpoint. The real rspotify client sends and decodes
     /// each request, so these tests cover its market and error contract.
-    struct SpotifyApi {
-        spotify: super::Spotify,
-        requests: tokio::sync::mpsc::UnboundedReceiver<String>,
+    pub(crate) struct SpotifyApi {
+        pub(crate) spotify: super::Spotify,
+        pub(crate) requests: tokio::sync::mpsc::UnboundedReceiver<String>,
+        holds: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<String, std::sync::Arc<tokio::sync::Notify>>,
+            >,
+        >,
         task: tokio::task::JoinHandle<()>,
     }
 
     impl SpotifyApi {
-        async fn new(responses: Vec<(&str, u16, serde_json::Value)>) -> Self {
+        pub(crate) async fn new(configured: Vec<(&str, u16, serde_json::Value)>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
             let listener = super::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
-            let responses = responses
-                .into_iter()
-                .map(|(path, status, body)| (path.to_owned(), (status, body.to_string())))
-                .collect::<std::collections::HashMap<_, _>>();
-            let responses = std::sync::Arc::new(responses);
+            let mut responses =
+                std::collections::HashMap::<String, std::collections::VecDeque<_>>::new();
+            for (path, status, body) in configured {
+                responses
+                    .entry(path.to_owned())
+                    .or_default()
+                    .push_back((status, body.to_string()));
+            }
+            let responses = std::sync::Arc::new(std::sync::Mutex::new(responses));
+            let holds = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                std::sync::Arc<tokio::sync::Notify>,
+            >::new()));
+            let held = holds.clone();
             let (sender, requests) = tokio::sync::mpsc::unbounded_channel();
             let task = tokio::spawn(async move {
                 let mut connections = tokio::task::JoinSet::new();
@@ -946,6 +1069,7 @@ mod tests {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let responses = responses.clone();
                     let sender = sender.clone();
+                    let holds = held.clone();
                     connections.spawn(async move {
                         let mut request = Vec::new();
                         while !request.ends_with(b"\r\n\r\n") {
@@ -955,11 +1079,18 @@ mod tests {
                         let request = String::from_utf8(request).unwrap();
                         let target = request.split_whitespace().nth(1).unwrap().to_owned();
                         let path = target.split('?').next().unwrap();
-                        let (status, body) = responses
-                            .get(path)
-                            .cloned()
-                            .unwrap_or((404, "{}".to_owned()));
-                        sender.send(target).unwrap();
+                        let offset = url::Url::parse(&format!("http://example{target}")).unwrap()
+                            .query_pairs().find(|(key, _)| key == "offset").map(|(_, value)| value.into_owned());
+                        let key = offset.map(|offset| format!("{path}?offset={offset}"));
+                        let (status, body) = {
+                            let mut responses = responses.lock().unwrap();
+                            let key = key.filter(|key| responses.contains_key(key)).unwrap_or_else(|| path.to_owned());
+                            responses.get_mut(&key).and_then(|responses| if responses.len() > 1 { responses.pop_front() } else { responses.front().cloned() })
+                                .unwrap_or((404, "{}".to_owned()))
+                        };
+                        let hold = holds.lock().unwrap().get(path).cloned();
+                        let _ = sender.send(target);
+                        if let Some(hold) = hold { hold.notified().await; }
                         stream
                             .write_all(
                                 format!(
@@ -992,9 +1123,26 @@ mod tests {
                     client,
                     refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     gate: std::sync::Arc::new(RateLimitGate::default()),
+                    account_profile: std::sync::Arc::new(std::sync::Mutex::new(
+                        std::sync::Arc::new(tokio::sync::OnceCell::new()),
+                    )),
                 },
                 requests,
+                holds,
                 task,
+            }
+        }
+
+        pub(crate) fn hold(&self, path: &str) {
+            self.holds.lock().unwrap().insert(
+                path.to_owned(),
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+            );
+        }
+
+        pub(crate) fn release(&self, path: &str) {
+            if let Some(hold) = self.holds.lock().unwrap().remove(path) {
+                hold.notify_waiters();
             }
         }
     }
@@ -1005,7 +1153,7 @@ mod tests {
         }
     }
 
-    fn catalog_track(id: &str, playable: Option<bool>) -> serde_json::Value {
+    pub(crate) fn catalog_track(id: &str, playable: Option<bool>) -> serde_json::Value {
         let mut track = serde_json::json!({
             "id": id,
             "name": "Catalog song",
@@ -1026,6 +1174,59 @@ mod tests {
             track["is_playable"] = playable.into();
         }
         track
+    }
+
+    #[tokio::test]
+    async fn playlist_account_identity_reuses_the_existing_profile_request() {
+        let mut api = SpotifyApi::new(vec![("/me/", 200, serde_json::json!({
+            "id":"account-one", "display_name":"Shared name", "external_urls": {}, "images": [], "href":"http://example/me", "type":"user", "uri":"spotify:user:account-one", "followers":{"href":null,"total":0}
+        }))]).await;
+        let (profile, account) = tokio::join!(api.spotify.profile(), api.spotify.account_id());
+        let profile = profile.unwrap();
+        assert_eq!(profile.display_name, "Shared name");
+        assert_eq!(account.unwrap(), "account-one");
+        assert_eq!(api.spotify.account_id().await.unwrap(), "account-one");
+        assert_eq!(api.spotify.account_id().await.unwrap(), "account-one");
+        assert_eq!(api.requests.recv().await.unwrap(), "/me/");
+        assert!(
+            api.requests.try_recv().is_err(),
+            "playlist opens must share profile identity"
+        );
+    }
+
+    #[tokio::test]
+    async fn playlist_page_limits_fetch_and_advances_over_hidden_raw_items() {
+        let mut api = SpotifyApi::new(vec![(
+            "/playlists/example/items", 200, serde_json::json!({
+                "href": "http://example/items", "limit": 50, "offset": 0,
+                "previous": null, "next": "http://example/items?offset=6", "total": 100,
+                "items": [
+                    {"added_at":"2026-01-01T00:00:00Z", "is_local":false, "item":catalog_track("first",None)},
+                    {"added_at":null, "is_local":false, "item":null},
+                    {"added_at":null, "is_local":true, "item":catalog_track("local",None)},
+                    {"added_at":null, "is_local":false, "item":{"type":"episode"}},
+                    {"added_at":null, "is_local":false, "item":null},
+                    {"added_at":"2026-02-01T00:00:00Z", "is_local":false, "item":catalog_track("first",None)}
+                ]
+            })
+        )]).await;
+        let page = api
+            .spotify
+            .playlist_page("example", "version-a", 0)
+            .await
+            .unwrap();
+        assert_eq!((page.offset, page.next_offset, page.total), (0, 6, 100));
+        assert_eq!(page.tracks.len(), 2);
+        assert_ne!(page.tracks[0].added_at, page.tracks[1].added_at);
+        let request = api.requests.recv().await.unwrap();
+        let query = url::Url::parse(&format!("http://example{request}")).unwrap();
+        let values: std::collections::HashMap<_, _> = query.query_pairs().collect();
+        assert_eq!(values.get("limit").map(|value| value.as_ref()), Some("50"));
+        assert_eq!(values.get("offset").map(|value| value.as_ref()), Some("0"));
+        assert!(
+            api.requests.try_recv().is_err(),
+            "opening one page must not fetch the tail"
+        );
     }
 
     #[tokio::test]
