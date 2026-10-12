@@ -16,7 +16,9 @@ pub(super) struct PlayerBar {
     /// Keyboard focus for the progress bar and the volume slider, so both
     /// accept the transport keys once tabbed to.
     progress_focus: FocusHandle,
+    scrubber: scrubber::Scrubber,
     volume_focus: FocusHandle,
+    queue_focus: FocusHandle,
     /// The width the bar's content spans: the window minus the sidebar.
     /// The workspace keeps it current every frame.
     content_width: f32,
@@ -60,11 +62,147 @@ impl PlayerBar {
             image_cache: services::AppServices::image_cache(cx),
             queue_open: false,
             progress_focus: cx.focus_handle().tab_stop(true),
+            scrubber: scrubber::Scrubber::new(),
             volume_focus: cx.focus_handle().tab_stop(true),
+            queue_focus: cx.focus_handle(),
             // Replaced with the real value before the first paint; the
             // default only has to keep the layout math sane.
             content_width: 0.,
         }
+    }
+
+    /// Pointer and keyboard target around a thin, measured progress track.
+    fn progress_slider(
+        &mut self,
+        palette: CadencePalette,
+        position_ms: u32,
+        duration_ms: u32,
+        slider_width: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let has_track = self.player.read(cx).now_playing().is_some();
+        let progress = if duration_ms == 0 {
+            0.
+        } else {
+            (position_ms as f32 / duration_ms as f32).clamp(0., 1.)
+        };
+        div()
+            .id("progress-slider")
+            .test_support()
+            .role(gpui_kit::Role::Slider)
+            .aria_label("Playback position")
+            .aria_value(format!(
+                "{} of {}",
+                format_duration(position_ms),
+                format_duration(duration_ms)
+            ))
+            .key_context("ProgressSlider")
+            .on_action(cx.listener(|this, _: &DismissOverlay, _, cx| {
+                if this.scrubber.cancel() {
+                    cx.stop_propagation();
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .track_focus(&self.progress_focus.clone().tab_stop(has_track))
+            .h(px(20.))
+            .w(px(slider_width))
+            .flex_none()
+            .cursor_pointer()
+            .rounded(px(6.))
+            .focus_visible(|style| style.shadow(components::inset_focus_ring(palette.focus_ring)))
+            .on_drag(scrubber::ScrubberDrag, {
+                let handle = cx.entity().downgrade();
+                move |_, _, window, cx| {
+                    // Drag activation stops bubbling before the ordinary move listener.
+                    let pointer_x = window.mouse_position().x;
+                    let _ = handle.update(cx, |this, cx| {
+                        this.scrubber.drag_to(pointer_x);
+                        cx.notify();
+                    });
+                    cx.new(|_| scrubber::NoDragPreview)
+                }
+            })
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    if event.first_mouse {
+                        return;
+                    }
+                    let Some(track) = this.player.read(cx).now_playing().cloned() else {
+                        return;
+                    };
+                    window.focus(&this.progress_focus, cx);
+                    this.scrubber.begin(
+                        event.position.x,
+                        this.player.read(cx).playback_generation(),
+                        track.duration_ms,
+                    );
+                    cx.notify();
+                }),
+            )
+            .on_drag_move(cx.listener(
+                |this, event: &gpui_kit::DragMoveEvent<scrubber::ScrubberDrag>, _, cx| {
+                    this.scrubber.drag_to(event.event.position.x);
+                    cx.notify();
+                },
+            ))
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                    // Preview small moves before GPUI's drag threshold is crossed.
+                    if event.dragging() {
+                        this.scrubber.drag_to(event.position.x);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.commit_scrub(event.position.x, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.commit_scrub(event.position.x, cx);
+                }),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(5.))
+                    .rounded(px(3.))
+                    .bg(rgb(palette.surface_raised))
+                    .child({
+                        let bounds = self.scrubber.bounds.clone();
+                        gpui_kit::canvas(
+                            move |measured, _, _| bounds.set(measured),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0()
+                    })
+                    .child(
+                        div()
+                            .w(relative(progress))
+                            .h_full()
+                            .rounded(px(3.))
+                            .bg(rgb(palette.text_primary)),
+                    ),
+            )
+    }
+
+    fn commit_scrub(&mut self, pointer_x: Pixels, cx: &mut Context<Self>) {
+        self.scrubber.drag_to(pointer_x);
+        let generation = self.player.read(cx).playback_generation();
+        if let Some(position_ms) = self.scrubber.release(generation) {
+            self.player
+                .update(cx, |player, cx| player.seek(position_ms, cx));
+        }
+        cx.notify();
     }
 
     pub(super) fn queue_open(&self) -> bool {
@@ -76,6 +214,10 @@ impl PlayerBar {
             self.queue_open = open;
             cx.notify();
         }
+    }
+
+    pub(super) fn focus_queue_toggle(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.queue_focus, cx);
     }
 
     /// Takes the content width the workspace derived for this frame. The
@@ -123,6 +265,7 @@ impl PlayerBar {
         );
         match playing_album(Some(track)) {
             Some(album) => gpui_kit::base::Button::new("player-artwork")
+                .key_context(components::CONTROL_KEY_CONTEXT)
                 .role(gpui_kit::Role::Link)
                 .tab_stop(false)
                 .accessibility_label(album.name.clone())
@@ -214,7 +357,7 @@ impl PlayerBar {
             .into_any_element()
     }
 
-    fn bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn bar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let content_width = self.content_width;
         let compact = uses_compact_player_layout(content_width);
@@ -229,10 +372,16 @@ impl PlayerBar {
             Some(PROGRESS_SLIDER_WIDTH)
         };
         let player = self.player.read(cx);
+        self.scrubber
+            .cancel_if_changed(player.playback_generation());
+        if timeline.is_none() {
+            self.scrubber.cancel();
+        }
         let now_playing = player.now_playing().cloned();
+        let has_track = now_playing.is_some();
         let playing = player.playing();
         let loading = player.loading();
-        let position_ms = player.position_ms();
+        let position_ms = player.display_position_ms(cx.background_executor().now());
         let volume = player.volume();
         let shuffle_mode = player.shuffle_mode();
         let shuffle_supported = player.shuffle_supported();
@@ -248,11 +397,7 @@ impl PlayerBar {
             CadenceIcon::Volume2
         };
         let duration_ms = now_playing.as_ref().map_or(0, |track| track.duration_ms);
-        let progress = if duration_ms == 0 {
-            0.
-        } else {
-            (position_ms as f32 / duration_ms as f32).clamp(0., 1.)
-        };
+        let position_ms = self.scrubber.displayed_ms(position_ms, duration_ms);
         div()
             .h(px(96.))
             .w_full()
@@ -289,7 +434,7 @@ impl PlayerBar {
                                 cx,
                             )),
                     )
-                    .child(self.liked_toggle(palette, now_playing, cx).test_support()),
+                    .child(self.liked_toggle(palette, now_playing, cx)),
             )
             .child(
                 div()
@@ -317,7 +462,6 @@ impl PlayerBar {
                                     shuffle_supported,
                                     shuffle_smart_supported,
                                 )
-                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player
@@ -332,7 +476,7 @@ impl PlayerBar {
                                     CadenceIcon::SkipBack,
                                     "Previous track",
                                 )
-                                .test_support()
+                                .disabled(!has_track)
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.previous(cx));
@@ -340,8 +484,8 @@ impl PlayerBar {
                                 )),
                             )
                             .child(
-                                components::button(palette, "play-toggle")
-                                    .test_support()
+                                components::filled_button(palette, "play-toggle")
+                                    .disabled(!has_track)
                                     .aria_label(if playing { "Pause" } else { "Play" })
                                     .size(px(TRANSPORT_BUTTON_SIZE))
                                     .rounded(px(TRANSPORT_BUTTON_SIZE / 2.))
@@ -373,7 +517,7 @@ impl PlayerBar {
                                     CadenceIcon::SkipForward,
                                     "Next track",
                                 )
-                                .test_support()
+                                .disabled(!has_track)
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.next(cx));
@@ -397,80 +541,15 @@ impl PlayerBar {
                                         .text_right()
                                         .child(format_duration(position_ms)),
                                 )
+                                .child(self.progress_slider(
+                                    palette,
+                                    position_ms,
+                                    duration_ms,
+                                    slider_width,
+                                    cx,
+                                ))
                                 .child(
-                                    // The whole band is the hit zone: pointer
-                                    // clicks and keyboard focus land on the
-                                    // same generous area, while the drawn
-                                    // track stays a thin line inside it.
-                                    div()
-                                        .id("progress-slider")
-                                        .test_support()
-                                        .role(gpui_kit::Role::Slider)
-                                        .aria_label("Playback position")
-                                        .key_context("ProgressSlider")
-                                        .track_focus(&self.progress_focus)
-                                        .tab_stop(true)
-                                        .h(px(20.))
-                                        .w(px(slider_width))
-                                        .flex_none()
-                                        .cursor_pointer()
-                                        .focus(|style| {
-                                            style
-                                                .border_2()
-                                                .border_color(rgb(palette.focus_ring))
-                                                .rounded(px(6.))
-                                        })
-                                        .on_mouse_down(
-                                            gpui_kit::MouseButton::Left,
-                                            cx.listener(
-                                                |this,
-                                                 event: &gpui_kit::MouseDownEvent,
-                                                 window,
-                                                 cx| {
-                                                    this.player.update(cx, |player, cx| {
-                                                        let Some(duration_ms) = player
-                                                            .now_playing()
-                                                            .map(|track| track.duration_ms)
-                                                        else {
-                                                            return;
-                                                        };
-                                                        let position = seek_for_pointer(
-                                                            f32::from(event.position.x),
-                                                            f32::from(
-                                                                window
-                                                                    .window_bounds()
-                                                                    .get_bounds()
-                                                                    .size
-                                                                    .width,
-                                                            ),
-                                                            this.content_width,
-                                                            duration_ms,
-                                                        );
-                                                        player.seek(position, cx);
-                                                    });
-                                                },
-                                            ),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .h(px(5.))
-                                                .rounded(px(3.))
-                                                .bg(rgb(palette.surface_raised))
-                                                .child(
-                                                    div()
-                                                        .w(relative(progress))
-                                                        .h_full()
-                                                        .rounded(px(3.))
-                                                        .bg(rgb(palette.text_primary)),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(PROGRESS_TIME_WIDTH))
-                                        .flex_none()
-                                        .child(duration),
+                                    div().w(px(PROGRESS_TIME_WIDTH)).flex_none().child(duration),
                                 ),
                         )
                     }),
@@ -494,7 +573,7 @@ impl PlayerBar {
                             17.,
                             "Queue",
                         )
-                        .test_support()
+                        .track_focus(&self.queue_focus)
                         .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let open = !this.queue_open;
@@ -504,7 +583,6 @@ impl PlayerBar {
                     )
                     .child(
                         components::icon_button_with(palette, "volume", volume_icon, 17., "Volume")
-                            .test_support()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
                             })),
@@ -527,11 +605,9 @@ impl PlayerBar {
                             .flex()
                             .items_center()
                             .cursor_pointer()
-                            .focus(|style| {
-                                style
-                                    .border_2()
-                                    .border_color(rgb(palette.focus_ring))
-                                    .rounded(px(8.))
+                            .rounded(px(8.))
+                            .focus_visible(|style| {
+                                style.shadow(components::inset_focus_ring(palette.focus_ring))
                             })
                             .on_mouse_down(
                                 gpui_kit::MouseButton::Left,
@@ -580,7 +656,7 @@ impl PlayerBar {
         palette: CadencePalette,
         track: Option<model::Track>,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> gpui_kit::base::Button {
         let liked = track
             .as_ref()
             .is_some_and(|track| self.library.read(cx).is_liked(track));
@@ -594,6 +670,7 @@ impl PlayerBar {
                 "Add to Liked Songs"
             },
         )
+        .disabled(track.is_none())
         .when(track.is_none(), |button| button.opacity(0.5))
         .when_some(track, |button, track| {
             button
@@ -622,13 +699,14 @@ fn shuffle_toggle(
     mode: ShuffleMode,
     supported: bool,
     smart_supported: bool,
-) -> Stateful<Div> {
+) -> gpui_kit::base::Button {
     let active = mode.shuffles();
     let (icon, label) = match mode {
         ShuffleMode::Smart => (CadenceIcon::Sparkles, "Smart shuffle"),
         _ => (CadenceIcon::Shuffle, "Shuffle"),
     };
     components::button(palette, "shuffle-toggle")
+        .disabled(!supported)
         .size(px(40.))
         .flex_none()
         .rounded(px(20.))
@@ -733,7 +811,6 @@ impl QueueDrawer {
                             CadenceIcon::Close,
                             "Close queue",
                         )
-                        .test_support()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )
@@ -808,9 +885,16 @@ impl QueueDrawer {
         track: model::Track,
         current: bool,
         injected: bool,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
+    ) -> gpui_kit::base::Button {
+        components::button(palette, id)
+            .focusable(!current)
+            .tab_stop(!current)
+            .role(if current {
+                gpui_kit::Role::ListItem
+            } else {
+                gpui_kit::Role::Button
+            })
+            .justify_start()
             .w_full()
             .h(px(if current { 72. } else { 62. }))
             .flex_none()

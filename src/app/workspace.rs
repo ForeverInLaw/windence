@@ -39,18 +39,24 @@ pub(super) struct Workspace {
     pub(super) player_bar: Entity<player_bar::PlayerBar>,
     pub(super) queue_drawer: Entity<player_bar::QueueDrawer>,
     pub(super) focus_handle: FocusHandle,
-    pub(super) _appearance_subscription: Subscription,
-    pub(super) _activation_subscription: Subscription,
+    /// Removed with the view, including subscriptions to process-owned entities.
+    _subscriptions: Vec<Subscription>,
+    notice_task: Option<gpui_kit::Task<()>>,
     /// The window width from the most recent render. The sidebar observer
     /// uses it to re-derive the tiers while the rail moves.
     last_window_width: f32,
-    _layout_subscription: Subscription,
 }
 
 impl Workspace {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let preferences = services::AppServices::preferences(cx);
         let focus_handle = cx.focus_handle();
+        let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus_handle.clone());
+            window.focus(&target, cx);
+        });
         appearance::Appearance::attach(window, cx);
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.update_system_appearance(window, cx);
@@ -64,28 +70,35 @@ impl Workspace {
                 this.revalidate_home_if_shown(cx);
             }
         });
+        let mut subscriptions = vec![
+            appearance_subscription,
+            activation_subscription,
+            focus_lost_subscription,
+        ];
         window.focus(&focus_handle, cx);
         let player = services::AppServices::player(cx);
-        cx.subscribe(&player, |this, _, _: &player::PlaybackUnavailable, cx| {
-            this.last_error = Some("Cadence backend is busy or not running".to_owned());
-            cx.notify();
-        })
-        .detach();
+        subscriptions.push(cx.subscribe(
+            &player,
+            |this, _, _: &player::PlaybackUnavailable, cx| {
+                this.last_error = Some("Cadence backend is busy or not running".to_owned());
+                cx.notify();
+            },
+        ));
         let session = services::AppServices::session(cx);
-        cx.subscribe_in(
+        subscriptions.push(cx.subscribe_in(
             &session,
             window,
             |this, _, event: &session::SessionEvent, window, cx| {
                 this.handle_session_event(event, window, cx)
             },
-        )
-        .detach();
+        ));
         let library = services::AppServices::library(cx);
-        cx.subscribe(&library, |this, _, _: &library::LibraryLoaded, cx| {
-            this.last_error = None;
-            cx.notify();
-        })
-        .detach();
+        subscriptions.push(
+            cx.subscribe(&library, |this, _, _: &library::LibraryLoaded, cx| {
+                this.last_error = None;
+                cx.notify();
+            }),
+        );
         let backend = services::AppServices::backend(cx);
         let library_page = |section, cx: &mut Context<Self>| {
             cx.new(|cx| library_pages::LibraryTracksPage::new(section, cx))
@@ -95,23 +108,21 @@ impl Workspace {
         let recent = library_page(LibrarySection::Recent, cx);
         let playlists = cx.new(library_pages::PlaylistsPage::new);
         let search = cx.new(|cx| catalog::SearchPage::new(backend.clone(), cx));
-        let playlist = cx.new(|cx| catalog::PlaylistPage::new(backend.clone(), cx));
+        let playlist = cx.new(|cx| catalog::PlaylistPage::new(backend.clone(), window, cx));
         let artist = cx.new(|cx| catalog::ArtistPage::new(backend.clone(), cx));
         let album = cx.new(|cx| catalog::AlbumPage::new(backend.clone(), cx));
-        for subscription in [
-            cx.subscribe(&home, Workspace::handle_page_event),
-            cx.subscribe(&liked_songs, Workspace::handle_page_event),
-            cx.subscribe(&recent, Workspace::handle_page_event),
-            cx.subscribe(&playlists, Workspace::handle_page_event),
-            cx.subscribe(&search, Workspace::handle_page_event),
-            cx.subscribe(&playlist, Workspace::handle_page_event),
-            cx.subscribe(&artist, Workspace::handle_page_event),
-            cx.subscribe(&album, Workspace::handle_page_event),
-        ] {
-            subscription.detach();
-        }
+        subscriptions.extend([
+            cx.subscribe_in(&home, window, Workspace::handle_page_event),
+            cx.subscribe_in(&liked_songs, window, Workspace::handle_page_event),
+            cx.subscribe_in(&recent, window, Workspace::handle_page_event),
+            cx.subscribe_in(&playlists, window, Workspace::handle_page_event),
+            cx.subscribe_in(&search, window, Workspace::handle_page_event),
+            cx.subscribe_in(&playlist, window, Workspace::handle_page_event),
+            cx.subscribe_in(&artist, window, Workspace::handle_page_event),
+            cx.subscribe_in(&album, window, Workspace::handle_page_event),
+        ]);
         let settings = cx.new(|cx| settings::Settings::new(cx));
-        cx.subscribe_in(
+        subscriptions.push(cx.subscribe_in(
             &settings,
             window,
             |this, _, event: &settings::SettingsEvent, window, cx| match event {
@@ -139,16 +150,16 @@ impl Workspace {
                     cx.notify();
                 }
             },
-        )
-        .detach();
+        ));
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(preferences.sidebar_collapsed, cx));
-        let layout_subscription = cx.observe(&sidebar, |this, _, cx| this.sync_layout(cx));
-        cx.subscribe(
+        subscriptions.push(cx.observe(&sidebar, |this, _, cx| this.sync_layout(cx)));
+        subscriptions.push(cx.subscribe_in(
             &sidebar,
-            |this, _, event: &sidebar::SidebarEvent, cx| match event {
+            window,
+            |this, _, event: &sidebar::SidebarEvent, window, cx| match event {
                 sidebar::SidebarEvent::Navigate(route) => this.navigate(*route, cx),
                 sidebar::SidebarEvent::OpenPlaylist { playlist, origin } => {
-                    this.load_playlist(playlist.clone(), cx);
+                    this.load_playlist(playlist.clone(), window, cx);
                     this.open_playlist(*origin, cx);
                 }
                 sidebar::SidebarEvent::Failed(error) => {
@@ -156,42 +167,49 @@ impl Workspace {
                     cx.notify();
                 }
             },
-        )
-        .detach();
+        ));
         let toolbar = cx.new(|cx| chrome::Toolbar::new(window, cx));
-        cx.subscribe(&toolbar, |this, _, event: &ToolbarEvent, cx| match event {
-            ToolbarEvent::QueryChanged(query) => {
-                let query = query.clone();
-                this.search
-                    .update(cx, |search, cx| search.set_query(query, cx));
-            }
-            ToolbarEvent::SubmitSearch => this.submit_search(cx),
-            ToolbarEvent::Navigate(route) => this.navigate(*route, cx),
-            ToolbarEvent::OpenSettings => this.open_settings(cx),
-            ToolbarEvent::Connect => {
-                this.session
-                    .update(cx, |session, cx| session.set_connecting(cx));
-                this.authenticate(cx);
-            }
-            ToolbarEvent::Logout => this.logout(cx),
-            ToolbarEvent::MenuOpened => this.close_queue(cx),
-        })
-        .detach();
+        subscriptions.push(cx.subscribe(
+            &toolbar,
+            |this, _, event: &ToolbarEvent, cx| match event {
+                ToolbarEvent::QueryChanged(query) => {
+                    let query = query.clone();
+                    this.search
+                        .update(cx, |search, cx| search.set_query(query, cx));
+                }
+                ToolbarEvent::SubmitSearch => this.submit_search(cx),
+                ToolbarEvent::Navigate(route) => this.navigate(*route, cx),
+                ToolbarEvent::OpenSettings => this.open_settings(cx),
+                ToolbarEvent::Connect => {
+                    this.session
+                        .update(cx, |session, cx| session.set_connecting(cx));
+                    this.authenticate(cx);
+                }
+                ToolbarEvent::Logout => this.logout(cx),
+                ToolbarEvent::MenuOpened => this.close_queue(cx),
+            },
+        ));
         let player_bar = cx.new(|cx| player_bar::PlayerBar::new(cx));
-        cx.subscribe(&player_bar, |this, bar, _: &player_bar::ToggleQueue, cx| {
-            if bar.read(cx).queue_open() {
-                this.close_account_menu(cx);
-            }
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe(&player_bar, Workspace::handle_page_event)
-            .detach();
+        subscriptions.push(cx.subscribe(
+            &player_bar,
+            |this, bar, _: &player_bar::ToggleQueue, cx| {
+                if bar.read(cx).queue_open() {
+                    this.close_account_menu(cx);
+                }
+                cx.notify();
+            },
+        ));
+        subscriptions.push(cx.subscribe_in(&player_bar, window, Workspace::handle_page_event));
         let queue_drawer = cx.new(|cx| player_bar::QueueDrawer::new(cx));
-        cx.subscribe(&queue_drawer, |this, _, _: &player_bar::CloseQueue, cx| {
-            this.close_queue(cx);
-        })
-        .detach();
+        subscriptions.push(cx.subscribe_in(
+            &queue_drawer,
+            window,
+            |this, _, _: &player_bar::CloseQueue, window, cx| {
+                this.close_queue(cx);
+                this.player_bar
+                    .update(cx, |bar, cx| bar.focus_queue_toggle(window, cx));
+            },
+        ));
         Self {
             router: Router::new(),
             last_error: None,
@@ -217,10 +235,9 @@ impl Workspace {
             player_bar,
             queue_drawer,
             focus_handle,
-            _appearance_subscription: appearance_subscription,
-            _activation_subscription: activation_subscription,
+            _subscriptions: subscriptions,
+            notice_task: None,
             last_window_width: 0.,
-            _layout_subscription: layout_subscription,
         }
     }
 
@@ -277,6 +294,7 @@ impl Workspace {
     /// newer notice has gone up since, so a notice that replaced it is safe
     /// even when the words match.
     pub(super) fn set_notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        self.notice_task = None;
         self.notice_timer_armed_for = self
             .notice_timer_armed_for
             .take()
@@ -288,14 +306,13 @@ impl Workspace {
                 generation: self.notice_generation,
             };
             self.notice_timer_armed_for = Some(armed);
-            let task = cx.spawn(async move |this, cx| {
+            self.notice_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
-                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
+                this.update(cx, |this, cx| this.dismiss_expired_notice(&armed, cx))
                     .ok();
-            });
-            task.detach();
+            }));
         }
         cx.notify();
     }
@@ -303,10 +320,12 @@ impl Workspace {
     /// A timer's callback: clears the banner only for the notice the timer
     /// was armed for. The generation moved on whenever another notice went
     /// up, so an older timer leaves the newcomer alone.
-    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice, cx: &mut Context<Self>) {
         if self.notice_generation == armed.generation {
             self.action_notice = None;
             self.notice_timer_armed_for = None;
+            self.notice_task = None;
+            cx.notify();
         }
     }
 
@@ -331,6 +350,7 @@ impl Workspace {
             cx.listener(|this, _, _, cx| {
                 this.action_notice = None;
                 this.notice_timer_armed_for = None;
+                this.notice_task = None;
                 cx.notify();
             }),
         ))
@@ -465,9 +485,8 @@ impl Render for Workspace {
             .id("cadence-root")
             .key_context("Cadence")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_tab))
-            .on_action(cx.listener(Self::on_tab_prev))
             .on_action(cx.listener(Self::open_search))
+            .on_action(cx.listener(Self::open_playlist_search))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::dismiss_overlay))
             .on_action(cx.listener(Self::toggle_playback))

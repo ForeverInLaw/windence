@@ -16,11 +16,12 @@ use crate::shuffle::{ContextKind, Origin, ShuffleMode, ShuffleState};
 
 mod library_index;
 mod pins;
+mod playlist_cache;
 
 const DATABASE_FILE: &str = "cadence.sqlite3";
 
 /// Highest schema version this build knows how to migrate to.
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -385,6 +386,9 @@ impl Store {
                  PRAGMA user_version = 12;
                  COMMIT;",
             )?;
+        }
+        if version < 13 {
+            playlist_cache::migrate(&self.connection)?;
         }
         Ok(())
     }
@@ -808,14 +812,14 @@ impl Store {
         Ok(())
     }
 
-    /// Drops the cached catalog: liked tracks, playlists, and the
-    /// fingerprint that answers for them.
+    /// Drops cached account collections, playlist contents and their refresh state.
     pub fn clear_library_cache(&mut self) -> Result<()> {
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM liked_tracks_cache", [])?;
         transaction.execute("DELETE FROM library_playlists_cache", [])?;
         transaction.execute("DELETE FROM library_fingerprint", [])?;
         transaction.execute("DELETE FROM library_index", [])?;
+        transaction.execute("DELETE FROM playlist_cache", [])?;
         // The order and the pins belong to the account too, and each is
         // fetched against a stored token. Leaving a token behind an emptied
         // set would make the next refresh answer "nothing changed" over the

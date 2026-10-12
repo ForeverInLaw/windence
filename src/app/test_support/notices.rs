@@ -7,6 +7,8 @@ use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{HeadlessAppContext, NoopTextSystem, WeakEntity};
 use spotify_gpui_client::storage::ThemePreference;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,9 +106,17 @@ fn a_confirmation_dismisses_itself_after_its_window() {
         Some("Redirect URI copied")
     );
 
+    let notified = Rc::new(Cell::new(false));
+    let observed = notified.clone();
+    let workspace = fixture.workspace.upgrade().expect("live workspace");
+    let _subscription = fixture
+        .cx
+        .update(|cx| cx.observe(&workspace, move |_, _| observed.set(true)));
+
     // One tick later the timer has fired and the banner is gone.
     fixture.cx.advance_clock(Duration::from_millis(1));
     fixture.cx.run_until_parked();
+    assert!(notified.get(), "expiry must request a redraw without input");
     assert_eq!(fixture.banner_label(), None);
 }
 

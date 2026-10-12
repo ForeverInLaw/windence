@@ -8,11 +8,11 @@ Docs, code comments, and user-facing text use simple, clear language. Short sent
 
 ### Issue tracker
 
-GitHub Issues at ForeverInLaw/windence via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Linear, project Windence in the Ivoxygen team. Use the Linear connector. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+Five triage roles mapped to Linear statuses and labels. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

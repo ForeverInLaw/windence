@@ -1,15 +1,15 @@
-# Triage Labels
+# Triage roles
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+The skills use five canonical roles. Windence maps them to the existing Linear statuses and the `ready-for-agent` label.
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| Skill role | Linear mapping | Meaning |
+| --- | --- | --- |
+| `needs-triage` | `Backlog`, without `ready-for-agent` | The scope or priority needs review. |
+| `needs-info` | `Backlog`, without `ready-for-agent`; record the missing answer in the description | Work needs information before it can be specified. |
+| `ready-for-agent` | `Todo` and `ready-for-agent`; use `Backlog` while blocked or intentionally deferred | The scope and completion criteria are complete. An agent may start once blockers are closed. |
+| `ready-for-human` | `Todo`, without `ready-for-agent`; describe the required human action | The next step requires a person. |
+| `wontfix` | `Canceled`; record the reason | The task will not be implemented. |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+Use `Bug`, `Improvement` or `Feature` to describe the kind of work. These labels do not determine readiness.
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+Read native blocking relations before claiming an issue. A readiness label does not override an open blocker or a deferred status.

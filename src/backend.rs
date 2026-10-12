@@ -23,6 +23,7 @@ use crate::{
     model::{Album, Artist, HomeFeed, HomeShelfPage, ListedTrack, Playlist, Track, UserProfile},
     pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
+    playlist::PlaylistSnapshot,
     shuffle::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
         smart_admissible,
@@ -32,6 +33,8 @@ use crate::{
     },
     storage::{LibraryFingerprint, PlaybackSnapshot, Store},
 };
+
+mod playlist_fetch;
 
 const CATALOG_TIMEOUT_SECONDS: u64 = 30;
 const LIBRARY_TIMEOUT_SECONDS: u64 = 60;
@@ -279,6 +282,16 @@ impl BlockingStore {
 /// Where a catalog request sends its answer. Dropping the receiving half
 /// cancels the request: the reply simply goes nowhere.
 pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T>>;
+
+#[derive(Debug)]
+pub enum PlaylistRequest {
+    NextPage,
+    /// Rechecks the version and resolves the full context before replying.
+    Complete {
+        respond: Reply<PlaylistSnapshot>,
+    },
+}
+
 #[derive(Debug)]
 /// The payload of a catalog page load.
 pub enum PlaylistContents {
@@ -344,6 +357,13 @@ pub enum BackendCommand {
         playlist: Playlist,
         respond: Reply<PlaylistContents>,
     },
+    /// Streams the cached prefix, its validation and explicitly requested pages.
+    /// Dropping either channel endpoint cancels the owned playlist task.
+    StreamPlaylist {
+        playlist: Playlist,
+        requests: Receiver<PlaylistRequest>,
+        updates: UnboundedSender<Result<PlaylistSnapshot>>,
+    },
     LoadArtist {
         source_id: String,
         respond: Reply<ArtistDetails>,
@@ -384,10 +404,13 @@ pub enum BackendCommand {
     PlayDj,
     PlayNext(Track),
     AppendToQueue(Track),
+    /// Playback confirmed that this track was heard.
+    MarkPlayed(Track),
     SetShuffleMode(ShuffleMode),
     RestorePlayback {
         position_ms: u32,
         playing: bool,
+        request_id: u64,
     },
     /// Adds or removes a track in the account's Spotify Liked Songs.
     SetLiked {
@@ -416,7 +439,10 @@ pub enum BackendCommand {
     Pause,
     Next,
     Previous,
-    Seek(u32),
+    Seek {
+        position_ms: u32,
+        request_id: u64,
+    },
     SavePlaybackPosition {
         spotify_uri: String,
         position_ms: u32,
@@ -451,6 +477,7 @@ pub enum BackendEvent {
     PlaybackRestored {
         position_ms: u32,
         playing: bool,
+        request_id: u64,
     },
     PlaybackSettled,
     QueueEnded,
@@ -517,10 +544,15 @@ pub enum BackendEvent {
     PositionChanged {
         spotify_uri: String,
         position_ms: u32,
+        /// Some only for a subscription registered after this position request.
+        request_id: Option<u64>,
     },
     PlaybackContext {
         current: Track,
         next: Vec<Track>,
+        /// A fresh play, including an intentional repeat of the same track.
+        /// Queue edits and restores leave this false.
+        new_play: bool,
         /// Which upcoming tracks are Smart Shuffle injections, aligned with
         /// `next`: the queue UI marks them with a distinct icon.
         injected: Vec<bool>,
@@ -587,6 +619,35 @@ impl BackendHandle {
             &senders.volume,
             command,
         )
+    }
+
+    /// A confirmed play must wait for capacity rather than be dropped like a UI command.
+    /// A waiting acknowledgment follows worker redirection before it enters the queue.
+    pub async fn mark_played(&self, track: Track) -> bool {
+        loop {
+            let commands = self
+                .senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .commands
+                .clone();
+            let permit = commands.clone().reserve_owned().await;
+            let senders = self
+                .senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !commands.same_channel(&senders.commands) {
+                continue;
+            }
+            let Ok(permit) = permit else {
+                return false;
+            };
+            if commands.is_closed() {
+                return false;
+            }
+            permit.send(BackendCommand::MarkPlayed(track));
+            return true;
+        }
     }
 
     fn redirect(&self, senders: Senders) {
@@ -1281,6 +1342,26 @@ impl Worker {
                 }
                 Ok(())
             }
+            BackendCommand::StreamPlaylist {
+                playlist,
+                requests,
+                updates,
+            } => {
+                abort_task(&mut self.catalog.playlist);
+                self.catalog.playlist = Some(playlist_fetch::start(
+                    playlist_fetch::Context {
+                        spotify: self.spotify.clone(),
+                        playback: self.connection.player.clone(),
+                        playlist,
+                        store: self.store.clone(),
+                        generation: self.account_generation,
+                        current_generation: self.catalog_generation.clone(),
+                    },
+                    requests,
+                    updates,
+                ));
+                Ok(())
+            }
             BackendCommand::LoadArtist { source_id, respond } => {
                 self.catalog
                     .artist(self.spotify.clone(), source_id, respond);
@@ -1333,11 +1414,16 @@ impl Worker {
             BackendCommand::PlayDj => self.start_dj(),
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
+            BackendCommand::MarkPlayed(track) => self.mark_played(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
             BackendCommand::RestorePlayback {
                 position_ms,
                 playing,
-            } => self.restore_playback(position_ms, playing).await,
+                request_id,
+            } => {
+                self.restore_playback(position_ms, playing, request_id)
+                    .await
+            }
             BackendCommand::SetLiked { track, liked } => self.set_liked(&track, liked).await,
             BackendCommand::SetPinned { uri, pinned } => self.set_pinned(uri, pinned).await,
             BackendCommand::SetPlaylistSaved { uri, saved } => {
@@ -1349,13 +1435,16 @@ impl Worker {
             BackendCommand::Next => {
                 self.dj.skipped = true;
                 self.silence_narration();
-                self.next_track(true).await
+                self.next_track().await
             }
             BackendCommand::Previous => {
                 self.silence_narration();
                 self.previous_track().await
             }
-            BackendCommand::Seek(position_ms) => self.seek(position_ms).await,
+            BackendCommand::Seek {
+                position_ms,
+                request_id,
+            } => self.seek(position_ms, request_id).await,
             BackendCommand::SavePlaybackPosition {
                 spotify_uri,
                 position_ms,
@@ -1787,12 +1876,9 @@ impl Worker {
             &shuffle,
             &tracks,
             index,
-            true,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await
-        {
+        ) {
             Ok(()) => {
                 self.queue.tracks = tracks;
                 self.queue.shuffle = shuffle;
@@ -1895,12 +1981,23 @@ impl Worker {
                 self.queue.kind,
             )
             .await?;
-        send_playback_context(&self.queue.shuffle, &self.queue.tracks, index, &self.events);
+        send_playback_context(
+            &self.queue.shuffle,
+            &self.queue.tracks,
+            index,
+            false,
+            &self.events,
+        );
         send_shuffle_changed(&self.queue, &self.events);
         Ok(())
     }
 
-    async fn restore_playback(&mut self, position_ms: u32, playing: bool) -> Result<()> {
+    async fn restore_playback(
+        &mut self,
+        position_ms: u32,
+        playing: bool,
+        request_id: u64,
+    ) -> Result<()> {
         let result = restore_context_track(
             &self.connection.player,
             &self.queue.shuffle,
@@ -1914,9 +2011,11 @@ impl Worker {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return result;
         }
+        self.connection.observe_positions(request_id, &self.events);
         let _ = self.events.send(BackendEvent::PlaybackRestored {
             position_ms,
             playing,
+            request_id,
         });
         // The restore performed a fresh load; the ended special-casing must
         // not survive it, or seeks would be swallowed against a live player.
@@ -1932,6 +2031,12 @@ impl Worker {
             self.maybe_prefetch_injections().await;
         }
         result
+    }
+
+    async fn mark_played(&mut self, track: Track) -> Result<()> {
+        self.store.add_history(track).await?;
+        send_local_state(&self.store, &self.events).await;
+        Ok(())
     }
 
     /// Likes or unlikes a track on Spotify, which owns the collection. The
@@ -2061,15 +2166,20 @@ impl Worker {
         if self.queue.ended {
             // play() is a no-op in librespot's EndOfTrack state: reload the
             // current track at the seeker's position instead.
-            let result = restore_context_track(
-                &self.connection.player,
-                &self.queue.shuffle,
-                &self.queue.tracks,
-                self.queue.index,
-                self.queue.position_ms,
-                true,
-                &self.events,
-            );
+            let result = self
+                .queue
+                .index
+                .context("playback context is not available")
+                .and_then(|index| {
+                    load_context_track(
+                        &self.connection.player,
+                        &self.queue.shuffle,
+                        &self.queue.tracks,
+                        index,
+                        self.queue.position_ms,
+                        &self.events,
+                    )
+                });
             match &result {
                 Ok(()) => {
                     self.queue.ended = false;
@@ -2090,7 +2200,7 @@ impl Worker {
             // dead loader would silently do nothing. Advance instead, and
             // the never-heard track stays out of the history.
             self.queue.current_unavailable = false;
-            return self.next_track(false).await;
+            return self.next_track().await;
         }
         let result = self.connected_player().map(|player| player.play());
         if result.is_err() {
@@ -2116,9 +2226,6 @@ impl Worker {
         result
     }
 
-    /// Moves to the next queue entry; `record_history` gates whether the
-    /// entry being left counts as heard. Auto-advance paths pass `false`
-    /// so tracks that never played a second are not logged as listened.
     /// Cuts short whatever the DJ is saying. Skipping moves the player
     /// without pausing or stopping it, so the voice would otherwise finish
     /// the line over the song the listener asked for.
@@ -2128,7 +2235,7 @@ impl Worker {
         }
     }
 
-    async fn next_track(&mut self, record_history: bool) -> Result<()> {
+    async fn next_track(&mut self) -> Result<()> {
         self.radio.cancel(&self.events);
         let Some(current) = self.queue.index else {
             let _ = self.events.send(BackendEvent::QueueEnded);
@@ -2161,7 +2268,7 @@ impl Worker {
             self.top_up_queue();
             return Ok(());
         };
-        self.load_queue_track(index, record_history).await
+        self.load_queue_track(index).await
     }
 
     /// Advances past the playing track when Spotify reports it unplayable,
@@ -2174,7 +2281,7 @@ impl Worker {
             return;
         }
         log::info!("playback: skipping unavailable track {spotify_uri}");
-        if let Err(error) = self.next_track(false).await {
+        if let Err(error) = self.next_track().await {
             send_error(&self.events, error);
         }
     }
@@ -2182,7 +2289,7 @@ impl Worker {
     async fn previous_track(&mut self) -> Result<()> {
         self.radio.cancel(&self.events);
         if let Some(index) = self.queue.index.and_then(|index| index.checked_sub(1)) {
-            return self.load_queue_track(index, true).await;
+            return self.load_queue_track(index).await;
         }
         let result = self.connected_player().map(|player| player.seek(0));
         let _ = self.events.send(BackendEvent::PlaybackSettled);
@@ -2196,18 +2303,16 @@ impl Worker {
     }
 
     /// Loads the queue entry at `index` and persists it as the playing track.
-    async fn load_queue_track(&mut self, index: usize, record_history: bool) -> Result<()> {
+    async fn load_queue_track(&mut self, index: usize) -> Result<()> {
         self.speak_before(index);
         let result = load_context_track(
             &self.connection.player,
             &self.queue.shuffle,
             &self.queue.tracks,
             index,
-            record_history,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await;
+        );
         if result.is_err() {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return result;
@@ -2240,13 +2345,14 @@ impl Worker {
         self.maybe_prefetch_injections().await;
     }
 
-    async fn seek(&mut self, position_ms: u32) -> Result<()> {
+    async fn seek(&mut self, position_ms: u32, request_id: u64) -> Result<()> {
         // While ended, seek() would be a no-op too; remember the position for
         // the reload that Resume performs.
         if !self.queue.ended {
             self.connected_player()
                 .map(|player| player.seek(position_ms))?;
         }
+        self.connection.observe_positions(request_id, &self.events);
         self.queue.position_ms = position_ms;
         if let Err(error) = self.store.update_playback_position(position_ms).await {
             send_error(&self.events, error);
@@ -2360,12 +2466,9 @@ impl Worker {
                     &ShuffleState::default(),
                     &tracks,
                     0,
-                    true,
-                    &self.store,
+                    0,
                     &self.events,
-                )
-                .await
-                {
+                ) {
                     Ok(()) => {
                         self.stand_down_dj();
                         self.queue.tracks = tracks;
@@ -2592,7 +2695,7 @@ impl Worker {
                 // Skipping outran the fetch and left the player parked on
                 // the last song. The stretch that just landed is what it
                 // was waiting for.
-                if let Err(error) = self.load_queue_track(index + 1, true).await {
+                if let Err(error) = self.load_queue_track(index + 1).await {
                     send_error(&self.events, error);
                 }
             }
@@ -2623,12 +2726,9 @@ impl Worker {
             &ShuffleState::default(),
             &stretch.tracks,
             0,
-            true,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await
-        {
+        ) {
             send_error(&self.events, error);
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return;
@@ -2888,7 +2988,7 @@ impl Worker {
         if ended {
             // The song outran the fetch: continue into the extension rather
             // than leaving playback parked on the ended state.
-            if let Err(error) = self.load_queue_track(index + 1, true).await {
+            if let Err(error) = self.load_queue_track(index + 1).await {
                 send_error(&self.events, error);
             }
         }
@@ -3408,7 +3508,7 @@ impl Radio {
                     .as_deref()
                     .context("radio seed has no Spotify track URI")?;
                 let uris = player.radio_track_uris(seed_uri).await?;
-                let recommendations = spotify.resolve_track_uris(&uris).await?;
+                let recommendations = spotify.resolve_playable_track_uris(&uris).await?;
                 build_radio_context(seed, recommendations)
             })
             .await
@@ -3659,6 +3759,7 @@ fn connect_settlement(pending: Option<PendingPlay>, connect_restoring: bool) -> 
 struct PlaybackConnection {
     player: Option<Playback>,
     observer: Option<tokio::task::JoinHandle<()>>,
+    position_observer: Option<tokio::task::JoinHandle<()>>,
     reconnect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     connect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     reconnect_pending: bool,
@@ -3670,12 +3771,20 @@ struct PlaybackConnection {
     pending_play: Option<PendingPlay>,
 }
 
+impl Drop for PlaybackConnection {
+    fn drop(&mut self) {
+        self.disconnect();
+        self.abort_attempts();
+    }
+}
+
 impl PlaybackConnection {
     fn disconnect(&mut self) {
         if let Some(player) = self.player.take() {
             player.stop();
         }
         abort_task(&mut self.observer);
+        abort_task(&mut self.position_observer);
     }
 
     fn adopt(
@@ -3684,8 +3793,23 @@ impl PlaybackConnection {
         events: &UnboundedSender<BackendEvent>,
         unavailable: &UnboundedSender<String>,
     ) {
+        abort_task(&mut self.observer);
+        abort_task(&mut self.position_observer);
         self.observer = Some(observe_playback(&player, events, unavailable.clone()));
         self.player = Some(player);
+    }
+
+    /// AddEventSender follows Seek or Load on the player's command stream.
+    /// This channel contains no positions sampled before that request.
+    fn observe_positions(&mut self, request_id: u64, events: &UnboundedSender<BackendEvent>) {
+        abort_task(&mut self.position_observer);
+        if let Some(player) = &self.player {
+            self.position_observer = Some(observe_requested_positions(
+                player.events(),
+                request_id,
+                events.clone(),
+            ));
+        }
     }
 
     fn abort_attempts(&mut self) {
@@ -4391,6 +4515,52 @@ fn observe_playback(
     })
 }
 
+/// Keeps the main subscription's state and failure events intact while replacing
+/// only the position source after a seek or restore.
+fn observe_requested_positions(
+    mut player_events: UnboundedReceiver<PlayerEvent>,
+    request_id: u64,
+    events: UnboundedSender<BackendEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(event) = player_events.recv().await {
+            let (track_id, position_ms) = match event {
+                PlayerEvent::PositionChanged {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::PositionCorrection {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Seeked {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Playing {
+                    track_id,
+                    position_ms,
+                    ..
+                }
+                | PlayerEvent::Paused {
+                    track_id,
+                    position_ms,
+                    ..
+                } => (track_id, position_ms),
+                _ => continue,
+            };
+            let _ = events.send(BackendEvent::PositionChanged {
+                spotify_uri: track_id.to_string(),
+                position_ms,
+                request_id: Some(request_id),
+            });
+        }
+    })
+}
+
 /// Maps one raw player event to the backend event that carries the same
 /// information, if any.
 fn map_player_event(
@@ -4410,6 +4580,7 @@ fn map_player_event(
             let _ = event_sender.send(BackendEvent::PositionChanged {
                 spotify_uri: track_id.to_string(),
                 position_ms,
+                request_id: None,
             });
             Some(BackendEvent::Playing {
                 spotify_uri: track_id.to_string(),
@@ -4423,6 +4594,7 @@ fn map_player_event(
             let _ = event_sender.send(BackendEvent::PositionChanged {
                 spotify_uri: track_id.to_string(),
                 position_ms,
+                request_id: None,
             });
             Some(BackendEvent::Paused {
                 spotify_uri: track_id.to_string(),
@@ -4459,21 +4631,19 @@ fn map_player_event(
         } => Some(BackendEvent::PositionChanged {
             spotify_uri: track_id.to_string(),
             position_ms,
+            request_id: None,
         }),
         _ => None,
     }
 }
 
-/// Loads the queue entry at `index` and starts it playing. With
-/// `record_history`, the entry is logged as heard immediately — right for
-/// user-driven loads; auto-advance past unplayable entries passes `false`.
-async fn load_context_track(
+/// Starts a new play of the queue entry. History waits for a Playing event.
+fn load_context_track(
     playback: &Option<Playback>,
     shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
-    record_history: bool,
-    store: &BlockingStore,
+    position_ms: u32,
     events: &UnboundedSender<BackendEvent>,
 ) -> Result<()> {
     let track = tracks
@@ -4487,13 +4657,8 @@ async fn load_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(shuffle, tracks, index, events);
-    player.load(spotify_uri, true, 0);
-    if record_history && let Err(error) = store.add_history(track.clone()).await {
-        send_error(events, error);
-    } else if record_history {
-        send_local_state(store, events).await;
-    }
+    send_playback_context(shuffle, tracks, index, true, events);
+    player.load(spotify_uri, true, position_ms);
     Ok(())
 }
 
@@ -4518,7 +4683,7 @@ fn restore_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(shuffle, tracks, index, events);
+    send_playback_context(shuffle, tracks, index, false, events);
     player.load(spotify_uri, playing, position_ms);
     Ok(())
 }
@@ -4550,12 +4715,14 @@ fn send_playback_context(
     shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
+    new_play: bool,
     events: &UnboundedSender<BackendEvent>,
 ) {
     if let Some(current) = tracks.get(index) {
         let _ = events.send(BackendEvent::PlaybackContext {
             current: current.clone(),
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
+            new_play,
             injected: injected_flags(shuffle, index, tracks.len()),
         });
     }
@@ -4611,7 +4778,7 @@ async fn recommendation_tracks(
     seed_uri: &str,
 ) -> Result<Vec<Track>> {
     let uris = player.radio_track_uris(seed_uri).await?;
-    spotify.resolve_track_uris(&uris).await
+    spotify.resolve_playable_track_uris(&uris).await
 }
 
 fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<Track>> {
@@ -4791,6 +4958,44 @@ mod tests {
             control_receiver.try_recv(),
             Ok(BackendCommand::Logout { generation: 1 })
         ));
+    }
+
+    #[tokio::test]
+    async fn requested_position_subscription_does_not_duplicate_state_and_closes_with_connection() {
+        use super::{Duration, PlayerEvent, SpotifyUri, observe_requested_positions};
+        let track_id = SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let (source, source_events) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let mut connection = PlaybackConnection::default();
+        connection
+            .position_observer
+            .replace(observe_requested_positions(source_events, 77, events));
+        source
+            .send(PlayerEvent::Unavailable {
+                play_request_id: 1,
+                track_id: track_id.clone(),
+            })
+            .unwrap();
+        source
+            .send(PlayerEvent::Paused {
+                play_request_id: 1,
+                track_id: track_id.clone(),
+                position_ms: 10_000,
+            })
+            .unwrap();
+        assert!(matches!(
+            reports.recv().await,
+            Some(BackendEvent::PositionChanged { request_id: Some(77), position_ms: 10_000, spotify_uri })
+                if spotify_uri == track_id.to_string()
+        ));
+        assert!(matches!(
+            reports.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(1), source.closed())
+            .await
+            .expect("dropping a connection must release its position subscription");
     }
 
     #[tokio::test]
@@ -4988,6 +5193,101 @@ mod tests {
             "current"
         );
         assert!(next_injection_seed([], None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn waiting_confirmed_history_follows_the_replacement_worker() {
+        for close_old_receiver in [false, true] {
+            let (original, mut old_commands, _) = super::Backend::isolated();
+            let handle = original.handle();
+            while handle.send(BackendCommand::Pause) {}
+            let played = track();
+            let delivery = handle.mark_played(played.clone());
+            futures::pin_mut!(delivery);
+            assert!(futures::poll!(&mut delivery).is_pending());
+
+            let (replacement, mut new_commands, _) = super::Backend::isolated();
+            let replacement_senders = {
+                let senders = replacement
+                    .handle
+                    .senders
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                super::Senders {
+                    commands: senders.commands.clone(),
+                    controls: senders.controls.clone(),
+                    volume: senders.volume.clone(),
+                }
+            };
+            handle.redirect(replacement_senders);
+            // A restart closes the previous worker's receiver. Capacity might
+            // also become available just before that close; neither may send
+            // confirmed history to the replaced worker.
+            if close_old_receiver {
+                old_commands.close();
+            } else {
+                assert!(matches!(old_commands.try_recv(), Ok(BackendCommand::Pause)));
+            }
+
+            assert!(delivery.await);
+            assert!(matches!(
+                new_commands.try_recv(),
+                Ok(BackendCommand::MarkPlayed(track)) if track == played
+            ));
+            assert!(new_commands.try_recv().is_err());
+            while let Ok(command) = old_commands.try_recv() {
+                assert!(matches!(command, BackendCommand::Pause));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_history_reports_a_stopped_worker_without_waiting_forever() {
+        let (backend, commands, _) = super::Backend::isolated();
+        drop(commands);
+        assert!(!backend.handle().mark_played(track()).await);
+    }
+
+    #[tokio::test]
+    async fn confirmed_playback_updates_recent_history_through_the_backend_command() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        store.add_history(track()).await.unwrap();
+        store
+            .add_history(listed_track("earlier").track)
+            .await
+            .unwrap();
+        let startup = super::Startup {
+            store,
+            spotify: crate::spotify::Spotify::from_client_id(
+                "0123456789abcdef0123456789abcdef",
+                false,
+            )
+            .await
+            .unwrap(),
+            configuration: None,
+            playback_snapshot: None,
+            playback_credentials_invalidated: false,
+        };
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (unavailable, _) = tokio::sync::mpsc::unbounded_channel();
+        let (connected, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut worker = super::Worker::new(startup, events, unavailable, connected);
+        let (_, mut shutdown) = tokio::sync::watch::channel(false);
+        let played = track();
+
+        worker
+            .handle_command(BackendCommand::MarkPlayed(played.clone()), &mut shutdown)
+            .await;
+
+        match received.try_recv().expect("refreshed listening history") {
+            BackendEvent::LocalStateLoaded {
+                recently_played, ..
+            } => {
+                assert_eq!(recently_played, vec![played, listed_track("earlier").track]);
+            }
+            other => panic!("expected recent history, got {other:?}"),
+        }
+        assert!(received.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -5218,10 +5518,10 @@ mod tests {
         assert!(!PlaybackConnection::default().is_connecting());
 
         // A connect attempt with no player yet is the connecting window.
-        let mut connection = PlaybackConnection {
-            connect: Some(tokio::spawn(std::future::pending())),
-            ..PlaybackConnection::default()
-        };
+        let mut connection = PlaybackConnection::default();
+        connection
+            .connect
+            .replace(tokio::spawn(std::future::pending()));
         assert!(connection.is_connecting());
         connection.hold_play(vec![track()], 0, false, ContextKind::Collection);
         let held = connection.pending_play.as_ref().unwrap();
@@ -5255,7 +5555,7 @@ mod tests {
         replacement.spotify_uri = Some("spotify:track:next".to_owned());
         connection.hold_play(vec![replacement], 1, true, ContextKind::Album);
 
-        let held = connection.pending_play.unwrap();
+        let held = connection.pending_play.as_ref().unwrap();
         assert_eq!(held.index, 1);
         assert!(held.shuffled);
         assert_eq!(held.kind, ContextKind::Album);
@@ -5269,21 +5569,18 @@ mod tests {
     #[tokio::test]
     async fn only_a_connection_in_flight_counts_as_connecting() {
         // A reconnect attempt with no session yet is the connecting window.
-        let mut connection = PlaybackConnection {
-            reconnect: Some(tokio::spawn(std::future::pending())),
-            ..PlaybackConnection::default()
-        };
+        let mut connection = PlaybackConnection::default();
+        connection
+            .reconnect
+            .replace(tokio::spawn(std::future::pending()));
         assert!(connection.is_connecting());
         connection.abort_attempts();
         assert!(!connection.is_connecting());
 
         // Without a task in flight nothing is connecting, even with the
         // reconnect_pending note left over for the health tick.
-        let idle = PlaybackConnection {
-            reconnect_pending: true,
-            ..PlaybackConnection::default()
-        };
-        assert!(!idle.is_connecting());
+        connection.reconnect_pending = true;
+        assert!(!connection.is_connecting());
         // The player-exists case is not constructible here: a `Playback`
         // needs a live Spotify session, so it is covered by the
         // play-context hold check, which reads the same predicate.

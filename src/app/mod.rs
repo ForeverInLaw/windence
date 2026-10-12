@@ -7,8 +7,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+#[cfg(test)]
+use gpui_kit::component::Root;
 use gpui_kit::component::{
-    Root, Sizable, Theme, WindowExt,
+    Sizable, Theme, WindowExt,
     avatar::Avatar,
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
@@ -43,6 +45,7 @@ mod http;
 mod icons;
 mod image_cache;
 mod motion;
+mod tokens;
 
 use motion::*;
 
@@ -52,9 +55,8 @@ pub(crate) mod test_support;
 actions!(
     cadence,
     [
-        Tab,
-        TabPrev,
         OpenSearch,
+        OpenPlaylistSearch,
         TogglePlayback,
         SeekBack,
         SeekForward,
@@ -102,12 +104,12 @@ impl CadencePalette {
         surface_hover: 0xF8F7F4,
         control: 0xF6F4EF,
         control_hover: 0xEAE6DD,
-        selection: 0xB3CFEC,
+        selection: 0xD8ECFC,
         text_primary: 0x171717,
         text: 0x494440,
         text_muted: 0x757373,
-        border: 0x8E8E8E,
-        focus_ring: 0x6E6C6B,
+        border: 0xE8E8E8,
+        focus_ring: 0x848281,
         danger: 0xEF4444,
         destructive: 0xB42318,
         on_destructive: 0xFFFFFF,
@@ -139,7 +141,7 @@ impl CadencePalette {
         text_primary: 0xF5F3EF,
         text: 0xD5D1CB,
         text_muted: 0xA09D99,
-        border: 0x747474,
+        border: 0x414141,
         focus_ring: 0xA8A5A1,
         danger: 0xF87171,
         destructive: 0xFF6961,
@@ -180,10 +182,8 @@ fn resolve_dark_mode(preference: ThemePreference, appearance: WindowAppearance) 
 pub(super) const VOLUME_SLIDER_WIDTH: f32 = 120.;
 const VOLUME_SLIDER_RIGHT_INSET: f32 = 144.;
 const PLAYER_LEFT_WIDTH: f32 = 360.;
-const PLAYER_CENTER_WIDTH: f32 = 440.;
 const PLAYER_RIGHT_WIDTH: f32 = 240.;
-/// The full-tier progress slider's width: what the centre box reserves
-/// for it, so the drawn track and the seek math agree.
+/// The fixed width the full-tier centre cluster reserves for the drawn track.
 pub(super) const PROGRESS_SLIDER_WIDTH: f32 = 340.;
 const PROGRESS_TIME_WIDTH: f32 = 36.;
 const PROGRESS_GAP: f32 = 8.;
@@ -506,40 +506,6 @@ fn volume_for_pointer(pointer_x: f32, window_width: f32) -> f32 {
     ((pointer_x - (window_width - VOLUME_SLIDER_RIGHT_INSET)) / VOLUME_SLIDER_WIDTH).clamp(0., 1.)
 }
 
-/// Maps a pointer position to a track position on the progress slider.
-///
-/// The window width says how wide the whole window is; the content width
-/// says what the bar spans. In the full tier the bar's centre cluster is
-/// centred on the content and the slider keeps `PROGRESS_SLIDER_WIDTH` —
-/// the same width the centre box reserves for it, so the drawn track and
-/// this math agree. In the compact tier the slider takes what the content
-/// has left over, floored at the slider minimum. Below the timeline floor
-/// the slider is not on screen, so this never runs for one.
-fn seek_for_pointer(
-    pointer_x: f32,
-    window_width: f32,
-    content_width: f32,
-    duration_ms: u32,
-) -> u32 {
-    let compact = uses_compact_player_layout(content_width);
-    let slider_width = if compact {
-        compact_progress_slider_width(content_width)
-    } else {
-        Some(PROGRESS_SLIDER_WIDTH)
-    };
-    let Some(slider_width) = slider_width else {
-        return 0;
-    };
-    let center_left = if compact {
-        PLAYER_BAR_PADDING + COMPACT_PLAYER_LEFT_WIDTH + PLAYER_BAR_GAP
-    } else {
-        window_width / 2. + (PLAYER_LEFT_WIDTH - PLAYER_RIGHT_WIDTH - PLAYER_CENTER_WIDTH) / 2.
-    };
-    let left = center_left + PROGRESS_TIME_WIDTH + PROGRESS_GAP;
-    let fraction = ((pointer_x - left) / slider_width).clamp(0., 1.);
-    (fraction * duration_ms as f32) as u32
-}
-
 fn format_duration(duration_ms: u32) -> String {
     let seconds = duration_ms / 1000;
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -598,9 +564,12 @@ mod library_pages;
 mod media_controls;
 mod onboarding;
 mod page;
+mod playback_clock;
 mod player;
 mod player_bar;
+mod playlist_page;
 mod router;
+mod scrubber;
 mod services;
 mod session;
 mod settings;
@@ -618,12 +587,10 @@ pub fn run() {
 mod tests {
     use super::{
         BRAND_LOGO_SIZE, BRAND_ROW_PAD, COLLAPSED_SIDEBAR_WIDTH, COMPACT_BAR_FIXED_WIDTH,
-        COMPACT_PLAYER_BREAKPOINT, COMPACT_PLAYER_LEFT_WIDTH, NAV_GLYPH_WIDTH, NAV_ROW_PAD,
-        PLAYER_BAR_GAP, PLAYER_BAR_PADDING, PLAYER_TIMELINE_FLOOR, PROGRESS_GAP,
-        PROGRESS_SLIDER_MIN_WIDTH, PROGRESS_TIME_WIDTH, SIDEBAR_CONTENT_PAD,
-        SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET, TRAFFIC_LIGHT_CLUSTER_WIDTH,
-        compact_progress_slider_width, interpolate_sidebar_width, resolve_dark_mode,
-        seek_for_pointer, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
+        COMPACT_PLAYER_BREAKPOINT, NAV_GLYPH_WIDTH, NAV_ROW_PAD, PLAYER_TIMELINE_FLOOR,
+        PROGRESS_SLIDER_MIN_WIDTH, SIDEBAR_CONTENT_PAD, SIDEBAR_FILL_COLLAPSED, SIDEBAR_FILL_INSET,
+        TRAFFIC_LIGHT_CLUSTER_WIDTH, compact_progress_slider_width, interpolate_sidebar_width,
+        resolve_dark_mode, sidebar_fill_geometry, sidebar_row_pad, sidebar_transition_duration,
         track_table_columns, traffic_light_position, uses_compact_content_layout,
         uses_compact_player_layout, volume_for_pointer,
     };
@@ -657,37 +624,6 @@ mod tests {
         assert_eq!(volume_for_pointer(1100., window_width), 0.);
         assert_eq!(volume_for_pointer(1196., window_width), 0.5);
         assert_eq!(volume_for_pointer(1300., window_width), 1.);
-    }
-
-    #[test]
-    fn pointer_position_is_mapped_to_track_duration() {
-        // Full tier: the centre cluster is centred on the content.
-        assert_eq!(seek_for_pointer(524., 1280., 1280., 200_000), 0);
-        assert_eq!(seek_for_pointer(694., 1280., 1280., 200_000), 100_000);
-        assert_eq!(seek_for_pointer(864., 1280., 1280., 200_000), 200_000);
-        // Compact tier: the slider takes what the content has left over,
-        // floored at the slider minimum. At the floor the fixed parts
-        // leave exactly the minimum, so the row maps the band's left edge,
-        // middle, and right edge onto the track's start, middle, and end.
-        // The band starts where the centre does: padding, left cluster,
-        // gap, then the leading time label and its gap.
-        let left = PLAYER_BAR_PADDING
-            + COMPACT_PLAYER_LEFT_WIDTH
-            + PLAYER_BAR_GAP
-            + PROGRESS_TIME_WIDTH
-            + PROGRESS_GAP;
-        assert_eq!(seek_for_pointer(left, 720., 876., 200_000), 0);
-        assert_eq!(seek_for_pointer(left + 80., 720., 876., 200_000), 100_000);
-        assert_eq!(
-            seek_for_pointer(left + PROGRESS_SLIDER_MIN_WIDTH, 720., 876., 200_000),
-            200_000
-        );
-        // Below the timeline floor the slider is not on screen, so a
-        // pointer on where it would be seeks nowhere.
-        assert_eq!(seek_for_pointer(251., 720., 875., 200_000), 0);
-        // The pointer clamps to the slider's ends.
-        assert_eq!(seek_for_pointer(200., 1280., 1280., 200_000), 0);
-        assert_eq!(seek_for_pointer(1200., 1280., 1280., 200_000), 200_000);
     }
 
     #[test]
@@ -879,12 +815,12 @@ mod event_bridge_tests {
 mod palette_contrast_tests {
     use super::CadencePalette;
 
-    /// Borders must separate a panel from the surface it sits on or in.
-    const BORDER_FLOOR: f64 = 2.5;
+    /// Decorative edges stay quiet; focus and text carry stronger contrast.
+    const BORDER_CEILING: f64 = 2.0;
     /// The focus ring must stay findable over anything it can encircle.
     const FOCUS_RING_FLOOR: f64 = 3.0;
     /// A selected fill must read as distinct from the canvas behind it.
-    const SELECTION_FLOOR: f64 = 1.35;
+    const SELECTION_FLOOR: f64 = 1.1;
     /// Danger keeps its distance from the selection fill so a red state is
     /// never mistaken for an active one.
     const DANGER_CLEARANCE_FLOOR: f64 = 2.0;
@@ -934,7 +870,7 @@ mod palette_contrast_tests {
     }
 
     #[test]
-    fn borders_separate_from_every_adjacent_surface_in_both_themes() {
+    fn decorative_borders_stay_quiet_on_adjacent_surfaces_in_both_themes() {
         for (theme, palette) in [
             ("light", CadencePalette::LIGHT),
             ("dark", CadencePalette::DARK),
@@ -946,13 +882,13 @@ mod palette_contrast_tests {
                 ("control", palette.control),
             ] {
                 assert!(
-                    contrast_ratio(palette.border, surface) >= BORDER_FLOOR,
-                    "{} theme border {} against {} {} is below the {} floor",
+                    (1.0..BORDER_CEILING).contains(&contrast_ratio(palette.border, surface)),
+                    "{} theme border {} against {} {} must stay below the {} ceiling",
                     theme,
                     hex(palette.border),
                     surface_name,
                     hex(surface),
-                    BORDER_FLOOR
+                    BORDER_CEILING
                 );
             }
         }

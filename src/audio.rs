@@ -365,6 +365,8 @@ impl BufferWriter {
             written += self.write(&samples[written..]);
             if written < samples.len() {
                 if Instant::now() >= deadline {
+                    // A silent stall needs the same recovery as an error callback.
+                    failed.store(true, Ordering::Release);
                     return Err(SinkError::OnWrite(
                         "audio output stopped consuming samples".to_owned(),
                     ));
@@ -989,6 +991,33 @@ mod tests {
         let result = writer.write_all(&[0.5], &playing, &failed);
 
         assert!(matches!(result, Err(SinkError::OnWrite(_))));
+    }
+
+    #[test]
+    fn a_stopped_consumer_marks_the_stream_failed_for_recovery() {
+        let (mut feed, _reader) = feed(2);
+        feed.write(vec![0.25, 0.25]).unwrap();
+
+        let result = feed.write(vec![0.5, 0.5]);
+
+        assert!(matches!(result, Err(SinkError::OnWrite(_))));
+        assert!(feed.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_pause_does_not_trigger_stream_recovery() {
+        let (mut feed, _reader) = feed(2);
+        feed.write(vec![0.25, 0.25]).unwrap();
+        feed.playing.store(false, Ordering::Release);
+
+        let write_result = feed.write(vec![0.5, 0.5]);
+        let result =
+            recover_failed_write(write_result, feed.failed.load(Ordering::Acquire), || {
+                panic!("a paused stream must not reopen the output")
+            });
+
+        assert!(matches!(result, Err(SinkError::StateChange(_))));
+        assert!(!feed.failed.load(Ordering::Acquire));
     }
 
     #[test]

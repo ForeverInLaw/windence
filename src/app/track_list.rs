@@ -1,7 +1,13 @@
 use super::*;
-use gpui_kit::TestSupportExt as _;
 
+use gpui_kit::{ScrollStrategy, TestSupportExt as _, UniformListScrollHandle};
 use page::PageEvent;
+
+pub(super) enum PlaylistListEvent {
+    LoadMore,
+    Complete,
+    Play(usize),
+}
 
 /// What a track list is showing.
 ///
@@ -38,8 +44,8 @@ impl ListContext {
 /// Lists whose context dates and sorts its tracks (playlists, liked songs)
 /// name themselves in their [`ListContext`]; clicking their headers cycles
 /// Title/Album/Date added through A-Z, Z-A, and back to the default order,
-/// and the choice survives restarts. The rows always play in the displayed
-/// order.
+/// and the choice survives restarts. Search hides rows without narrowing
+/// playback. A selected row starts its occurrence in the full sorted context.
 pub(super) struct TrackList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
@@ -47,6 +53,10 @@ pub(super) struct TrackList {
     listed: Arc<[model::ListedTrack]>,
     /// Display position to index into `listed`; identity while unsorted.
     order: Arc<[usize]>,
+    /// Visible row positions in the full sorted order. Filtering never changes the queue.
+    visible: Vec<usize>,
+    filter_words: Vec<String>,
+    scroll_handle: UniformListScrollHandle,
     /// What is being shown, and so how playback starting from a row is
     /// reported.
     context: ListContext,
@@ -63,9 +73,15 @@ pub(super) struct TrackList {
     /// sidebar. The column tiers read it instead of the window width, so
     /// collapsing the rail widens the table the same frame.
     content_width: f32,
+    delegate_play: bool,
+    has_more: bool,
+    paging_busy: bool,
+    scrolled_for_more: bool,
+    more_requested: bool,
 }
 
 impl EventEmitter<PageEvent> for TrackList {}
+impl EventEmitter<PlaylistListEvent> for TrackList {}
 
 impl TrackList {
     pub(super) fn new(cx: &mut App) -> Self {
@@ -73,6 +89,9 @@ impl TrackList {
             id: None,
             listed: Arc::default(),
             order: Arc::default(),
+            visible: Vec::new(),
+            filter_words: Vec::new(),
+            scroll_handle: UniformListScrollHandle::new(),
             context: ListContext::default(),
             sort: None,
             menu_open: None,
@@ -82,6 +101,11 @@ impl TrackList {
             image_cache: services::AppServices::image_cache(cx),
             // Replaced with the real value before the first paint.
             content_width: 0.,
+            delegate_play: false,
+            has_more: false,
+            paging_busy: false,
+            scrolled_for_more: false,
+            more_requested: false,
         }
     }
 
@@ -126,10 +150,15 @@ impl TrackList {
                 .as_deref()
                 .and_then(|key| services::AppServices::list_sort(key, cx));
         }
+        if self.id != id {
+            self.scroll_handle
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+        }
         self.id = id;
         self.listed = listed;
         self.context = context;
         self.menu_open = None;
+        self.more_requested = false;
         self.refresh_order();
         cx.notify();
     }
@@ -138,16 +167,76 @@ impl TrackList {
     /// every content or sort change, so the two can never disagree.
     fn refresh_order(&mut self) {
         self.order = model::list_order(&self.listed, self.sort).into();
+        self.refresh_visible();
     }
 
-    /// The context's tracks in displayed order — what the rows show right
-    /// now, and what starting playback from the top should play.
-    pub(super) fn displayed_tracks(&self) -> Vec<model::Track> {
+    /// Filters visible rows while retaining the complete sorted playback context.
+    pub(super) fn set_filter(&mut self, query: &str, cx: &mut Context<Self>) {
+        let words = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        if self.filter_words == words {
+            return;
+        }
+        self.filter_words = words;
+        self.menu_open = None;
+        self.refresh_visible();
+        self.scroll_handle
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    fn refresh_visible(&mut self) {
+        self.visible = self
+            .order
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &default_index)| {
+                let track = &self.listed[default_index].track;
+                let matches = self.filter_words.is_empty() || {
+                    let fields =
+                        [&track.title, &track.artist, &track.album].map(|text| text.to_lowercase());
+                    self.filter_words
+                        .iter()
+                        .all(|word| fields.iter().any(|field| field.contains(word)))
+                };
+                matches.then_some(position)
+            })
+            .collect();
+    }
+
+    /// The complete sorted context. Search only hides rows and never narrows playback.
+    pub(super) fn sorted_context_tracks(&self) -> Vec<model::Track> {
         self.order
             .iter()
             .filter_map(|&default_index| self.listed.get(default_index))
             .map(|entry| entry.track.clone())
             .collect()
+    }
+
+    pub(super) fn sorted_position(&self, default_index: usize) -> Option<usize> {
+        self.order.iter().position(|&index| index == default_index)
+    }
+
+    pub(super) fn sorted(&self) -> bool {
+        self.sort.is_some()
+    }
+
+    pub(super) fn set_paging(&mut self, has_more: bool, busy: bool, cx: &mut Context<Self>) {
+        self.delegate_play = true;
+        if self.has_more == has_more && self.paging_busy == busy {
+            return;
+        }
+        self.has_more = has_more;
+        self.paging_busy = busy;
+        if !busy {
+            self.more_requested = false;
+        }
+        if busy || !has_more {
+            self.scrolled_for_more = false;
+        }
+        cx.notify();
     }
 
     /// Moves `column`'s header to its next state and remembers the choice.
@@ -159,6 +248,9 @@ impl TrackList {
         services::AppServices::set_list_sort(&key, self.sort, cx);
         self.menu_open = None;
         self.refresh_order();
+        if self.has_more {
+            cx.emit(PlaylistListEvent::Complete);
+        }
         cx.notify();
     }
 
@@ -182,10 +274,13 @@ impl TrackList {
 
     fn row(
         &mut self,
-        index: usize,
+        visible_index: usize,
         columns: TrackTableColumns,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Some(&index) = self.visible.get(visible_index) else {
+            return div().into_any_element();
+        };
         let Some(&default_index) = self.order.get(index) else {
             return div().into_any_element();
         };
@@ -230,10 +325,15 @@ impl TrackList {
         row.into_any_element()
     }
 
-    /// Plays from `index` as displayed: the queue starts as the visible
-    /// ordering of the context, sorted or default alike.
+    /// Starts the selected occurrence in the complete sorted context.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
-        let tracks = self.displayed_tracks();
+        if self.delegate_play {
+            if let Some(&default_index) = self.order.get(index) {
+                cx.emit(PlaylistListEvent::Play(default_index));
+            }
+            return;
+        }
+        let tracks = self.sorted_context_tracks();
         let kind = self.context.kind;
         let uri = self.context.uri.clone();
         self.player.update(cx, |player, cx| {
@@ -295,7 +395,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-play", index), "Play now")
-                    .test_support()
+                    .disabled(is_current_track)
                     .when(is_current_track, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })
@@ -309,6 +409,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-next", index), "Play next")
+                    .disabled(!has_playback_context)
                     .when(!has_playback_context, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })
@@ -324,6 +425,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-queue", index), "Add to queue")
+                    .disabled(!has_playback_context)
                     .when(!has_playback_context, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })
@@ -423,15 +525,24 @@ impl Render for TrackList {
         };
         div()
             .id("track-list")
+            .test_support()
             .flex_1()
             .min_h_0()
             // Grow to the rows, not past them: `flex_1` fills the space a
             // long list needs, and this cap ends a short one at its last row.
-            .max_h(px(track_row::list_height(self.listed.len())))
+            .when(!self.visible.is_empty(), |list| {
+                list.max_h(px(track_row::list_height(self.visible.len())))
+            })
             .flex()
             .flex_col()
             .rounded(px(track_row::LIST_CORNER_RADIUS))
             .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                if this.has_more && !this.paging_busy && !this.more_requested {
+                    this.scrolled_for_more = true;
+                    cx.notify();
+                }
+            }))
             .border_1()
             .border_color(rgb(palette.border))
             .child(track_row::track_list_header(
@@ -440,19 +551,42 @@ impl Render for TrackList {
                 active_sort,
                 actions,
             ))
-            .child(
-                uniform_list(
-                    self.id
-                        .clone()
-                        .expect("show sets the id before first paint"),
-                    self.listed.len(),
-                    cx.processor(move |this, range: Range<usize>, _, cx| {
-                        range.map(|index| this.row(index, columns, cx)).collect()
-                    }),
+            .when(self.visible.is_empty(), |list| {
+                list.child(
+                    components::empty_state(palette, "No tracks match your search")
+                        .border_0()
+                        .rounded(px(0.))
+                        .id("track-list-no-results")
+                        .test_support()
+                        .aria_label("No tracks match your search"),
                 )
-                .flex_1()
-                .min_h_0(),
-            )
+            })
+            .when(!self.visible.is_empty(), |list| {
+                list.child(
+                    uniform_list(
+                        self.id
+                            .clone()
+                            .expect("show sets the id before first paint"),
+                        self.visible.len(),
+                        cx.processor(move |this, range: Range<usize>, _, cx| {
+                            if this.has_more
+                                && !this.paging_busy
+                                && this.scrolled_for_more
+                                && !this.more_requested
+                                && range.end >= this.visible.len()
+                            {
+                                this.more_requested = true;
+                                this.scrolled_for_more = false;
+                                cx.emit(PlaylistListEvent::LoadMore);
+                            }
+                            range.map(|index| this.row(index, columns, cx)).collect()
+                        }),
+                    )
+                    .track_scroll(&self.scroll_handle)
+                    .flex_1()
+                    .min_h_0(),
+                )
+            })
     }
 }
 

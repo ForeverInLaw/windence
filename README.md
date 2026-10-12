@@ -96,6 +96,27 @@ During development you can skip the setup screen by setting the
 $env:SPOTIFY_CLIENT_ID = "your-client-id"; cargo run
 ```
 
+## Validate changes
+
+The UI stack is locked to gpui-kit 0.7.3 and gpui-pre 0.3.9. Run the same
+checks as Windows CI before integrating a change:
+
+```sh
+cargo fmt --all --check
+cargo build --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+```
+
+The [CI workflow](.github/workflows/ci.yml) runs on Windows for every PR and
+integration-branch push. The tests cover controls, keyboard input and layout
+without a GPU snapshot renderer. Pixel rendering is limited to macOS/Metal
+in gpui-kit. Use the [native Windows checklist](docs/windows-validation.md)
+for window controls, OAuth, device audio, SMTC and visual comparisons.
+
+Run the Release workflow manually on a branch to build an installer and ZIP
+as Actions artifacts. Only version tags publish a release.
+
 ## About Upstream
 
 The macOS original lives at

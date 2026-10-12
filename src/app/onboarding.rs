@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::TestSupportExt as _;
 
 use super::icons::CadenceIcon;
 
@@ -49,6 +48,7 @@ pub(super) struct Onboarding {
     session: Entity<session::Session>,
     client_id_input: Entity<InputState>,
     _client_id_subscription: Subscription,
+    _focus_lost_subscription: Subscription,
     focus_handle: FocusHandle,
     /// The last error the surrounding window reported, shown alongside the form.
     last_error: Option<String>,
@@ -72,11 +72,20 @@ impl Onboarding {
                 _ => {}
             },
         );
+        let focus_handle = cx.focus_handle();
+        let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus_handle.clone());
+            window.focus(&target, cx);
+        });
+        window.focus(&focus_handle, cx);
         Self {
             session: services::AppServices::session(cx),
             client_id_input,
             _client_id_subscription: subscription,
-            focus_handle: cx.focus_handle(),
+            _focus_lost_subscription: focus_lost_subscription,
+            focus_handle,
             last_error: None,
         }
     }
@@ -119,12 +128,12 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn page(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn page(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let palette = appearance::Appearance::palette(cx);
         let context_rail = self.onboarding_context_rail(cx);
         let content = match self.session.read(cx).state() {
             ConnectionState::Failed => self.backend_failure(cx),
-            ConnectionState::SetupRequired => self.spotify_setup_form(cx),
+            ConnectionState::SetupRequired => self.spotify_setup_form(window, cx),
             ConnectionState::AuthorizationRequired | ConnectionState::Connecting => {
                 self.spotify_login_form(cx)
             }
@@ -369,7 +378,7 @@ impl Onboarding {
             )
     }
 
-    fn spotify_setup_form(&mut self, cx: &mut Context<Self>) -> Div {
+    fn spotify_setup_form(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = appearance::Appearance::palette(cx);
         let error = self.session.read(cx).setup_error().cloned();
         let has_error = error.is_some();
@@ -480,7 +489,7 @@ impl Onboarding {
                                     .child("Spotify Client ID"),
                             )
                             .child(
-                                div().mt(px(8.)).child(self.spotify_client_id_field(palette)),
+                                div().mt(px(8.)).child(self.spotify_client_id_field(palette, window, cx)),
                             )
                             .when_some(error, |form, error| {
                                 form.child(
@@ -517,7 +526,6 @@ impl Onboarding {
                                             "Log in with Spotify",
                                             true,
                                         )
-                                        .test_support()
                                         .h(px(48.))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.configure(window, cx);
@@ -528,17 +536,10 @@ impl Onboarding {
             )
     }
 
-    fn spotify_client_id_field(&self, palette: CadencePalette) -> Div {
-        div()
+    fn spotify_client_id_field(&self, palette: CadencePalette, window: &Window, cx: &App) -> Div {
+        components::text_field_frame(palette, &self.client_id_input, window, cx)
             .h(px(48.))
             .w_full()
-            .flex()
-            .items_center()
-            .px(px(14.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(rgb(palette.border))
-            .bg(rgb(palette.surface))
             .child(
                 Input::new(&self.client_id_input)
                     .id("client-id-input")
@@ -573,6 +574,7 @@ impl Onboarding {
             .when(!configuration_blocked, |form| {
                 form.child(div().mt(px(32.)).flex().justify_start().child(if connecting {
                     components::pill(appearance::Appearance::palette(cx), "spotify-login-pending", "Log in with Spotify", true)
+                        .disabled(true)
                         .h(px(48.))
                         .gap(px(8.))
                         .cursor_default()
@@ -637,8 +639,8 @@ impl Onboarding {
 }
 
 impl Render for Onboarding {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.page(cx)
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.page(window, cx)
     }
 }
 

@@ -1,45 +1,36 @@
-# Issue tracker: GitHub
+# Issue tracker: Linear
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+New issues, specs and work plans live in [Windence](https://linear.app/ivoxygen/project/windence-447cd3088af5), in the Ivoxygen team (`IVO`) of the redstone workspace. The project identifier is `P-IVO-7`.
 
-## Conventions
+Use the Linear connector for tracker operations. GitHub remains the home of the repository and pull requests at `ForeverInLaw/windence`.
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+## New work and existing references
 
-Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+- Create new tasks in the Windence project. Do not create matching GitHub issues.
+- Keep existing GitHub issue links as historical specs and evidence. Read them with `gh` when a task points to one.
+- This change does not move or close old GitHub issues. A bulk migration is separate work.
+- When a skill says "publish to the issue tracker", create a Linear issue. When it says "fetch the relevant ticket", read the referenced Linear issue or historical GitHub issue.
+
+## Issue conventions
+
+Write a clear problem, the agreed scope and checkable completion criteria. Include source commits or documents when useful. Read existing issues before creating a duplicate.
+
+Use native parent and blocking relations. Set `project` on every new issue. Choose priorities from the work's impact. Set an assignee or due date only when agreed or when claiming work.
+
+The `ready-for-agent` label means the scope is complete. Open blockers still prevent implementation. See [triage roles](triage-labels.md) for the status mapping.
 
 ## Pull requests as a triage surface
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
-
-When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
-
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
-- **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
-- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
-
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either — resolve with `gh pr view 42` and fall back to `gh issue view 42`.
-
-## When a skill says "publish to the issue tracker"
-
-Create a GitHub issue.
-
-## When a skill says "fetch the relevant ticket"
-
-Run `gh issue view <number> --comments`.
+**PRs as a request surface: no.** Review GitHub pull requests with `gh`. Link them to their Linear tasks. Treat an external PR as a feature request only when explicitly asked.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+- **Map:** one parent issue containing decisions, open questions and links to child tasks.
+- **Child:** a separate issue with its native parent relation set to the map.
+- **Dependency:** a native blocking relation. Treat an issue as blocked while any required blocker remains open.
+- **Frontier:** the map's `Todo` children with `ready-for-agent`, no assignee and no open blockers. Take the highest priority first, then the map's stated order.
+- **Claim:** assign the issue to the implementing user and move it to `In Progress`.
+- **Review:** use `In Review` when the change is awaiting review or a required check.
+- **Resolve:** record what changed, validation, relevant PR or commit, and remaining risks. Move to `Done` only when its completion criteria are met. Update the map with any new decision.
 
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies** — the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only — the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+The upstream adaptation plan starts at [IVO-66](https://linear.app/ivoxygen/issue/IVO-66/perenesti-poleznye-izmeneniya-upstream-v-windows-port).

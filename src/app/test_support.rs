@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::{AnyWindowHandle, HeadlessAppContext, WindowHandle};
+mod appearance;
 mod interactions;
+mod lifetimes;
 mod motion;
 mod notices;
 
@@ -12,7 +14,7 @@ pub(super) struct BackendProbe {
 }
 
 pub(super) fn initialize(cx: &mut App, theme: ThemePreference) -> BackendProbe {
-    gpui_kit::init(cx);
+    bootstrap::initialize_ui(cx);
     let (backend, commands, volume) = Backend::isolated();
     services::AppServices::init_isolated(
         cx,

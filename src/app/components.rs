@@ -2,6 +2,7 @@ use super::*;
 
 use super::icons::CadenceIcon;
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::base::Button;
 use gpui_kit::component::IconNamed as _;
 
 /// Shared building blocks for Cadence views.
@@ -12,20 +13,54 @@ use gpui_kit::component::IconNamed as _;
 /// The heart's hit area, which the track list also sizes its column to.
 pub(super) const LIKED_HEART_SIZE: f32 = 36.;
 
-pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
-        .id(id)
-        .tab_stop(true)
+/// Focused controls handle Space through their own click action.
+pub(super) const CONTROL_KEY_CONTEXT: &str = "Control";
+
+pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .key_context(CONTROL_KEY_CONTEXT)
+        .line_height(gpui_kit::phi())
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .focus(|style| {
-            style
-                .border_2()
-                .border_color(rgb(palette.focus_ring))
-                .rounded(px(12.))
-        })
+        .focus_visible(|style| style.shadow(inset_focus_ring(palette.focus_ring)))
+}
+
+/// Filled primary controls use their foreground so the inner stroke clears the fill.
+pub(super) fn filled_button(palette: CadencePalette, id: impl Into<ElementId>) -> Button {
+    button(palette, id).focus_visible(|style| style.shadow(inset_focus_ring(palette.on_accent)))
+}
+
+/// A thin inner stroke keeps focus visible inside clipped rows without moving content.
+pub(super) fn inset_focus_ring(color: u32) -> Vec<gpui_kit::BoxShadow> {
+    vec![
+        gpui_kit::BoxShadow::new(px(0.), px(0.), rgb(color).into())
+            .spread_radius(px(1.))
+            .inset(),
+    ]
+}
+
+/// Text fields show their active editor for pointer and keyboard focus alike.
+pub(super) fn text_field_frame(
+    palette: CadencePalette,
+    input: &Entity<InputState>,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    div()
+        .flex()
+        .items_center()
+        .px(tokens::FIELD_INSET)
+        .rounded(tokens::FIELD_RADIUS)
+        .border_1()
+        .border_color(rgb(if focused {
+            palette.focus_ring
+        } else {
+            palette.border
+        }))
+        .bg(rgb(palette.surface))
 }
 
 /// A pinned row on its way to a new place in the section.
@@ -82,11 +117,7 @@ impl PinDrag {
 
 /// Makes a row of the pinned section both draggable and a place to drop
 /// another one.
-pub(super) fn draggable_pin(
-    row: Stateful<Div>,
-    palette: CadencePalette,
-    drag: PinDrag,
-) -> Stateful<Div> {
+pub(super) fn draggable_pin(row: Button, palette: CadencePalette, drag: PinDrag) -> Button {
     row.on_drag(drag.pin, |dragged, _, _, cx| {
         let dragged = dragged.clone();
         cx.new(|_| dragged)
@@ -129,7 +160,7 @@ pub(super) fn action_notice_banner(
             .min_h(px(48.))
             .px(px(14.))
             .py(px(8.))
-            .rounded(px(14.))
+            .rounded(tokens::CONTAINER_RADIUS)
             .border_color(rgb(border))
             .when(failure, |banner| banner.border_l_4())
             .when(!failure, |banner| banner.border_1())
@@ -138,7 +169,7 @@ pub(super) fn action_notice_banner(
             .flex()
             .items_center()
             .gap(px(10.))
-            .text_size(px(13.))
+            .text_size(tokens::BODY_TEXT)
             .text_color(rgb(palette.text_primary))
             .test_support()
             .aria_label(message.clone())
@@ -150,7 +181,6 @@ pub(super) fn action_notice_banner(
                     CadenceIcon::Close,
                     "Dismiss",
                 )
-                .test_support()
                 .size(px(32.))
                 .on_click(on_dismiss),
             )
@@ -185,19 +215,24 @@ pub(super) fn pill(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     primary: bool,
-) -> Stateful<Div> {
+) -> Button {
     let (background, foreground) = if primary {
         (rgb(palette.text_primary), rgb(palette.surface))
     } else {
         (rgb(palette.control), rgb(palette.text_primary))
     };
-    button(palette, id)
+    let button = if primary {
+        filled_button(palette, id)
+    } else {
+        button(palette, id)
+    };
+    button
         .h(px(PILL_HEIGHT))
         .px(px(16.))
         .rounded(px(40.))
         .bg(background)
         .text_color(foreground)
-        .text_size(px(15.))
+        .text_size(tokens::PILL_TEXT)
         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .hover(move |style| {
             style.bg(if primary {
@@ -212,7 +247,7 @@ pub(super) fn pill(
 /// A link that reads like the copy around it until the pointer or keyboard
 /// focus reaches it, so a line of credits stays quiet at rest.
 ///
-/// Built on the base button with the link role because gpui-kit 0.6.1 cannot
+/// Built on the base button with the link role because gpui-kit 0.7 cannot
 /// observe its base link in tests. The button's neutral line height is set
 /// back to the window's so the text keeps its metrics.
 pub(super) fn link(
@@ -221,6 +256,7 @@ pub(super) fn link(
     window: &Window,
 ) -> gpui_kit::base::Button {
     gpui_kit::base::Button::new(id)
+        .key_context(CONTROL_KEY_CONTEXT)
         .role(gpui_kit::Role::Link)
         .line_height(window.text_style().line_height)
         .cursor_pointer()
@@ -236,7 +272,7 @@ pub(super) fn icon_button(
     id: impl Into<ElementId>,
     name: CadenceIcon,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     icon_button_with(palette, id, name, 17., label)
 }
 
@@ -247,9 +283,9 @@ pub(super) fn icon_button_with(
     name: CadenceIcon,
     size: f32,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
-        .size(px(40.))
+        .size(tokens::CONTROL_SIZE)
         .flex_none()
         .rounded(px(20.))
         .text_color(rgb(palette.text_primary))
@@ -269,7 +305,7 @@ pub(super) fn liked_heart(
     id: impl Into<ElementId>,
     liked: bool,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .size(px(LIKED_HEART_SIZE))
         .flex_none()
@@ -292,7 +328,7 @@ pub(super) fn menu_item(
     name: CadenceIcon,
     label: &'static str,
     destructive: bool,
-) -> Stateful<Div> {
+) -> Button {
     let color = if destructive {
         palette.danger
     } else {
@@ -305,7 +341,7 @@ pub(super) fn menu_item(
         .justify_start()
         .gap(px(10.))
         .rounded(px(8.))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .text_color(rgb(color))
         .hover(|style| style.bg(rgb(palette.control_hover)))
         .child(icon(name, 15., color))
@@ -316,14 +352,14 @@ pub(super) fn text_menu_item(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     label: &'static str,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .w_full()
         .h(px(36.))
         .px(px(12.))
         .justify_start()
         .rounded(px(8.))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .text_color(rgb(palette.text))
         .hover(|style| style.bg(rgb(palette.control_hover)))
         .child(label)
@@ -334,15 +370,15 @@ pub(super) fn settings_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     label: &'static str,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
-        .h(px(40.))
+        .h(tokens::CONTROL_SIZE)
         .px(px(14.))
-        .rounded(px(10.))
+        .rounded(tokens::CONTROL_RADIUS)
         .border_1()
         .border_color(rgb(palette.border))
         .bg(rgb(palette.surface))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .text_color(rgb(palette.text_primary))
         .hover(|style| style.bg(rgb(palette.control_hover)))
@@ -352,16 +388,16 @@ pub(super) fn settings_button(
 pub(super) fn menu_surface(palette: CadencePalette) -> Div {
     div()
         .occlude()
-        .w(px(220.))
+        .w(tokens::MENU_WIDTH)
         .p(px(6.))
-        .rounded(px(14.))
+        .rounded(tokens::CONTAINER_RADIUS)
         .bg(rgb(palette.surface_raised))
         .border_1()
         .border_color(rgb(palette.border))
         .shadow_lg()
         .flex()
         .flex_col()
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
 }
 
 /// A page subtitle that reports a background refresh without replacing the
@@ -377,7 +413,7 @@ pub(super) fn revalidating_detail(detail: impl Into<String>, refreshing: bool) -
 
 pub(super) fn section_label(palette: CadencePalette, text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(rgb(palette.text_muted))
         .child(text.into())
@@ -452,8 +488,8 @@ pub(super) fn initials(name: &str) -> String {
 /// The large title a page opens with.
 pub(super) fn page_title(palette: CadencePalette, title: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(40.))
-        .line_height(px(44.))
+        .text_size(tokens::PAGE_TITLE_TEXT)
+        .line_height(tokens::PAGE_TITLE_LINE_HEIGHT)
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(rgb(palette.text_primary))
         .child(title.into())

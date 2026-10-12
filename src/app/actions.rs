@@ -1,14 +1,6 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn on_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-    }
-
-    pub(super) fn on_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev(cx);
-    }
-
     pub(super) fn open_search(
         &mut self,
         _: &OpenSearch,
@@ -18,6 +10,18 @@ impl Workspace {
         self.toolbar
             .update(cx, |toolbar, cx| toolbar.focus_search(window, cx));
         self.navigate(Route::Search, cx);
+    }
+
+    pub(super) fn open_playlist_search(
+        &mut self,
+        _: &OpenPlaylistSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.router.route() == Route::Playlist {
+            self.playlist
+                .update(cx, |page, cx| page.focus_search(window, cx));
+        }
     }
 
     pub(super) fn close_window(
@@ -180,7 +184,7 @@ impl Workspace {
             .update(cx, |toolbar, cx| toolbar.clear_search(window, cx));
         self.home.update(cx, |page, cx| page.clear(cx));
         self.search.update(cx, |page, cx| page.clear(cx));
-        self.playlist.update(cx, |page, cx| page.clear(cx));
+        self.playlist.update(cx, |page, cx| page.clear(window, cx));
         self.artist.update(cx, |page, cx| page.clear(cx));
         self.album.update(cx, |page, cx| page.clear(cx));
     }
@@ -196,8 +200,14 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn load_playlist(&mut self, playlist: model::Playlist, cx: &mut Context<Self>) {
-        self.playlist.update(cx, |page, cx| page.open(playlist, cx));
+    pub(super) fn load_playlist(
+        &mut self,
+        playlist: model::Playlist,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.playlist
+            .update(cx, |page, cx| page.open(playlist, window, cx));
     }
 
     pub(super) fn submit_search(&mut self, cx: &mut Context<Self>) {
@@ -299,6 +309,13 @@ impl Workspace {
     /// listener ended up, whichever way the route changed.
     fn settle_navigation(&mut self, cx: &mut Context<Self>) {
         let route = self.router.route();
+        self.playlist.update(cx, |page, cx| {
+            if route == Route::Playlist {
+                page.resume(cx);
+            } else {
+                page.suspend(cx);
+            }
+        });
         let pinned_origin = self.router.pinned_origin();
         // The playlist page is shared by every playlist; only DJ X's row in
         // the sidebar highlights on it.
@@ -320,8 +337,9 @@ impl Workspace {
 
     pub(super) fn handle_page_event(
         &mut self,
-        _: Entity<impl EventEmitter<page::PageEvent> + 'static>,
+        _: &Entity<impl EventEmitter<page::PageEvent> + 'static>,
         event: &page::PageEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let origin = self.router.route();
@@ -332,7 +350,7 @@ impl Workspace {
                 self.show_notice(message.clone(), *severity, cx);
             }
             page::PageEvent::OpenPlaylist(playlist) => {
-                self.load_playlist(playlist.clone(), cx);
+                self.load_playlist(playlist.clone(), window, cx);
                 self.open_playlist(origin, cx);
             }
             page::PageEvent::OpenArtist(artist) => self.open_artist(artist.clone(), origin, cx),

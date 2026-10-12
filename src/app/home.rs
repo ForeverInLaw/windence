@@ -359,6 +359,7 @@ impl HomePage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         components::button(palette, ("home-shelf-more", shelf))
+            .disabled(loading)
             .flex_none()
             .flex_col()
             .gap(px(8.))

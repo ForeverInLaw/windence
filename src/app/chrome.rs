@@ -17,6 +17,7 @@ pub(super) enum ToolbarEvent {
 /// The bar above the page: search on the left, account on the right.
 pub(super) struct Toolbar {
     search_input: Entity<InputState>,
+    account_focus: FocusHandle,
     menu_open: bool,
     session: Entity<session::Session>,
     player: Entity<player::Player>,
@@ -51,6 +52,7 @@ impl Toolbar {
         );
         Self {
             search_input,
+            account_focus: cx.focus_handle(),
             menu_open: false,
             session: services::AppServices::session(cx),
             player: services::AppServices::player(cx),
@@ -103,20 +105,19 @@ impl Toolbar {
         }
     }
 
-    fn search_field(&self, palette: CadencePalette, compact: bool) -> impl IntoElement {
-        div()
+    fn search_field(
+        &self,
+        palette: CadencePalette,
+        compact: bool,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement {
+        components::text_field_frame(palette, &self.search_input, window, cx)
             .id("search-field")
             .w(px(if compact { 340. } else { 520. }))
             .h(px(40.))
-            .flex()
-            .items_center()
             .justify_start()
             .gap(px(10.))
-            .px(px(14.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(rgb(palette.border))
-            .bg(rgb(palette.surface))
             .text_size(px(14.))
             .text_color(rgb(palette.text_muted))
             .child(components::icon(
@@ -255,8 +256,9 @@ impl Toolbar {
                             "Settings",
                             false,
                         )
-                        .on_click(cx.listener(|_, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
                             cx.stop_propagation();
+                            window.focus(&this.account_focus, cx);
                             cx.emit(ToolbarEvent::OpenSettings);
                         })),
                     ),
@@ -282,7 +284,7 @@ impl Toolbar {
 }
 
 impl Render for Toolbar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let compact = uses_compact_content_layout(self.content_width);
         let profile_name = self.profile_name(cx);
@@ -333,7 +335,7 @@ impl Render for Toolbar {
                         )
                     })
                     .when(!showing_settings, |group| {
-                        group.child(self.search_field(palette, compact))
+                        group.child(self.search_field(palette, compact, window, cx))
                     }),
             )
             .when(cfg!(target_os = "windows"), |bar| {
@@ -351,9 +353,12 @@ impl Render for Toolbar {
                     .relative()
                     .child(
                         components::button(palette, "account")
+                            .track_focus(&self.account_focus)
+                            .relative()
                             .size(px(40.))
                             .rounded(px(40.))
                             .overflow_hidden()
+                            .focus_visible(|style| style.shadow(Vec::new()))
                             .text_color(rgb(palette.on_accent))
                             .text_size(px(12.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
@@ -361,6 +366,21 @@ impl Render for Toolbar {
                                 profile_artwork,
                                 components::initials(&profile_name),
                             ))
+                            // The avatar fills its parent, so its focus line paints last.
+                            .when(
+                                self.account_focus.is_focused(window)
+                                    && window.last_input_was_keyboard(),
+                                |button| {
+                                    button.child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .rounded(px(40.))
+                                            .border_1()
+                                            .border_color(rgb(palette.focus_ring)),
+                                    )
+                                },
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.menu_open = !this.menu_open;
                                 if this.menu_open {
@@ -444,6 +464,11 @@ pub(super) fn spotify_app_change_confirmation(
                         )
                         .child(
                             components::button(palette, "confirm-spotify-app-change")
+                                .focus_visible(|style| {
+                                    style.shadow(components::inset_focus_ring(
+                                        palette.on_destructive,
+                                    ))
+                                })
                                 .h(px(40.))
                                 .px(px(14.))
                                 .rounded(px(10.))
