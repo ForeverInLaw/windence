@@ -176,6 +176,28 @@ impl Fixture {
         }
     }
 
+    fn fill_command_queue(&mut self) -> usize {
+        self.update(|_, cx| {
+            let backend = services::AppServices::backend(cx);
+            let mut filled = 0;
+            while backend.send(BackendCommand::Pause) {
+                filled += 1;
+            }
+            assert!(filled > 0, "the real bounded command channel must be full");
+            filled
+        })
+    }
+
+    fn drain_filled_commands(&mut self, filled: usize) {
+        for _ in 0..filled {
+            assert!(matches!(
+                self.backend.commands.try_recv(),
+                Ok(BackendCommand::Pause)
+            ));
+        }
+        self.update(|_, _| {});
+    }
+
     fn start_track(&mut self, current: model::Track) {
         self.playback_event(BackendEvent::PlaybackContext {
             current,
@@ -315,32 +337,63 @@ fn listening_history_waits_until_the_loaded_track_plays() {
 fn confirmed_history_survives_a_full_backend_queue_without_another_playing_event() {
     let mut fixture = Fixture::new(false);
     fixture.start_track(track(0));
-    let filled = fixture.update(|_, cx| {
-        let backend = services::AppServices::backend(cx);
-        let mut filled = 0;
-        while backend.send(BackendCommand::Pause) {
-            filled += 1;
-        }
-        filled
-    });
-    assert!(filled > 0, "the real bounded command channel must be full");
+    let filled = fixture.fill_command_queue();
 
     fixture.playback_event(BackendEvent::Playing {
         spotify_uri: track(0).spotify_uri.unwrap(),
     });
-    for _ in 0..filled {
-        assert!(matches!(
-            fixture.backend.commands.try_recv(),
-            Ok(BackendCommand::Pause)
-        ));
-    }
-    fixture.update(|_, _| {});
+    fixture.drain_filled_commands(filled);
 
     assert_eq!(fixture.history_entry(), track(0));
     fixture.no_commands();
     fixture.playback_event(BackendEvent::Playing {
         spotify_uri: track(0).spotify_uri.unwrap(),
     });
+    fixture.no_commands();
+}
+
+#[test]
+fn blocked_history_keeps_confirmed_tracks_through_context_end_and_fresh_replays() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    let filled = fixture.fill_command_queue();
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+
+    fixture.start_track(track(1));
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(1).spotify_uri.unwrap(),
+    });
+    // A fresh play of the same URI is distinct; its queue edit and repeated
+    // Playing confirmation are not additional listens.
+    fixture.start_track(track(1));
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(1).spotify_uri.unwrap(),
+    });
+    fixture.playback_event(BackendEvent::PlaybackContext {
+        current: track(1),
+        next: vec![track(2)],
+        injected: vec![false; 2],
+        new_play: false,
+    });
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(1).spotify_uri.unwrap(),
+    });
+    fixture.playback_event(BackendEvent::QueueEnded);
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.clear(cx));
+    });
+    fixture.drain_filled_commands(filled);
+
+    assert_eq!(
+        [
+            fixture.history_entry(),
+            fixture.history_entry(),
+            fixture.history_entry(),
+        ],
+        [track(0), track(1), track(1)],
+    );
     fixture.no_commands();
 }
 

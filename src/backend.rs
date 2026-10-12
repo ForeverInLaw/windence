@@ -5023,6 +5023,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn waiting_confirmed_history_follows_the_replacement_worker() {
+        for close_old_receiver in [false, true] {
+            let (original, mut old_commands, _) = super::Backend::isolated();
+            let handle = original.handle();
+            while handle.send(BackendCommand::Pause) {}
+            let played = track();
+            let delivery = handle.mark_played(played.clone());
+            futures::pin_mut!(delivery);
+            assert!(futures::poll!(&mut delivery).is_pending());
+
+            let (replacement, mut new_commands, _) = super::Backend::isolated();
+            let senders = replacement
+                .handle
+                .senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            handle.redirect(super::Senders {
+                commands: senders.commands.clone(),
+                controls: senders.controls.clone(),
+                volume: senders.volume.clone(),
+            });
+            drop(senders);
+            // A restart closes the previous worker's receiver. Capacity might
+            // also become available just before that close; neither may send
+            // confirmed history to the replaced worker.
+            if close_old_receiver {
+                old_commands.close();
+            } else {
+                assert!(matches!(old_commands.try_recv(), Ok(BackendCommand::Pause)));
+            }
+
+            assert!(delivery.await);
+            assert!(matches!(
+                new_commands.try_recv(),
+                Ok(BackendCommand::MarkPlayed(track)) if track == played
+            ));
+            assert!(new_commands.try_recv().is_err());
+            while let Ok(command) = old_commands.try_recv() {
+                assert!(matches!(command, BackendCommand::Pause));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_history_reports_a_stopped_worker_without_waiting_forever() {
+        let (backend, commands, _) = super::Backend::isolated();
+        drop(commands);
+        assert!(!backend.handle().mark_played(track()).await);
+    }
+
+    #[tokio::test]
     async fn confirmed_playback_updates_recent_history_through_the_backend_command() {
         let store = BlockingStore::from_store(Store::in_memory().unwrap());
         store.add_history(track()).await.unwrap();
