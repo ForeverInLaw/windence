@@ -31,7 +31,7 @@ Make install mode explicit at packaging time. Add a marker to installer builds o
 
 Keep distribution in `ForeverInLaw/windence` GitHub Releases. The [current workflow](../../.github/workflows/release.yml) publishes only version tags, marks suffix tags as prereleases, and leaves manual runs artifact-only. Preserve that policy and the tag/version check. Publish a Windows x64 appcast as an asset of each stable release. Its installer URL must name that exact versioned asset. The stable feed can use GitHub's latest-release asset URL, so no website or feed service is needed. [GitHub release asset links](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases), [appcast format](https://winsparkle.org/guides/publishing-updates/).
 
-V1 checks stable releases only. Preview builds may open the release page for manual selection. They must not install an older stable release automatically. Automatic preview updates and a channel switch are extra scope. WinSparkle does not implement Sparkle's `sparkle:channel` extension. Separate feeds are needed if that feature is added. [Open channel request](https://github.com/vslavik/winsparkle/issues/248), [pinned parser](https://github.com/vslavik/winsparkle/blob/v0.9.4/src/appcast.cpp).
+V1 checks stable releases only. Preview builds may open the release page for manual selection. They must not install an older stable release automatically. Automatic preview updates and a channel switch are extra scope. WinSparkle does not implement Sparkle's `sparkle:channel` extension. Separate feeds are needed if that feature is added. [Open channel request](https://github.com/vslavik/winsparkle/issues/248), [pinned parser](https://raw.githubusercontent.com/vslavik/winsparkle/v0.9.4/src/appcast.cpp).
 
 Generate a dedicated EdDSA key and embed its public key in Cadence. Sign the final installer after all packaging and Authenticode steps. Include its signature, length, version, Windows x64 platform, and minimum Windows version in the appcast. Stop if public-key setup fails. WinSparkle's compatibility path otherwise accepts unsigned downloads. A SHA256 sidecar or GitHub provenance alone does not replace this publisher check. [Signing](https://winsparkle.org/guides/getting-started/), [publishing fields](https://winsparkle.org/guides/publishing-updates/), [pinned download verification](https://github.com/vslavik/winsparkle/blob/v0.9.4/src/updatedownloader.cpp).
 
@@ -41,7 +41,7 @@ The current release has SHA256 sidecars and GitHub build provenance but no confi
 
 ## User flow and state
 
-Installed users choose "Check for updates" in Settings. WinSparkle shows the available version and release notes. Only their "Install update" action downloads and launches the signed installer. Disable automatic checking explicitly before initialization. V1 has no background download or installation. [Manual checking API](https://github.com/vslavik/winsparkle/blob/v0.9.4/include/winsparkle.h), [update flow](https://winsparkle.org/appendix/user-experience/).
+Installed users choose "Check for updates" in Settings. WinSparkle shows the available version and release notes. Only their "Install update" action downloads and launches the signed installer. Disable automatic checking explicitly before initialization. V1 has no background download or installation. [Manual checking API](https://raw.githubusercontent.com/vslavik/winsparkle/v0.9.4/include/winsparkle.h), [update flow](https://winsparkle.org/appendix/user-experience/).
 
 Portable users choose "Download portable update". Open the stable release page and show the close, extract, and launch instructions above. A preview release page may be opened explicitly. Files downloaded through the browser are installed manually; Cadence does not verify or apply them. Retain the existing checksum/provenance instructions and signed executable distribution.
 
@@ -59,7 +59,7 @@ Velopack changes installed paths and replaces its `current` directory for update
 
 Its pinned Rust download code authenticates no feed signature. It checks a package's length and feed hash, skips verification of an existing cached package, and extracts a new updater during download. A future adoption needs signed metadata before parsing/download handling and cache revalidation. [Download source](https://github.com/velopack/velopack/blob/1.2.161/src/lib-rust/src/manager.rs).
 
-Its Windows apply code attempts elevation for unwritable folders. Failure after moving the old folder aside can leave the install broken. A future adoption needs native failure tests and a repair plan. These costs outweigh its portable automation benefit for the present scope. [Windows apply source](https://github.com/velopack/velopack/blob/1.2.161/src/bins/src/commands/apply_windows_impl.rs).
+Its Windows apply code attempts elevation for unwritable folders. Failure after moving the old folder aside can leave the install broken. A future adoption needs native failure tests and a repair plan. These costs outweigh its portable automation benefit for the present scope. [Windows apply source](https://raw.githubusercontent.com/velopack/velopack/1.2.161/src/bins/src/commands/apply_windows_impl.rs).
 
 ## Owner decisions before implementation
 
