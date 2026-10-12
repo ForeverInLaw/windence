@@ -96,6 +96,11 @@ to `dist/development/`. The installer is per-user, so it never asks for an admin
 and it uninstalls from Settings like any other app. Inno Setup builds it; the
 zip is written with or without it.
 
+The current `windence-windows-x64` Actions artifact contains
+`Windence-<version>-windows-x64.zip` and its setup EXE. Upgrading with the
+installer replaces the old Cadence executable and shortcuts. It keeps the
+existing installation directory and profile.
+
 These are unsigned development artifacts. Windows can show a publisher warning.
 
 ## Run From Source

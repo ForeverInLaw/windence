@@ -76,7 +76,7 @@ public static class CadenceCaptureNative {
     # BaseDirs uses the Windows known folder, not an APPDATA env override.
     $appData = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Cadence'
     if (Test-Path $appData) { throw "Expected a clean runner profile; Cadence data already exists at $appData." }
-    if (Get-Process -Name Cadence -ErrorAction SilentlyContinue) { throw 'Another Cadence process is already running.' }
+    if (Get-Process -Name Windence,Cadence -ErrorAction SilentlyContinue) { throw 'Another player process is already running.' }
     $env:SPOTIFY_CLIENT_ID = $null
 
     $metadataText = & gh run view $BaselineRunId --repo $env:GITHUB_REPOSITORY --json conclusion,headSha,workflowName
@@ -88,17 +88,19 @@ public static class CadenceCaptureNative {
     $report.baseline_commit = $metadata.headSha
     $buildRoot = Join-Path $env:RUNNER_TEMP "cadence-capture-builds-$env:GITHUB_RUN_ID"
     $download = Join-Path $buildRoot 'download'
-    & gh run download $BaselineRunId --repo $env:GITHUB_REPOSITORY --name cadence-windows-x64 --dir $download
+    # Baselines may predate the public rename from Cadence to Windence.
+    & gh run download $BaselineRunId --repo $env:GITHUB_REPOSITORY --pattern '*-windows-x64' --dir $download
     if ($LASTEXITCODE -ne 0) { throw 'Could not download the complete baseline artifact.' }
-    $baselineZip = @(Get-ChildItem $download -File -Filter 'Cadence-*-windows-x64.zip')
+    $baselineZip = @(Get-ChildItem $download -Recurse -File -Filter '*-windows-x64.zip')
     if ($baselineZip.Count -ne 1) { throw 'Expected one baseline Windows ZIP.' }
     $builds = [ordered]@{ baseline = $baselineZip[0].FullName; final = (Resolve-Path $FinalZip).Path }
     $executables = @{}
     foreach ($name in $builds.Keys) {
         $destination = Join-Path $buildRoot $name
         Expand-Archive -LiteralPath $builds[$name] -DestinationPath $destination
-        $exe = @(Get-ChildItem $destination -Recurse -File -Filter 'Cadence.exe')
-        if ($exe.Count -ne 1) { throw "Expected one Cadence.exe in the $name ZIP." }
+        $exe = @(Get-ChildItem $destination -Recurse -File -Filter '*.exe' |
+            Where-Object { $_.Name -in @('Windence.exe', 'Cadence.exe') })
+        if ($exe.Count -ne 1) { throw "Expected one player executable in the $name ZIP." }
         $executables[$name] = $exe[0].FullName
     }
 

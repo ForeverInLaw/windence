@@ -65,7 +65,7 @@ scripts\package-msix.ps1
 ```
 
 The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
-`-ExpectedVersion v1.3.0` checks Cargo against a release tag. MakeAppx performs
+`-ExpectedVersion v1.3.1` checks Cargo against a release tag. MakeAppx performs
 its semantic validation; it does not replace certification or native checks.
 Logo PNGs are committed. Regenerate them with the existing
 `python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
@@ -143,6 +143,10 @@ publishes executable downloads to GitHub Releases.
 [draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs).
 
 ## Verified first package
+
+This 1.3.0 package is historical evidence. It still has a Cadence sidebar label
+and its development installer uses the old name. Use the corrected 1.3.1 build
+for screenshots and replace the draft's package before certification.
 
 Source commit `af634a5`, checked on 2026-10-12:
 

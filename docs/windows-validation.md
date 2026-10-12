@@ -66,13 +66,19 @@ the PR for Windows CI results. The packaged build above also predates this
 feature. SQLite schema 13 keeps existing preferences and playback, but older
 builds cannot open the upgraded profile.
 
-The manual Release workflow builds `cadence-windows-x64` artifacts without
+The manual Release workflow builds `windence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
 ZIP includes required runtime DLLs; copying only the EXE is insufficient.
 
-Quit the currently installed Cadence with Ctrl+Q before opening another
+Quit the currently installed player with Ctrl+Q before opening another
 build. Otherwise single-instance activation can bring forward the old
 executable. Keep the same account and preferences for the comparison.
+
+For the public rename, check the sidebar label, window title, Task Manager,
+Start shortcut and installed-app name. All should show Windence. An Inno
+upgrade keeps the previous installation directory but removes its old
+`Cadence.exe` and generated shortcuts. Authentication and profile data must
+survive. Older comparison artifacts keep their original Cadence filenames.
 
 ## Functional checks
 

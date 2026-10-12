@@ -97,8 +97,8 @@ jobs:
       - name: Upload the build
         uses: actions/upload-artifact@v7
         with:
-          name: cadence-windows-x64
-          path: dist/development/Cadence-*
+          name: windence-windows-x64
+          path: dist/development/Windence-*
           if-no-files-found: error
           retention-days: 14
 
@@ -111,7 +111,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
         run: |
-          $zip = @(Get-ChildItem dist\development -File -Filter 'Cadence-*-windows-x64.zip')
+          $zip = @(Get-ChildItem dist\development -File -Filter 'Windence-*-windows-x64.zip')
           if ($zip.Count -ne 1) { throw 'Expected one packaged Windows ZIP' }
           powershell.exe -NoProfile -File scripts\capture-windows-ui.ps1 `
             -BaselineRunId $env:BASELINE_RUN_ID -FinalZip $zip[0].FullName `

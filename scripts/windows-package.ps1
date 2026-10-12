@@ -20,6 +20,11 @@ function Copy-WindowsPayload {
     param([string]$Root, [string]$Directory, [string]$ExecutableName)
     $binary = Join-Path $Root 'target\release\spotify-gpui-client.exe'
     if (-not (Test-Path $binary)) { throw "no release binary at $binary" }
+    $info = (Get-Item $binary).VersionInfo
+    if ($info.ProductName -ne 'Windence' -or $info.FileDescription -ne 'Windence' -or
+        $info.OriginalFilename -ne 'Windence.exe') {
+        throw 'Release executable has stale product metadata; rebuild before packaging'
+    }
     New-Item -ItemType Directory -Force -Path $Directory | Out-Null
 
     # App-local deployment uses the x64 runtime supplied by Visual Studio.

@@ -38,8 +38,8 @@ pub(super) fn run() {
         // closing the last one would leave no way to quit.
         cx.set_menus(vec![
             gpui_kit::Menu {
-                name: "Cadence".into(),
-                items: vec![gpui_kit::MenuItem::action("Quit Cadence", Quit)],
+                name: "Windence".into(),
+                items: vec![gpui_kit::MenuItem::action("Quit Windence", Quit)],
                 disabled: false,
             },
             gpui_kit::Menu {
