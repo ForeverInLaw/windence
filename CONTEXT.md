@@ -68,6 +68,10 @@ _Avoid_: release date (the album's), liked at
 The track order Spotify reports for a context: playlists keep their curated sequence, liked songs their like sequence. Every sort view cycles back to it, and playback never edits it.
 _Avoid_: original position, custom order
 
+**Playlist Cache**:
+A saved prefix of one playlist version, scoped to the verified Spotify account. It keeps duplicate occurrences and Date Added. Its next offset counts every Spotify item, including entries the app cannot display. Browsing extends this prefix; search, sorting and playback obtain the full context.
+_Avoid_: queue cache, Library Index
+
 **Rootlist**:
 The ordered set of playlists and folders Spotify holds for an account, read over the internal protocol. It carries the order, the folder tree and each entry's Date Added, but no names, artwork or owners — those keep coming from the Web API and are joined by uri.
 _Avoid_: library, playlist list (that is what the rootlist feeds)

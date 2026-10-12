@@ -31,6 +31,14 @@ Linux passed 340 tests, strict Clippy and formatting on that code. See
 the PR checks for Windows CI. The packaged `6ec7270` build above predates
 these fixes.
 
+[IVO-78](https://linear.app/ivoxygen/issue/IVO-78/keshirovat-plejlisty-i-zagruzhat-treki-po-stranicam)
+adds persistent playlist prefixes and paging in the same PR. Linux passed
+373 tests, strict all-target Clippy and formatting. The playlist checks below
+cover cold and cached opens, account changes and full-context actions. See
+the PR for Windows CI results. The packaged build above also predates this
+feature. SQLite schema 13 keeps existing preferences and playback, but older
+builds cannot open the upgraded profile.
+
 The manual Release workflow builds `cadence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
 ZIP includes required runtime DLLs; copying only the EXE is insufficient.
@@ -62,6 +70,22 @@ executable. Keep the same account and preferences for the comparison.
 - [ ] Copy the redirect URI in onboarding. Its confirmation disappears
       after four seconds without mouse or keyboard input. Timed
       confirmations in the main window also disappear without input.
+- [ ] Open a large uncached playlist without a saved sort. Only its first
+      50 raw items load. Scroll to the end: another page loads once. Load more
+      also works when a page has no displayable rows. Reopen the playlist and
+      restart the app: saved rows appear and paging resumes from the raw
+      offset, including local tracks and episodes that were hidden.
+- [ ] Change a playlist in Spotify, then reopen it or start playback.
+      The new version replaces the old prefix without mixing rows. A selected
+      row from an old version does not start a different song. Repeated songs
+      keep their own dates and positions. Search, sort, Play and Shuffle wait
+      for the full context; a failed page keeps the prefix and offers Retry.
+- [ ] Leave a playlist while it loads. Returning uses its saved prefix.
+      Sign out during loading and sign in to another account. The earlier
+      account's rows never appear and its queued writes cannot refill the cache.
+- [ ] Use different accounts for the library and playback sign-in steps.
+      A curated playlist asks for the same account instead of showing or
+      caching the other account's data.
 - [ ] Drag progress within and outside its bounds. Release seeks once.
       Escape and changing the track cancel the gesture. Seek, pause, close
       and reopen without restoring an older playback position. A delayed
@@ -111,6 +135,8 @@ data. It uses an interactive desktop and, if needed, attempts the built-in
 display-resolution command once, then restores the original settings.
 The optional step can fail while packaging succeeds; `report.json` gives
 the capture result. It never publishes a release from a manual run.
+Each capture uses a fresh profile so an upgraded SQLite schema cannot stop
+the older baseline build from opening.
 
 ## Sources
 
