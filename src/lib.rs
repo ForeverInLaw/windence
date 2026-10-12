@@ -12,6 +12,7 @@ mod oauth_callback;
 mod oauth_page;
 pub mod pins;
 pub mod playback;
+pub mod playlist;
 pub mod proto;
 pub mod proto_convert;
 pub mod shuffle;
