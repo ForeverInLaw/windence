@@ -139,6 +139,30 @@ impl Fixture {
         }
     }
 
+    fn playback_event(&mut self, event: BackendEvent) {
+        self.update(|_, cx| {
+            services::AppServices::player(cx).update(cx, |player, cx| {
+                player.handle_backend_event(event, cx);
+            });
+        });
+    }
+
+    fn history_entry(&mut self) -> model::Track {
+        match self.backend.commands.try_recv().expect("history entry") {
+            BackendCommand::MarkPlayed(played) => played,
+            other => panic!("expected a history entry, got {other:?}"),
+        }
+    }
+
+    fn start_track(&mut self, current: model::Track) {
+        self.playback_event(BackendEvent::PlaybackContext {
+            current,
+            next: vec![track(1)],
+            injected: vec![false; 2],
+            new_play: true,
+        });
+    }
+
     fn requested_album(&mut self) -> String {
         match self.backend.commands.try_recv().expect("album request") {
             BackendCommand::LoadAlbum { source_id, .. } => source_id,
@@ -194,6 +218,153 @@ fn credited_track() -> model::Track {
         artwork_url: None,
     });
     track
+}
+
+#[test]
+fn listening_history_waits_until_the_loaded_track_plays() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    fixture.no_commands();
+
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+
+    assert_eq!(fixture.history_entry(), track(0));
+    fixture.no_commands();
+}
+
+#[test]
+fn starting_the_same_song_again_refreshes_its_history() {
+    let mut fixture = Fixture::new(false);
+    let playing = || BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    };
+    fixture.start_track(track(0));
+    fixture.playback_event(playing());
+    assert_eq!(fixture.history_entry(), track(0));
+
+    fixture.playback_event(BackendEvent::PlaybackContext {
+        current: track(0),
+        next: vec![track(1)],
+        injected: vec![false; 2],
+        new_play: true,
+    });
+    fixture.no_commands();
+    fixture.playback_event(playing());
+
+    assert_eq!(fixture.history_entry(), track(0));
+    fixture.no_commands();
+}
+
+#[test]
+fn a_paused_restore_waits_for_resume_before_recording_history() {
+    let mut fixture = Fixture::new(false);
+    let playing = || BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    };
+    fixture.playback_event(BackendEvent::PlaybackReconnecting);
+    fixture.playback_event(BackendEvent::PlaybackReconnected);
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::RestorePlayback { playing: false, .. })
+    ));
+    fixture.playback_event(playing());
+    fixture.no_commands();
+
+    fixture.playback_event(BackendEvent::PlaybackRestored {
+        position_ms: 60_000,
+        playing: false,
+    });
+    fixture.playback_event(playing());
+    fixture.no_commands();
+
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.toggle(cx));
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Resume)
+    ));
+    fixture.playback_event(playing());
+    assert_eq!(fixture.history_entry(), track(0));
+    fixture.no_commands();
+}
+
+#[test]
+fn unavailable_tracks_stay_out_of_history_and_successful_autoskips_are_recorded() {
+    for station in [false, true] {
+        let mut fixture = Fixture::new(false);
+        fixture.playback_event(BackendEvent::StationChanged(station));
+        fixture.start_track(track(0));
+        fixture.no_commands();
+        fixture.playback_event(BackendEvent::TrackFailed {
+            spotify_uri: track(0).spotify_uri.unwrap(),
+            error: "Spotify cannot play this track".into(),
+        });
+        fixture.playback_event(BackendEvent::Playing {
+            spotify_uri: track(0).spotify_uri.unwrap(),
+        });
+        fixture.no_commands();
+
+        fixture.start_track(track(1));
+        fixture.playback_event(BackendEvent::Playing {
+            spotify_uri: track(0).spotify_uri.unwrap(),
+        });
+        fixture.no_commands();
+        fixture.playback_event(BackendEvent::Playing {
+            spotify_uri: track(1).spotify_uri.unwrap(),
+        });
+        assert_eq!(fixture.history_entry(), track(1));
+        fixture.no_commands();
+    }
+}
+
+#[test]
+fn pause_resume_reconnect_and_queue_edits_keep_one_history_entry_per_play() {
+    let mut fixture = Fixture::new(false);
+    let playing = || BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    };
+    fixture.start_track(track(0));
+    fixture.playback_event(playing());
+    assert_eq!(fixture.history_entry(), track(0));
+    fixture.playback_event(playing());
+    fixture.no_commands();
+
+    fixture.playback_event(BackendEvent::Paused {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.toggle(cx));
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Resume)
+    ));
+    fixture.playback_event(playing());
+    fixture.no_commands();
+
+    fixture.playback_event(BackendEvent::PlaybackReconnecting);
+    fixture.playback_event(BackendEvent::PlaybackReconnected);
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::RestorePlayback { playing: true, .. })
+    ));
+    fixture.playback_event(playing());
+    fixture.no_commands();
+    fixture.playback_event(BackendEvent::PlaybackRestored {
+        position_ms: 0,
+        playing: true,
+    });
+    fixture.playback_event(BackendEvent::PlaybackContext {
+        current: track(0),
+        next: vec![track(2), track(1)],
+        injected: vec![false; 3],
+        new_play: false,
+    });
+    fixture.playback_event(playing());
+    fixture.no_commands();
 }
 
 #[test]

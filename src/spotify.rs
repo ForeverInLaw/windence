@@ -7,7 +7,7 @@ use rspotify::{
     AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     model::{
         AlbumId, AlbumType, ArtistId, FullAlbum, FullArtist, FullTrack, Id, Image, LibraryId,
-        PlayableItem, PlaylistId, SavedTrack, SearchResult, SearchType, SimplifiedAlbum,
+        Market, PlayableItem, PlaylistId, SavedTrack, SearchResult, SearchType, SimplifiedAlbum,
         SimplifiedArtist, SimplifiedPlaylist, SimplifiedTrack, TrackId,
     },
     prelude::{BaseClient, OAuthClient},
@@ -626,12 +626,14 @@ impl Spotify {
         Ok((album_model, tracks))
     }
 
-    /// Resolves URIs one track at a time; Spotify removed the batch tracks
-    /// endpoint in March 2026. Lookups overlap a few at a time and a missing
-    /// or blocked track is skipped. A 429 trips the gate and returns what
-    /// resolved so far: a radio that starts with 29 of 30 tracks beats none.
-    /// Auth failure is fatal: nothing later can succeed.
-    pub async fn resolve_track_uris(&self, uris: &[String]) -> Result<Vec<Track>> {
+    /// Resolves recommendation URIs for the listener's market. Spotify removed
+    /// the batch tracks endpoint in March 2026, so lookups overlap a few at a
+    /// time. Missing or blocked tracks are skipped. A 429 trips the gate and
+    /// returns partial results; an auth failure is fatal.
+    ///
+    /// `is_playable` may be absent when no relinking is needed. Only an
+    /// explicit false rejects a track. Saved contexts use their own loaders.
+    pub async fn resolve_playable_track_uris(&self, uris: &[String]) -> Result<Vec<Track>> {
         self.gated(async {
             let ids: Vec<TrackId<'static>> = uris
                 .iter()
@@ -640,7 +642,9 @@ impl Spotify {
                 .collect();
             let mut tracks = Vec::with_capacity(ids.len());
             'batches: for batch in ids.chunks(RESOLVE_CONCURRENCY) {
-                let lookups = batch.iter().map(|id| self.client.track(id.clone(), None));
+                let lookups = batch
+                    .iter()
+                    .map(|id| self.client.track(id.clone(), Some(Market::FromToken)));
                 for result in futures::future::join_all(lookups).await {
                     let track = match result {
                         Ok(track) => track,
@@ -915,6 +919,277 @@ mod tests {
         classify_error, resolve_configuration, valid_client_id,
     };
     use rspotify::model::Image;
+
+    /// A local Spotify endpoint. The real rspotify client sends and decodes
+    /// each request, so these tests cover its market and error contract.
+    struct SpotifyApi {
+        spotify: super::Spotify,
+        requests: tokio::sync::mpsc::UnboundedReceiver<String>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl SpotifyApi {
+        async fn new(responses: Vec<(&str, u16, serde_json::Value)>) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = super::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let responses = responses
+                .into_iter()
+                .map(|(path, status, body)| (path.to_owned(), (status, body.to_string())))
+                .collect::<std::collections::HashMap<_, _>>();
+            let responses = std::sync::Arc::new(responses);
+            let (sender, requests) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(async move {
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let responses = responses.clone();
+                    let sender = sender.clone();
+                    connections.spawn(async move {
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let byte = stream.read_u8().await.unwrap();
+                            request.push(byte);
+                        }
+                        let request = String::from_utf8(request).unwrap();
+                        let target = request.split_whitespace().nth(1).unwrap().to_owned();
+                        let path = target.split('?').next().unwrap();
+                        let (status, body) = responses
+                            .get(path)
+                            .cloned()
+                            .unwrap_or((404, "{}".to_owned()));
+                        sender.send(target).unwrap();
+                        stream
+                            .write_all(
+                                format!(
+                                    "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 7\r\nConnection: close\r\n\r\n{body}",
+                                    body.len()
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                    });
+                }
+            });
+            let client = rspotify::AuthCodePkceSpotify::with_config(
+                rspotify::Credentials::new_pkce("test-client"),
+                rspotify::OAuth::default(),
+                rspotify::Config {
+                    api_base_url: format!("http://{address}/"),
+                    token_refreshing: false,
+                    ..Default::default()
+                },
+            );
+            *client.token.lock().await.unwrap() = Some(rspotify::Token {
+                access_token: "test-token".to_owned(),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                ..Default::default()
+            });
+            Self {
+                spotify: super::Spotify {
+                    client,
+                    refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                    gate: std::sync::Arc::new(RateLimitGate::default()),
+                },
+                requests,
+                task,
+            }
+        }
+    }
+
+    impl Drop for SpotifyApi {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    fn catalog_track(id: &str, playable: Option<bool>) -> serde_json::Value {
+        let mut track = serde_json::json!({
+            "id": id,
+            "name": "Catalog song",
+            "album": {
+                "name": "Catalog album", "artists": [], "images": [], "external_urls": {}
+            },
+            "artists": [{"name": "Catalog artist", "external_urls": {}}],
+            "disc_number": 1,
+            "duration_ms": 180000,
+            "explicit": false,
+            "external_ids": {},
+            "external_urls": {},
+            "is_local": false,
+            "track_number": 1,
+            "type": "track"
+        });
+        if let Some(playable) = playable {
+            track["is_playable"] = playable.into();
+        }
+        track
+    }
+
+    #[tokio::test]
+    async fn recommendations_use_account_market_and_accept_unspecified_playability() {
+        let mut api = SpotifyApi::new(vec![
+            (
+                "/tracks/available",
+                200,
+                catalog_track("available", Some(true)),
+            ),
+            (
+                "/tracks/blocked",
+                200,
+                catalog_track("blocked", Some(false)),
+            ),
+            ("/tracks/ordinary", 200, catalog_track("ordinary", None)),
+        ])
+        .await;
+        let tracks = api
+            .spotify
+            .resolve_playable_track_uris(&[
+                "spotify:track:available".to_owned(),
+                "spotify:track:blocked".to_owned(),
+                "spotify:track:ordinary".to_owned(),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tracks
+                .iter()
+                .map(|track| track.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["available", "ordinary"]
+        );
+        for _ in 0..3 {
+            let request = api.requests.recv().await.unwrap();
+            assert!(request.ends_with("?market=from_token"), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn recommendations_keep_partial_results_when_catalog_tracks_are_missing() {
+        let api = SpotifyApi::new(vec![
+            ("/tracks/first", 200, catalog_track("first", Some(true))),
+            ("/tracks/last", 200, catalog_track("last", None)),
+        ])
+        .await;
+        let tracks = api
+            .spotify
+            .resolve_playable_track_uris(&[
+                "spotify:track:first".to_owned(),
+                "spotify:track:missing".to_owned(),
+                "spotify:album:wrongtype".to_owned(),
+                "spotify:track:last".to_owned(),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tracks
+                .iter()
+                .map(|track| track.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "last"]
+        );
+    }
+
+    #[tokio::test]
+    async fn recommendations_preserve_partial_results_and_hold_requests_after_429() {
+        let mut api = SpotifyApi::new(vec![
+            ("/tracks/first", 200, catalog_track("first", Some(true))),
+            ("/tracks/throttled", 429, serde_json::json!({})),
+            (
+                "/tracks/unscheduled",
+                200,
+                catalog_track("unscheduled", Some(true)),
+            ),
+        ])
+        .await;
+        let tracks = api
+            .spotify
+            .resolve_playable_track_uris(&[
+                "spotify:track:first".to_owned(),
+                "spotify:track:throttled".to_owned(),
+                "spotify:track:missing1".to_owned(),
+                "spotify:track:missing2".to_owned(),
+                "spotify:track:unscheduled".to_owned(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(
+            tracks
+                .iter()
+                .map(|track| track.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+
+        let held = api
+            .spotify
+            .clone()
+            .resolve_playable_track_uris(&["spotify:track:unscheduled".to_owned()])
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            classify_error(&held),
+            ErrorKind::RateLimited {
+                retry_after: Some(_)
+            }
+        ));
+        while let Ok(request) = api.requests.try_recv() {
+            assert!(!request.contains("unscheduled"), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn recommendation_auth_failure_is_fatal_even_after_a_successful_lookup() {
+        let api = SpotifyApi::new(vec![
+            ("/tracks/first", 200, catalog_track("first", Some(true))),
+            ("/tracks/expired", 401, serde_json::json!({})),
+        ])
+        .await;
+        let error = api
+            .spotify
+            .resolve_playable_track_uris(&[
+                "spotify:track:first".to_owned(),
+                "spotify:track:expired".to_owned(),
+            ])
+            .await
+            .unwrap_err();
+
+        assert_eq!(classify_error(&error), ErrorKind::AuthExpired);
+    }
+
+    #[tokio::test]
+    async fn saved_context_still_lists_tracks_unavailable_for_playback() {
+        let mut api = SpotifyApi::new(vec![(
+            "/me/tracks",
+            200,
+            serde_json::json!({
+                "href": "http://localhost/me/tracks",
+                "items": [{
+                    "added_at": "2026-01-02T00:00:00Z",
+                    "track": catalog_track("blocked", Some(false))
+                }],
+                "limit": 100,
+                "next": null,
+                "offset": 0,
+                "previous": null,
+                "total": 1
+            }),
+        )])
+        .await;
+        let tracks = api.spotify.liked_tracks().await.unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].track.source_id, "blocked");
+        assert_eq!(
+            tracks[0].added_at.unwrap().to_rfc3339(),
+            "2026-01-02T00:00:00+00:00"
+        );
+        assert!(!api.requests.recv().await.unwrap().contains("market="));
+    }
 
     fn status_error(status: u16, retry_after: Option<&str>) -> anyhow::Error {
         let mut builder = gpui_kit::http_client::http::Response::builder().status(status);

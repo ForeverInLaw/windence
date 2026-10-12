@@ -384,6 +384,8 @@ pub enum BackendCommand {
     PlayDj,
     PlayNext(Track),
     AppendToQueue(Track),
+    /// Playback confirmed that this track was heard.
+    MarkPlayed(Track),
     SetShuffleMode(ShuffleMode),
     RestorePlayback {
         position_ms: u32,
@@ -521,6 +523,9 @@ pub enum BackendEvent {
     PlaybackContext {
         current: Track,
         next: Vec<Track>,
+        /// A fresh play, including an intentional repeat of the same track.
+        /// Queue edits and restores leave this false.
+        new_play: bool,
         /// Which upcoming tracks are Smart Shuffle injections, aligned with
         /// `next`: the queue UI marks them with a distinct icon.
         injected: Vec<bool>,
@@ -1333,6 +1338,7 @@ impl Worker {
             BackendCommand::PlayDj => self.start_dj(),
             BackendCommand::PlayNext(track) => self.play_next(track).await,
             BackendCommand::AppendToQueue(track) => self.append_to_queue(track).await,
+            BackendCommand::MarkPlayed(track) => self.mark_played(track).await,
             BackendCommand::SetShuffleMode(mode) => self.set_shuffle_mode(mode).await,
             BackendCommand::RestorePlayback {
                 position_ms,
@@ -1349,7 +1355,7 @@ impl Worker {
             BackendCommand::Next => {
                 self.dj.skipped = true;
                 self.silence_narration();
-                self.next_track(true).await
+                self.next_track().await
             }
             BackendCommand::Previous => {
                 self.silence_narration();
@@ -1787,12 +1793,9 @@ impl Worker {
             &shuffle,
             &tracks,
             index,
-            true,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await
-        {
+        ) {
             Ok(()) => {
                 self.queue.tracks = tracks;
                 self.queue.shuffle = shuffle;
@@ -1895,7 +1898,13 @@ impl Worker {
                 self.queue.kind,
             )
             .await?;
-        send_playback_context(&self.queue.shuffle, &self.queue.tracks, index, &self.events);
+        send_playback_context(
+            &self.queue.shuffle,
+            &self.queue.tracks,
+            index,
+            false,
+            &self.events,
+        );
         send_shuffle_changed(&self.queue, &self.events);
         Ok(())
     }
@@ -1932,6 +1941,12 @@ impl Worker {
             self.maybe_prefetch_injections().await;
         }
         result
+    }
+
+    async fn mark_played(&mut self, track: Track) -> Result<()> {
+        self.store.add_history(track).await?;
+        send_local_state(&self.store, &self.events).await;
+        Ok(())
     }
 
     /// Likes or unlikes a track on Spotify, which owns the collection. The
@@ -2061,15 +2076,20 @@ impl Worker {
         if self.queue.ended {
             // play() is a no-op in librespot's EndOfTrack state: reload the
             // current track at the seeker's position instead.
-            let result = restore_context_track(
-                &self.connection.player,
-                &self.queue.shuffle,
-                &self.queue.tracks,
-                self.queue.index,
-                self.queue.position_ms,
-                true,
-                &self.events,
-            );
+            let result = self
+                .queue
+                .index
+                .context("playback context is not available")
+                .and_then(|index| {
+                    load_context_track(
+                        &self.connection.player,
+                        &self.queue.shuffle,
+                        &self.queue.tracks,
+                        index,
+                        self.queue.position_ms,
+                        &self.events,
+                    )
+                });
             match &result {
                 Ok(()) => {
                     self.queue.ended = false;
@@ -2090,7 +2110,7 @@ impl Worker {
             // dead loader would silently do nothing. Advance instead, and
             // the never-heard track stays out of the history.
             self.queue.current_unavailable = false;
-            return self.next_track(false).await;
+            return self.next_track().await;
         }
         let result = self.connected_player().map(|player| player.play());
         if result.is_err() {
@@ -2116,9 +2136,6 @@ impl Worker {
         result
     }
 
-    /// Moves to the next queue entry; `record_history` gates whether the
-    /// entry being left counts as heard. Auto-advance paths pass `false`
-    /// so tracks that never played a second are not logged as listened.
     /// Cuts short whatever the DJ is saying. Skipping moves the player
     /// without pausing or stopping it, so the voice would otherwise finish
     /// the line over the song the listener asked for.
@@ -2128,7 +2145,7 @@ impl Worker {
         }
     }
 
-    async fn next_track(&mut self, record_history: bool) -> Result<()> {
+    async fn next_track(&mut self) -> Result<()> {
         self.radio.cancel(&self.events);
         let Some(current) = self.queue.index else {
             let _ = self.events.send(BackendEvent::QueueEnded);
@@ -2161,7 +2178,7 @@ impl Worker {
             self.top_up_queue();
             return Ok(());
         };
-        self.load_queue_track(index, record_history).await
+        self.load_queue_track(index).await
     }
 
     /// Advances past the playing track when Spotify reports it unplayable,
@@ -2174,7 +2191,7 @@ impl Worker {
             return;
         }
         log::info!("playback: skipping unavailable track {spotify_uri}");
-        if let Err(error) = self.next_track(false).await {
+        if let Err(error) = self.next_track().await {
             send_error(&self.events, error);
         }
     }
@@ -2182,7 +2199,7 @@ impl Worker {
     async fn previous_track(&mut self) -> Result<()> {
         self.radio.cancel(&self.events);
         if let Some(index) = self.queue.index.and_then(|index| index.checked_sub(1)) {
-            return self.load_queue_track(index, true).await;
+            return self.load_queue_track(index).await;
         }
         let result = self.connected_player().map(|player| player.seek(0));
         let _ = self.events.send(BackendEvent::PlaybackSettled);
@@ -2196,18 +2213,16 @@ impl Worker {
     }
 
     /// Loads the queue entry at `index` and persists it as the playing track.
-    async fn load_queue_track(&mut self, index: usize, record_history: bool) -> Result<()> {
+    async fn load_queue_track(&mut self, index: usize) -> Result<()> {
         self.speak_before(index);
         let result = load_context_track(
             &self.connection.player,
             &self.queue.shuffle,
             &self.queue.tracks,
             index,
-            record_history,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await;
+        );
         if result.is_err() {
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return result;
@@ -2360,12 +2375,9 @@ impl Worker {
                     &ShuffleState::default(),
                     &tracks,
                     0,
-                    true,
-                    &self.store,
+                    0,
                     &self.events,
-                )
-                .await
-                {
+                ) {
                     Ok(()) => {
                         self.stand_down_dj();
                         self.queue.tracks = tracks;
@@ -2592,7 +2604,7 @@ impl Worker {
                 // Skipping outran the fetch and left the player parked on
                 // the last song. The stretch that just landed is what it
                 // was waiting for.
-                if let Err(error) = self.load_queue_track(index + 1, true).await {
+                if let Err(error) = self.load_queue_track(index + 1).await {
                     send_error(&self.events, error);
                 }
             }
@@ -2623,12 +2635,9 @@ impl Worker {
             &ShuffleState::default(),
             &stretch.tracks,
             0,
-            true,
-            &self.store,
+            0,
             &self.events,
-        )
-        .await
-        {
+        ) {
             send_error(&self.events, error);
             let _ = self.events.send(BackendEvent::PlaybackSettled);
             return;
@@ -2888,7 +2897,7 @@ impl Worker {
         if ended {
             // The song outran the fetch: continue into the extension rather
             // than leaving playback parked on the ended state.
-            if let Err(error) = self.load_queue_track(index + 1, true).await {
+            if let Err(error) = self.load_queue_track(index + 1).await {
                 send_error(&self.events, error);
             }
         }
@@ -3408,7 +3417,7 @@ impl Radio {
                     .as_deref()
                     .context("radio seed has no Spotify track URI")?;
                 let uris = player.radio_track_uris(seed_uri).await?;
-                let recommendations = spotify.resolve_track_uris(&uris).await?;
+                let recommendations = spotify.resolve_playable_track_uris(&uris).await?;
                 build_radio_context(seed, recommendations)
             })
             .await
@@ -4464,16 +4473,13 @@ fn map_player_event(
     }
 }
 
-/// Loads the queue entry at `index` and starts it playing. With
-/// `record_history`, the entry is logged as heard immediately — right for
-/// user-driven loads; auto-advance past unplayable entries passes `false`.
-async fn load_context_track(
+/// Starts a new play of the queue entry. History waits for a Playing event.
+fn load_context_track(
     playback: &Option<Playback>,
     shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
-    record_history: bool,
-    store: &BlockingStore,
+    position_ms: u32,
     events: &UnboundedSender<BackendEvent>,
 ) -> Result<()> {
     let track = tracks
@@ -4487,13 +4493,8 @@ async fn load_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(shuffle, tracks, index, events);
-    player.load(spotify_uri, true, 0);
-    if record_history && let Err(error) = store.add_history(track.clone()).await {
-        send_error(events, error);
-    } else if record_history {
-        send_local_state(store, events).await;
-    }
+    send_playback_context(shuffle, tracks, index, true, events);
+    player.load(spotify_uri, true, position_ms);
     Ok(())
 }
 
@@ -4518,7 +4519,7 @@ fn restore_context_track(
     let player = playback
         .as_ref()
         .context("Spotify playback is not connected")?;
-    send_playback_context(shuffle, tracks, index, events);
+    send_playback_context(shuffle, tracks, index, false, events);
     player.load(spotify_uri, playing, position_ms);
     Ok(())
 }
@@ -4550,12 +4551,14 @@ fn send_playback_context(
     shuffle: &ShuffleState,
     tracks: &[Track],
     index: usize,
+    new_play: bool,
     events: &UnboundedSender<BackendEvent>,
 ) {
     if let Some(current) = tracks.get(index) {
         let _ = events.send(BackendEvent::PlaybackContext {
             current: current.clone(),
             next: tracks.get(index + 1..).unwrap_or_default().to_vec(),
+            new_play,
             injected: injected_flags(shuffle, index, tracks.len()),
         });
     }
@@ -4611,7 +4614,7 @@ async fn recommendation_tracks(
     seed_uri: &str,
 ) -> Result<Vec<Track>> {
     let uris = player.radio_track_uris(seed_uri).await?;
-    spotify.resolve_track_uris(&uris).await
+    spotify.resolve_playable_track_uris(&uris).await
 }
 
 fn build_radio_context(seed: Track, recommendations: Vec<Track>) -> Result<Vec<Track>> {
@@ -4988,6 +4991,48 @@ mod tests {
             "current"
         );
         assert!(next_injection_seed([], None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn confirmed_playback_updates_recent_history_through_the_backend_command() {
+        let store = BlockingStore::from_store(Store::in_memory().unwrap());
+        store.add_history(track()).await.unwrap();
+        store
+            .add_history(listed_track("earlier").track)
+            .await
+            .unwrap();
+        let startup = super::Startup {
+            store,
+            spotify: crate::spotify::Spotify::from_client_id(
+                "0123456789abcdef0123456789abcdef",
+                false,
+            )
+            .await
+            .unwrap(),
+            configuration: None,
+            playback_snapshot: None,
+            playback_credentials_invalidated: false,
+        };
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (unavailable, _) = tokio::sync::mpsc::unbounded_channel();
+        let (connected, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut worker = super::Worker::new(startup, events, unavailable, connected);
+        let (_, mut shutdown) = tokio::sync::watch::channel(false);
+        let played = track();
+
+        worker
+            .handle_command(BackendCommand::MarkPlayed(played.clone()), &mut shutdown)
+            .await;
+
+        match received.try_recv().expect("refreshed listening history") {
+            BackendEvent::LocalStateLoaded {
+                recently_played, ..
+            } => {
+                assert_eq!(recently_played, vec![played, listed_track("earlier").track]);
+            }
+            other => panic!("expected recent history, got {other:?}"),
+        }
+        assert!(received.try_recv().is_err());
     }
 
     #[tokio::test]
