@@ -96,7 +96,7 @@ During development you can skip the setup screen by setting the
 $env:SPOTIFY_CLIENT_ID = "your-client-id"; cargo run
 ```
 
-## Validate Changes
+## Validate changes
 
 The UI stack is locked to gpui-kit 0.7.3 and gpui-pre 0.3.9. Run the same
 checks as Windows CI before integrating a change:
