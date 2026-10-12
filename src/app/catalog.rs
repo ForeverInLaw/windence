@@ -163,6 +163,8 @@ fn station_tracks(player: &player::Player) -> Arc<[model::ListedTrack]> {
 
 /// The tracks of one Spotify playlist.
 pub(super) struct PlaylistPage {
+    search_input: Entity<InputState>,
+    _search_subscription: Subscription,
     backend: BackendHandle,
     selected: Option<model::Playlist>,
     tracks: Arc<[model::ListedTrack]>,
@@ -185,14 +187,27 @@ pub(super) struct PlaylistPage {
 impl EventEmitter<PageEvent> for PlaylistPage {}
 
 impl PlaylistPage {
-    pub(super) fn new(backend: BackendHandle, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(backend: BackendHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let track_list = cx.new(|cx| TrackList::new(cx));
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search in this playlist"));
+        let search_subscription =
+            cx.subscribe(&search_input, |page, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let query = input.read(cx).value();
+                    page.track_list
+                        .update(cx, |list, cx| list.set_filter(&query, cx));
+                    cx.notify();
+                }
+            });
         let player = services::AppServices::player(cx);
         let player_subscription = cx.observe(&player, |page, player, cx| {
             page.station_tracks = station_tracks(player.read(cx));
             cx.notify();
         });
         Self {
+            search_input,
+            _search_subscription: search_subscription,
             backend,
             selected: None,
             tracks: Arc::default(),
@@ -814,7 +829,7 @@ impl Render for SearchPage {
 }
 
 impl Render for PlaylistPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = appearance::Appearance::palette(cx);
         let tracks = self.tracks.clone();
         let loaded = self.loaded;
@@ -1009,6 +1024,36 @@ impl Render for PlaylistPage {
                             ),
                     ),
             )
+            .when(self.selected.is_some(), |page| {
+                page.child(
+                    components::text_field_frame(palette, &self.search_input, window, cx)
+                        .id("playlist-search-field")
+                        .w_full()
+                        .max_w(px(400.))
+                        .min_w_0()
+                        .h(tokens::CONTROL_SIZE)
+                        .flex_none()
+                        .gap(px(10.))
+                        .mb(px(16.))
+                        .child(components::icon(
+                            CadenceIcon::Search,
+                            16.,
+                            palette.text_muted,
+                        ))
+                        .child(
+                            Input::new(&self.search_input)
+                                .id("playlist-search-input")
+                                .aria_label("Search in this playlist")
+                                .appearance(false)
+                                .bordered(false)
+                                .focus_bordered(false)
+                                .cleanable(true)
+                                .flex_1()
+                                .min_w_0()
+                                .h_full(),
+                        ),
+                )
+            })
             .child(list)
     }
 }

@@ -1,3 +1,6 @@
+#[path = "playlist_search.rs"]
+mod playlist_search;
+
 use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
 use crate::app::{
     NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets,
