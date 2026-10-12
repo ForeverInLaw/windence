@@ -56,6 +56,7 @@ actions!(
     cadence,
     [
         OpenSearch,
+        OpenPlaylistSearch,
         TogglePlayback,
         SeekBack,
         SeekForward,

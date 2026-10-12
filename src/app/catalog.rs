@@ -313,7 +313,15 @@ impl PlaylistPage {
             .map(|playlist| library_index::playlist_uri(&playlist.source_id))
     }
 
-    pub(super) fn open(&mut self, playlist: model::Playlist, cx: &mut Context<Self>) {
+    pub(super) fn open(
+        &mut self,
+        playlist: model::Playlist,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_source_id() != Some(playlist.source_id.as_str()) {
+            self.clear_search(window, cx);
+        }
         self.selected = Some(playlist.clone());
         self.tracks = Arc::default();
         self.loaded = false;
@@ -358,7 +366,21 @@ impl PlaylistPage {
         cx.notify();
     }
 
-    pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_some() {
+            window.focus(&self.search_input.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.track_list
+            .update(cx, |list, cx| list.set_filter("", cx));
+    }
+
+    pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_search(window, cx);
         self.request = None;
         self.selected = None;
         self.tracks = Arc::default();

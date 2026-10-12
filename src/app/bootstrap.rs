@@ -120,6 +120,7 @@ pub(super) fn bind_keys(cx: &mut App) {
 fn app_key_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("secondary-k", OpenSearch, None),
+        KeyBinding::new("secondary-f", OpenPlaylistSearch, Some("Cadence")),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("escape", DismissOverlay, Some("Cadence")),

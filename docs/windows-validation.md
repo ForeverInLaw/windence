@@ -34,6 +34,12 @@ executable. Keep the same account and preferences for the comparison.
 - [ ] Tab reaches enabled controls. Enter and Space activate them once.
       Menus and the queue return focus to their trigger when closed.
       Ctrl shortcuts, text editing and both slider keyboard controls work.
+- [ ] Search inside a playlist by title, artist and album, including non-Latin
+      text. Ctrl+F focuses local search; Ctrl+K opens Spotify search. Clear
+      restores the rows, and another playlist starts with an empty query.
+      After sorting and filtering, a row starts the selected occurrence in
+      the full playlist queue, including duplicate songs. Search after
+      scrolling returns to the first matching row.
 - [ ] Drag progress within and outside its bounds. Release seeks once.
       Escape and changing the track cancel the gesture. Seek, pause, close
       and reopen without restoring an older playback position.

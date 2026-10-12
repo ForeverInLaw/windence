@@ -112,14 +112,14 @@ impl Workspace {
         let artist = cx.new(|cx| catalog::ArtistPage::new(backend.clone(), cx));
         let album = cx.new(|cx| catalog::AlbumPage::new(backend.clone(), cx));
         subscriptions.extend([
-            cx.subscribe(&home, Workspace::handle_page_event),
-            cx.subscribe(&liked_songs, Workspace::handle_page_event),
-            cx.subscribe(&recent, Workspace::handle_page_event),
-            cx.subscribe(&playlists, Workspace::handle_page_event),
-            cx.subscribe(&search, Workspace::handle_page_event),
-            cx.subscribe(&playlist, Workspace::handle_page_event),
-            cx.subscribe(&artist, Workspace::handle_page_event),
-            cx.subscribe(&album, Workspace::handle_page_event),
+            cx.subscribe_in(&home, window, Workspace::handle_page_event),
+            cx.subscribe_in(&liked_songs, window, Workspace::handle_page_event),
+            cx.subscribe_in(&recent, window, Workspace::handle_page_event),
+            cx.subscribe_in(&playlists, window, Workspace::handle_page_event),
+            cx.subscribe_in(&search, window, Workspace::handle_page_event),
+            cx.subscribe_in(&playlist, window, Workspace::handle_page_event),
+            cx.subscribe_in(&artist, window, Workspace::handle_page_event),
+            cx.subscribe_in(&album, window, Workspace::handle_page_event),
         ]);
         let settings = cx.new(|cx| settings::Settings::new(cx));
         subscriptions.push(cx.subscribe_in(
@@ -153,22 +153,21 @@ impl Workspace {
         ));
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(preferences.sidebar_collapsed, cx));
         subscriptions.push(cx.observe(&sidebar, |this, _, cx| this.sync_layout(cx)));
-        subscriptions.push(
-            cx.subscribe(
-                &sidebar,
-                |this, _, event: &sidebar::SidebarEvent, cx| match event {
-                    sidebar::SidebarEvent::Navigate(route) => this.navigate(*route, cx),
-                    sidebar::SidebarEvent::OpenPlaylist { playlist, origin } => {
-                        this.load_playlist(playlist.clone(), cx);
-                        this.open_playlist(*origin, cx);
-                    }
-                    sidebar::SidebarEvent::Failed(error) => {
-                        this.last_error = Some(error.clone());
-                        cx.notify();
-                    }
-                },
-            ),
-        );
+        subscriptions.push(cx.subscribe_in(
+            &sidebar,
+            window,
+            |this, _, event: &sidebar::SidebarEvent, window, cx| match event {
+                sidebar::SidebarEvent::Navigate(route) => this.navigate(*route, cx),
+                sidebar::SidebarEvent::OpenPlaylist { playlist, origin } => {
+                    this.load_playlist(playlist.clone(), window, cx);
+                    this.open_playlist(*origin, cx);
+                }
+                sidebar::SidebarEvent::Failed(error) => {
+                    this.last_error = Some(error.clone());
+                    cx.notify();
+                }
+            },
+        ));
         let toolbar = cx.new(|cx| chrome::Toolbar::new(window, cx));
         subscriptions.push(cx.subscribe(
             &toolbar,
@@ -200,7 +199,7 @@ impl Workspace {
                 cx.notify();
             },
         ));
-        subscriptions.push(cx.subscribe(&player_bar, Workspace::handle_page_event));
+        subscriptions.push(cx.subscribe_in(&player_bar, window, Workspace::handle_page_event));
         let queue_drawer = cx.new(|cx| player_bar::QueueDrawer::new(cx));
         subscriptions.push(cx.subscribe_in(
             &queue_drawer,
@@ -486,6 +485,7 @@ impl Render for Workspace {
             .key_context("Cadence")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_search))
+            .on_action(cx.listener(Self::open_playlist_search))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::dismiss_overlay))
             .on_action(cx.listener(Self::toggle_playback))

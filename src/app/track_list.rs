@@ -1,6 +1,6 @@
 use super::*;
 
-use gpui_kit::TestSupportExt as _;
+use gpui_kit::{ScrollStrategy, TestSupportExt as _, UniformListScrollHandle};
 use page::PageEvent;
 
 /// What a track list is showing.
@@ -38,8 +38,8 @@ impl ListContext {
 /// Lists whose context dates and sorts its tracks (playlists, liked songs)
 /// name themselves in their [`ListContext`]; clicking their headers cycles
 /// Title/Album/Date added through A-Z, Z-A, and back to the default order,
-/// and the choice survives restarts. The rows always play in the displayed
-/// order.
+/// and the choice survives restarts. Search hides rows without narrowing
+/// playback. A selected row starts its occurrence in the full sorted context.
 pub(super) struct TrackList {
     /// Set by `show`, which always runs before the list is first painted.
     id: Option<ElementId>,
@@ -50,6 +50,7 @@ pub(super) struct TrackList {
     /// Visible row positions in the full sorted order. Filtering never changes the queue.
     visible: Vec<usize>,
     filter_words: Vec<String>,
+    scroll_handle: UniformListScrollHandle,
     /// What is being shown, and so how playback starting from a row is
     /// reported.
     context: ListContext,
@@ -78,6 +79,7 @@ impl TrackList {
             order: Arc::default(),
             visible: Vec::new(),
             filter_words: Vec::new(),
+            scroll_handle: UniformListScrollHandle::new(),
             context: ListContext::default(),
             sort: None,
             menu_open: None,
@@ -131,6 +133,10 @@ impl TrackList {
                 .as_deref()
                 .and_then(|key| services::AppServices::list_sort(key, cx));
         }
+        if self.id != id {
+            self.scroll_handle
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+        }
         self.id = id;
         self.listed = listed;
         self.context = context;
@@ -158,6 +164,8 @@ impl TrackList {
         self.filter_words = words;
         self.menu_open = None;
         self.refresh_visible();
+        self.scroll_handle
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -488,6 +496,8 @@ impl Render for TrackList {
             .when(self.visible.is_empty(), |list| {
                 list.child(
                     components::empty_state(palette, "No tracks match your search")
+                        .border_0()
+                        .rounded(px(0.))
                         .id("track-list-no-results")
                         .test_support()
                         .aria_label("No tracks match your search"),
@@ -504,6 +514,7 @@ impl Render for TrackList {
                             range.map(|index| this.row(index, columns, cx)).collect()
                         }),
                     )
+                    .track_scroll(&self.scroll_handle)
                     .flex_1()
                     .min_h_0(),
                 )
