@@ -594,6 +594,35 @@ impl BackendHandle {
         )
     }
 
+    /// A confirmed play must wait for capacity rather than be dropped like a UI command.
+    /// A waiting acknowledgment follows worker redirection before it enters the queue.
+    pub async fn mark_played(&self, track: Track) -> bool {
+        loop {
+            let commands = self
+                .senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .commands
+                .clone();
+            let permit = commands.clone().reserve_owned().await;
+            let senders = self
+                .senders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !commands.same_channel(&senders.commands) {
+                continue;
+            }
+            let Ok(permit) = permit else {
+                return false;
+            };
+            if commands.is_closed() {
+                return false;
+            }
+            permit.send(BackendCommand::MarkPlayed(track));
+            return true;
+        }
+    }
+
     fn redirect(&self, senders: Senders) {
         *self
             .senders

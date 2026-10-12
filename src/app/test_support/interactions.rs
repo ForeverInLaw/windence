@@ -312,6 +312,39 @@ fn listening_history_waits_until_the_loaded_track_plays() {
 }
 
 #[test]
+fn confirmed_history_survives_a_full_backend_queue_without_another_playing_event() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    let filled = fixture.update(|_, cx| {
+        let backend = services::AppServices::backend(cx);
+        let mut filled = 0;
+        while backend.send(BackendCommand::Pause) {
+            filled += 1;
+        }
+        filled
+    });
+    assert!(filled > 0, "the real bounded command channel must be full");
+
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    for _ in 0..filled {
+        assert!(matches!(
+            fixture.backend.commands.try_recv(),
+            Ok(BackendCommand::Pause)
+        ));
+    }
+    fixture.update(|_, _| {});
+
+    assert_eq!(fixture.history_entry(), track(0));
+    fixture.no_commands();
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.no_commands();
+}
+
+#[test]
 fn starting_the_same_song_again_refreshes_its_history() {
     let mut fixture = Fixture::new(false);
     let playing = || BackendEvent::Playing {

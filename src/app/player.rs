@@ -42,6 +42,8 @@ pub(super) struct Player {
     restore: Option<(u32, bool)>,
     /// The current play still needs a history entry when playback is confirmed.
     history_pending: bool,
+    /// Confirmed plays wait for backend capacity in order, even after a context changes.
+    history_delivery: Option<gpui_kit::Task<()>>,
     playback_generation: u64,
     clock: playback_clock::PlaybackClock,
     saved_position_ms: u32,
@@ -72,6 +74,7 @@ impl Player {
             shuffle_smart_supported: false,
             restore: None,
             history_pending: false,
+            history_delivery: None,
             playback_generation: 0,
             clock: playback_clock::PlaybackClock::new(),
             saved_position_ms: 0,
@@ -176,11 +179,21 @@ impl Player {
             == Some(spotify_uri)
     }
 
-    fn record_first_play(&mut self) {
+    fn record_first_play(&mut self, cx: &Context<Self>) {
         if self.history_pending
             && let Some(track) = self.now_playing.clone()
         {
-            self.history_pending = !self.backend.send(BackendCommand::MarkPlayed(track));
+            self.history_pending = false;
+            let previous = self.history_delivery.take();
+            let backend = self.backend.clone();
+            self.history_delivery = Some(cx.background_executor().spawn(async move {
+                if let Some(previous) = previous {
+                    previous.await;
+                }
+                if !backend.mark_played(track).await {
+                    log::warn!("could not deliver confirmed listening history: backend stopped");
+                }
+            }));
         }
     }
 
@@ -589,7 +602,7 @@ impl Player {
                     self.clock.set_playing(true, cx.background_executor().now());
                     self.play_state_pending = false;
                     self.loading = false;
-                    self.record_first_play();
+                    self.record_first_play(cx);
                 }
             }
             BackendEvent::Loading { spotify_uri } => {
