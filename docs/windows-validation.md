@@ -2,9 +2,10 @@
 
 ## Store package
 
-Run these checks before the first Store certification, then repeat the update
-checks on a later Store-delivered version. Record OS build, package version and
-results in IVO-79. See the [delivery guide](microsoft-store.md) for packaging.
+Run initial installation and runtime checks before first Store certification.
+Migration and Store-delivered update checks follow the first publication.
+Record OS build, package version and results in IVO-79. See the
+[delivery guide](microsoft-store.md) for packaging.
 
 - Install and launch on x64 Windows 10 build 19041 or newer and Windows 11.
 - Confirm Windence's name and icon in Start, Settings and the app window.

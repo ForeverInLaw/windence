@@ -45,7 +45,7 @@ Do not change the identity to fix a build or installation problem.
 6. Provide certification notes explaining the Spotify Premium requirement and
    the guided setup of a Spotify developer Client ID. Ensure reviewers can
    complete that setup. Do not include a client secret.
-7. After native checks and review, submit for certification in Partner Center.
+7. After initial installation checks and review, submit for certification in Partner Center.
    Wait until the first version is published and live before enabling CI delivery.
 
 Microsoft signs the public package after certification. No separate paid
@@ -78,9 +78,10 @@ the original profile path. It removes the test package, certificate and test
 profile afterward. The upload artifact never receives this signature.
 Only run that test on a disposable clean Windows machine with administrator rights.
 
-Before public certification, complete the
-[Store native checklist](windows-validation.md#store-package). CI onboarding
-does not prove Spotify login, audio, SMTC, migration or a Store-delivered update.
+Use the [Store native checklist](windows-validation.md#store-package) to record
+readiness. Initial runtime checks can use a locally test-signed copy. Store
+delivery, migration and Store A-to-B checks follow the first publication.
+CI onboarding does not prove Spotify login, audio, SMTC or those later checks.
 The app's privacy policy must also be accessible from its interface before
 certification; in-app policy access belongs to the next IVO-79 layer.
 
