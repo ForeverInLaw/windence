@@ -562,6 +562,7 @@ mod library_pages;
 mod media_controls;
 mod onboarding;
 mod page;
+mod playback_clock;
 mod player;
 mod player_bar;
 mod router;

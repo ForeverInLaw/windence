@@ -171,6 +171,20 @@ impl Fixture {
         position
     }
 
+    fn move_scrub(&mut self, position: gpui_kit::Point<gpui_kit::Pixels>) {
+        self.update(|window, cx| {
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+
     fn release_scrub(&mut self, position: gpui_kit::Point<gpui_kit::Pixels>) {
         self.update(|window, cx| {
             window.dispatch_event(
@@ -1166,62 +1180,18 @@ fn clicking_inside_the_taller_progress_band_still_seeks() {
 fn dragging_progress_previews_without_seeking_until_release() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
-    let (start, end) = fixture.update(|window, _| {
+    let end = fixture.update(|window, _| {
         let bounds = window.find("progress-slider").bounds();
-        (
-            bounds.center(),
-            point(bounds.right() - px(85.), bounds.center().y),
-        )
+        point(bounds.right() - px(85.), bounds.center().y)
     });
-    fixture.update(|window, cx| {
-        window.dispatch_event(
-            MouseMoveEvent {
-                position: start,
-                ..Default::default()
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseDownEvent {
-                button: MouseButton::Left,
-                position: start,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-    });
+    fixture.begin_scrub();
     fixture.no_commands();
-    fixture.update(|window, cx| {
-        window.dispatch_event(
-            MouseMoveEvent {
-                position: end,
-                pressed_button: Some(MouseButton::Left),
-                modifiers: Default::default(),
-            }
-            .to_platform_input(),
-            cx,
-        );
-    });
+    fixture.move_scrub(end);
     fixture.update(|window, _| {
-        assert_eq!(window.find("progress-slider").value(), Some("3:00 of 4:00"))
+        assert_eq!(window.find("progress-slider").value(), Some("3:00 of 4:00"));
     });
     fixture.no_commands();
-    fixture.update(|window, cx| {
-        window.dispatch_event(
-            MouseUpEvent {
-                button: MouseButton::Left,
-                position: end,
-                modifiers: Default::default(),
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
-    });
+    fixture.release_scrub(end);
     assert!(matches!(
         fixture.backend.commands.try_recv(),
         Ok(BackendCommand::Seek(180_000))
@@ -1292,6 +1262,251 @@ fn rapid_pause_then_resume_survives_queued_pause_confirmation() {
 }
 
 #[test]
+fn stale_seek_tick_cannot_change_or_save_position() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.seek(120_000, cx))
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Seek(120_000))
+    ));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 10_000,
+    });
+    fixture.no_commands();
+    fixture.update(|window, cx| {
+        assert_eq!(window.find("progress-slider").value(), Some("2:00 of 4:00"));
+        let player = services::AppServices::player(cx);
+        assert_eq!(player.read(cx).position_snapshot(), Some(120_000));
+        player.read(cx).save_position();
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 120_000,
+            ..
+        })
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn replaying_same_track_drops_position_sampled_before_new_play() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 90_000,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 90_000,
+            ..
+        })
+    ));
+    fixture.start_track(track(0));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 90_100,
+    });
+    fixture.no_commands();
+    fixture.update(|window, cx| {
+        assert_eq!(window.find("progress-slider").value(), Some("0:00 of 4:00"));
+        assert_eq!(
+            services::AppServices::player(cx)
+                .read(cx)
+                .position_snapshot(),
+            Some(0)
+        );
+    });
+}
+
+#[test]
+fn playback_clock_advances_only_after_playing_confirmation() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    fixture.cx.advance_clock(std::time::Duration::from_secs(1));
+    fixture.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("progress-slider").value(), Some("0:00 of 4:00"))
+    });
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.history_entry();
+    fixture.cx.advance_clock(std::time::Duration::from_secs(1));
+    fixture.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("progress-slider").value(), Some("0:01 of 4:00"))
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn close_and_system_position_keep_accepted_reports_when_display_ignores_jitter() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.history_entry();
+    for (elapsed, position_ms) in [(1_000, 1_000), (1_000, 2_100)] {
+        fixture
+            .cx
+            .advance_clock(std::time::Duration::from_millis(elapsed));
+        fixture.playback_event(BackendEvent::PositionChanged {
+            spotify_uri: track(0).spotify_uri.unwrap(),
+            position_ms,
+        });
+    }
+    fixture.update(|_, cx| {
+        let player = services::AppServices::player(cx);
+        let player = player.read(cx);
+        assert_eq!(
+            player.display_position_ms(cx.background_executor().now()),
+            2_000
+        );
+        assert_eq!(
+            player.position_ms(),
+            2_100,
+            "SMTC receives the latest accepted report"
+        );
+        assert_eq!(player.position_snapshot(), Some(2_100));
+        player.save_position();
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 2_100,
+            ..
+        })
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn pause_and_reconnect_keep_latest_accepted_position_against_late_ticks() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.history_entry();
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.seek(60_000, cx))
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Seek(60_000))
+    ));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 60_100,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 60_100,
+            ..
+        })
+    ));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 60_150,
+    });
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 10_000,
+    });
+    fixture.no_commands();
+    fixture.playback_event(BackendEvent::Paused {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 60_150,
+            ..
+        })
+    ));
+    fixture.playback_event(BackendEvent::PlaybackRestored {
+        position_ms: 60_150,
+        playing: false,
+    });
+    // Backend Playing maps to this position report before its state event.
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 10_000,
+    });
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.no_commands();
+    fixture.cx.advance_clock(std::time::Duration::from_secs(1));
+    fixture.update(|_, cx| {
+        let player = services::AppServices::player(cx);
+        assert!(!player.read(cx).playing());
+        assert_eq!(
+            player
+                .read(cx)
+                .display_position_ms(cx.background_executor().now()),
+            60_150
+        );
+    });
+    fixture.playback_event(BackendEvent::PlaybackReconnecting);
+    fixture.playback_event(BackendEvent::PlaybackReconnected);
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::RestorePlayback {
+            position_ms: 60_150,
+            playing: false
+        })
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn unapplied_seek_adopts_real_position_after_settling_timeout() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| player.seek(120_000, cx))
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Seek(120_000))
+    ));
+    fixture
+        .cx
+        .advance_clock(std::time::Duration::from_millis(2_001));
+    fixture.playback_event(BackendEvent::PositionChanged {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+        position_ms: 10_000,
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SavePlaybackPosition {
+            position_ms: 10_000,
+            ..
+        })
+    ));
+    fixture.update(|window, cx| {
+        assert_eq!(window.find("progress-slider").value(), Some("0:10 of 4:00"));
+        assert_eq!(
+            services::AppServices::player(cx)
+                .read(cx)
+                .position_snapshot(),
+            Some(10_000)
+        );
+    });
+    fixture.no_commands();
+}
+
+#[test]
 fn releasing_progress_outside_its_bounds_clamps_and_seeks_once() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
@@ -1308,17 +1523,7 @@ fn releasing_progress_outside_its_bounds_clamps_and_seeks_once() {
                 bounds.center().y,
             )
         });
-        fixture.update(|window, cx| {
-            window.dispatch_event(
-                MouseMoveEvent {
-                    position: end,
-                    pressed_button: Some(MouseButton::Left),
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                cx,
-            );
-        });
+        fixture.move_scrub(end);
         fixture.no_commands();
         fixture.release_scrub(end);
         match fixture.backend.commands.try_recv().expect("release seek") {

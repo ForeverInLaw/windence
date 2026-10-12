@@ -12,6 +12,7 @@ impl Render for NoDragPreview {
 }
 
 struct Gesture {
+    /// Keep the initial geometry when focus, hover or layout changes mid-drag.
     bounds: Bounds<Pixels>,
     playback_generation: u64,
     duration_ms: u32,

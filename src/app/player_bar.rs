@@ -117,6 +117,7 @@ impl PlayerBar {
             .on_drag(scrubber::ScrubberDrag, {
                 let handle = cx.entity().downgrade();
                 move |_, _, window, cx| {
+                    // Drag activation stops bubbling before the ordinary move listener.
                     let pointer_x = window.mouse_position().x;
                     let _ = handle.update(cx, |this, cx| {
                         this.scrubber.drag_to(pointer_x);
@@ -376,7 +377,7 @@ impl PlayerBar {
         let now_playing = player.now_playing().cloned();
         let playing = player.playing();
         let loading = player.loading();
-        let position_ms = player.position_ms();
+        let position_ms = player.display_position_ms(cx.background_executor().now());
         let volume = player.volume();
         let shuffle_mode = player.shuffle_mode();
         let shuffle_supported = player.shuffle_supported();
