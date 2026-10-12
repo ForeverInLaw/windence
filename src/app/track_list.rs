@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::TestSupportExt as _;
 
 use page::PageEvent;
 
@@ -295,7 +294,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-play", index), "Play now")
-                    .test_support()
+                    .disabled(is_current_track)
                     .when(is_current_track, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })
@@ -309,6 +308,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-next", index), "Play next")
+                    .disabled(!has_playback_context)
                     .when(!has_playback_context, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })
@@ -324,6 +324,7 @@ impl TrackList {
             )
             .child(
                 components::text_menu_item(palette, ("track-menu-queue", index), "Add to queue")
+                    .disabled(!has_playback_context)
                     .when(!has_playback_context, |item| {
                         item.cursor_default().text_color(rgb(palette.text_muted))
                     })

@@ -1,14 +1,6 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn on_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-    }
-
-    pub(super) fn on_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev(cx);
-    }
-
     pub(super) fn open_search(
         &mut self,
         _: &OpenSearch,

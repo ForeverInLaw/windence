@@ -2,7 +2,6 @@ use super::*;
 
 use super::icons::CadenceIcon;
 use gpui_kit::ClickEvent;
-use gpui_kit::TestSupportExt as _;
 
 /// Breathing room between the Title column and whatever follows it.
 const COLUMN_GUTTER: f32 = 16.;
@@ -88,7 +87,7 @@ pub(super) fn track_list_header(
                         route(event, window, cx);
                     })
             }
-            None => button.cursor_default(),
+            None => button.disabled(true).cursor_default(),
         }
     };
     let direction_for = |column: model::ListSortColumn| {
@@ -300,13 +299,21 @@ impl TrackRow {
 }
 
 impl RenderOnce for TrackRow {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = self.palette;
         let index = self.index;
+        let row_focus = window
+            .use_keyed_state(("spotify-track-focus", index), cx, |_, cx| {
+                cx.focus_handle()
+            })
+            .read(cx)
+            .clone();
+        let keyboard_within =
+            row_focus.contains_focused(window, cx) && window.last_input_was_keyboard();
         let row_group: SharedString =
             format!("spotify-track-row:{}:{index}", self.track.source_id).into();
         components::button(palette, ("spotify-track", index))
-            .test_support()
+            .track_focus(&row_focus)
             .group(row_group.clone())
             .w_full()
             .h(px(ROW_HEIGHT))
@@ -400,22 +407,13 @@ impl RenderOnce for TrackRow {
                         "Add to Liked Songs"
                     },
                 )
-                .test_support()
-                // Reachable on the row under the pointer and nowhere
-                // else: the column keeps its width so the ones beside
-                // it do not shift, but stays empty until then.
-                //
-                // The reveal is the visibility flip, not an opacity
-                // ramp, on purpose: `with_animation` only restarts on a
-                // mount or id change, and a hover reveal mounts nothing
-                // — the button is always in the tree. An opacity-0 rest
-                // state would also leave the heart's hitbox live inside
-                // every row, swallowing row clicks a hidden control
-                // should not take. `motion::MICRO` names the step this
-                // surface class would ride the day hover transitions
-                // exist in Div.
-                .invisible()
-                .group_hover(row_group.clone(), |style| style.visible())
+                // Reveal on hover or while keyboard focus is inside the row.
+                // Hidden controls keep their columns but do not intercept clicks.
+                .when(!keyboard_within, |button| {
+                    button
+                        .invisible()
+                        .group_hover(row_group.clone(), |style| style.visible())
+                })
                 .hover(|style| style.bg(rgb(palette.control)))
                 .when_some(self.on_liked, |button, handler| {
                     button.on_click(move |event, window, cx| {
@@ -443,14 +441,13 @@ impl RenderOnce for TrackRow {
                     .flex_none()
                     .child(
                         components::button(palette, ("track-actions", index))
-                            .test_support()
                             .aria_label("More actions")
                             .size(px(ACTIONS_COLUMN_WIDTH))
                             .rounded(px(18.))
                             .hover(|style| style.bg(rgb(palette.control)))
                             .active(|style| style.bg(rgb(palette.control_hover)))
                             .when(self.menu_open, |button| button.bg(rgb(palette.control)))
-                            .when(!self.menu_open, |button| {
+                            .when(!self.menu_open && !keyboard_within, |button| {
                                 // Same story as the heart's reveal: the
                                 // button stays mounted, so an opacity ramp
                                 // has nothing to restart on, and an
@@ -503,7 +500,7 @@ fn library_row(
     id: impl Into<ElementId>,
     depth: usize,
     edges: RowEdges,
-) -> Stateful<Div> {
+) -> gpui_kit::base::Button {
     components::button(palette, id)
         .w_full()
         .h(px(76.))

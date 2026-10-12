@@ -17,6 +17,7 @@ pub(super) enum ToolbarEvent {
 /// The bar above the page: search on the left, account on the right.
 pub(super) struct Toolbar {
     search_input: Entity<InputState>,
+    account_focus: FocusHandle,
     menu_open: bool,
     session: Entity<session::Session>,
     player: Entity<player::Player>,
@@ -51,6 +52,7 @@ impl Toolbar {
         );
         Self {
             search_input,
+            account_focus: cx.focus_handle(),
             menu_open: false,
             session: services::AppServices::session(cx),
             player: services::AppServices::player(cx),
@@ -255,8 +257,9 @@ impl Toolbar {
                             "Settings",
                             false,
                         )
-                        .on_click(cx.listener(|_, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
                             cx.stop_propagation();
+                            window.focus(&this.account_focus, cx);
                             cx.emit(ToolbarEvent::OpenSettings);
                         })),
                     ),
@@ -351,6 +354,7 @@ impl Render for Toolbar {
                     .relative()
                     .child(
                         components::button(palette, "account")
+                            .track_focus(&self.account_focus)
                             .size(px(40.))
                             .rounded(px(40.))
                             .overflow_hidden()

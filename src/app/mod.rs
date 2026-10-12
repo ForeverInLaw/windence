@@ -52,8 +52,6 @@ pub(crate) mod test_support;
 actions!(
     cadence,
     [
-        Tab,
-        TabPrev,
         OpenSearch,
         TogglePlayback,
         SeekBack,

@@ -2,6 +2,7 @@ use super::*;
 
 use super::icons::CadenceIcon;
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::base::Button;
 use gpui_kit::component::IconNamed as _;
 
 /// Shared building blocks for Cadence views.
@@ -12,10 +13,13 @@ use gpui_kit::component::IconNamed as _;
 /// The heart's hit area, which the track list also sizes its column to.
 pub(super) const LIKED_HEART_SIZE: f32 = 36.;
 
-pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
-        .id(id)
-        .tab_stop(true)
+/// Focused controls handle Space through their own click action.
+pub(super) const CONTROL_KEY_CONTEXT: &str = "Control";
+
+pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .key_context(CONTROL_KEY_CONTEXT)
+        .line_height(gpui_kit::phi())
         .flex()
         .items_center()
         .justify_center()
@@ -82,11 +86,7 @@ impl PinDrag {
 
 /// Makes a row of the pinned section both draggable and a place to drop
 /// another one.
-pub(super) fn draggable_pin(
-    row: Stateful<Div>,
-    palette: CadencePalette,
-    drag: PinDrag,
-) -> Stateful<Div> {
+pub(super) fn draggable_pin(row: Button, palette: CadencePalette, drag: PinDrag) -> Button {
     row.on_drag(drag.pin, |dragged, _, _, cx| {
         let dragged = dragged.clone();
         cx.new(|_| dragged)
@@ -150,7 +150,6 @@ pub(super) fn action_notice_banner(
                     CadenceIcon::Close,
                     "Dismiss",
                 )
-                .test_support()
                 .size(px(32.))
                 .on_click(on_dismiss),
             )
@@ -185,7 +184,7 @@ pub(super) fn pill(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     primary: bool,
-) -> Stateful<Div> {
+) -> Button {
     let (background, foreground) = if primary {
         (rgb(palette.text_primary), rgb(palette.surface))
     } else {
@@ -221,6 +220,7 @@ pub(super) fn link(
     window: &Window,
 ) -> gpui_kit::base::Button {
     gpui_kit::base::Button::new(id)
+        .key_context(CONTROL_KEY_CONTEXT)
         .role(gpui_kit::Role::Link)
         .line_height(window.text_style().line_height)
         .cursor_pointer()
@@ -236,7 +236,7 @@ pub(super) fn icon_button(
     id: impl Into<ElementId>,
     name: CadenceIcon,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     icon_button_with(palette, id, name, 17., label)
 }
 
@@ -247,7 +247,7 @@ pub(super) fn icon_button_with(
     name: CadenceIcon,
     size: f32,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .size(px(40.))
         .flex_none()
@@ -269,7 +269,7 @@ pub(super) fn liked_heart(
     id: impl Into<ElementId>,
     liked: bool,
     label: impl Into<SharedString>,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .size(px(LIKED_HEART_SIZE))
         .flex_none()
@@ -292,7 +292,7 @@ pub(super) fn menu_item(
     name: CadenceIcon,
     label: &'static str,
     destructive: bool,
-) -> Stateful<Div> {
+) -> Button {
     let color = if destructive {
         palette.danger
     } else {
@@ -316,7 +316,7 @@ pub(super) fn text_menu_item(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     label: &'static str,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .w_full()
         .h(px(36.))
@@ -334,7 +334,7 @@ pub(super) fn settings_button(
     palette: CadencePalette,
     id: impl Into<ElementId>,
     label: &'static str,
-) -> Stateful<Div> {
+) -> Button {
     button(palette, id)
         .h(px(40.))
         .px(px(14.))

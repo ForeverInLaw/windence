@@ -34,6 +34,9 @@ pub(super) struct AppServices {
     has_been_ready: bool,
     /// Drains backend events for the whole process, not just for a window.
     event_pump: Option<gpui_kit::Task<()>>,
+    /// Periodic refresh continues without a window and stops at process shutdown.
+    library_refresh: Option<gpui_kit::Task<()>>,
+    subscriptions: Vec<Subscription>,
     lifecycle: Arc<InstanceLifecycle>,
     store: Option<Store>,
     /// The live preference values, so a window opened later starts from what
@@ -45,9 +48,9 @@ impl gpui_kit::Global for AppServices {}
 
 impl AppServices {
     /// Services over the isolated backend: entities come up exactly as the
-    /// real init builds them, but no worker runs, no observer or pump is
-    /// attached, and persistence stays in memory. Tests deliver backend
-    /// events directly and read commands straight off the probe.
+    /// real init builds them, but no worker runs, no window-sync observer or
+    /// event pump is attached, and persistence stays in memory. Tests deliver
+    /// backend events directly and read commands straight off the probe.
     #[cfg(test)]
     pub(super) fn init_isolated(cx: &mut App, backend: Backend, preferences: AppPreferences) {
         let handle = backend.handle();
@@ -61,6 +64,7 @@ impl AppServices {
             )
         });
         let image_cache = image_cache::BoundedImageCache::new(cx);
+        let subscriptions = vec![Self::subscribe_shutdown(cx)];
         cx.set_global(Self {
             backend: Some(backend),
             player,
@@ -79,6 +83,8 @@ impl AppServices {
             last_connection_state: ConnectionState::Starting,
             has_been_ready: false,
             event_pump: None,
+            library_refresh: None,
+            subscriptions,
             lifecycle: InstanceLifecycle::isolated(),
             store: Some(Store::in_memory().expect("in-memory settings")),
             preferences,
@@ -113,30 +119,23 @@ impl AppServices {
         ));
         let player_for_media = player.clone();
         // Keep the system's now-playing panel in step with the player.
-        cx.observe(&player, |player, cx| {
+        let player_subscription = cx.observe(&player, |player, cx| {
             let mut services = cx.remove_global::<Self>();
             if let Some(controls) = services.media_controls.as_mut() {
                 controls.sync(player.read(cx));
             }
             cx.set_global(services);
-        })
-        .detach();
-        cx.on_app_quit(|cx| {
-            Self::shutdown(cx);
-            async {}
-        })
-        .detach();
-        cx.on_window_closed(|cx, _| {
+        });
+        let quit_subscription = Self::subscribe_shutdown(cx);
+        let close_subscription = cx.on_window_closed(|cx, _| {
             Self::prune_closed_windows(cx);
             if cx.windows().is_empty() {
                 // The window owned the live position; persist it while the
                 // services keep playing without one.
                 Self::player(cx).read(cx).save_position();
             }
-        })
-        .detach();
-        cx.observe(&session, |_, cx| windows::sync_windows(cx))
-            .detach();
+        });
+        let session_subscription = cx.observe(&session, |_, cx| windows::sync_windows(cx));
         let media_controls = media_controls::SystemMediaControls::attach(player_for_media, cx);
         cx.set_global(Self {
             backend: Some(backend),
@@ -153,6 +152,13 @@ impl AppServices {
             last_connection_state: ConnectionState::Starting,
             has_been_ready: false,
             event_pump: None,
+            library_refresh: None,
+            subscriptions: vec![
+                player_subscription,
+                quit_subscription,
+                close_subscription,
+                session_subscription,
+            ],
             lifecycle,
             store,
             preferences,
@@ -160,6 +166,13 @@ impl AppServices {
         Self::pump(events, cx);
         Self::poll_library(cx);
         handle
+    }
+
+    fn subscribe_shutdown(cx: &App) -> Subscription {
+        cx.on_app_quit(|cx| {
+            Self::shutdown(cx);
+            async {}
+        })
     }
 
     pub(super) fn backend(cx: &App) -> BackendHandle {
@@ -304,15 +317,15 @@ impl AppServices {
     /// was when every refresh walked the whole collection.
     fn poll_library(cx: &mut App) {
         let library = Self::library(cx);
-        cx.spawn(async move |cx| {
+        let task = cx.spawn(async move |cx| {
             loop {
                 cx.background_executor()
                     .timer(LIBRARY_REFRESH_INTERVAL)
                     .await;
                 library.update(cx, |library, cx| library.revalidate(cx));
             }
-        })
-        .detach();
+        });
+        cx.global_mut::<Self>().library_refresh = Some(task);
     }
 
     /// Notes which window should receive the events the services do not consume.
@@ -496,10 +509,16 @@ impl AppServices {
         Self::pump(events, cx);
     }
 
-    /// Saves the live position and stops the worker thread. The process exits
-    /// straight after `applicationWillTerminate:`, so nothing else will.
+    /// Saves the live position and stops tasks, callbacks, and the worker
+    /// before GPUI closes the app.
     fn shutdown(cx: &mut App) {
         let position_ms = Self::player(cx).read(cx).position_snapshot();
+        let services = cx.global_mut::<Self>();
+        services.library_refresh = None;
+        services.event_pump = None;
+        services.media_controls = None;
+        services.media_controls_window = None;
+        services.subscriptions.clear();
         // Stop the worker before writing, both because its shutdown drops any
         // command still queued behind it, and so it cannot write a later
         // position over this one on its way out.
@@ -516,5 +535,48 @@ impl AppServices {
         if let Some(Err(error)) = saved {
             log::error!("could not save the playback position: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{HeadlessAppContext, NoopTextSystem};
+
+    #[test]
+    fn library_timer_stops_when_services_shutdown() {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let mut backend = cx.update(|cx| test_support::initialize(cx, ThemePreference::Dark));
+        cx.update(AppServices::poll_library);
+        cx.run_until_parked();
+
+        cx.update(App::shutdown);
+        cx.advance_clock(LIBRARY_REFRESH_INTERVAL);
+        cx.run_until_parked();
+
+        assert!(matches!(
+            backend.commands.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn backend_event_receiver_closes_when_services_shutdown() {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        cx.update(|cx| test_support::initialize(cx, ThemePreference::Dark));
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        cx.update(|cx| AppServices::pump(receiver, cx));
+        cx.run_until_parked();
+
+        cx.update(App::shutdown);
+        cx.run_until_parked();
+
+        assert!(events.is_closed());
     }
 }

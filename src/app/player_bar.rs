@@ -18,6 +18,7 @@ pub(super) struct PlayerBar {
     progress_focus: FocusHandle,
     scrubber: scrubber::Scrubber,
     volume_focus: FocusHandle,
+    queue_focus: FocusHandle,
     /// The width the bar's content spans: the window minus the sidebar.
     /// The workspace keeps it current every frame.
     content_width: f32,
@@ -63,6 +64,7 @@ impl PlayerBar {
             progress_focus: cx.focus_handle().tab_stop(true),
             scrubber: scrubber::Scrubber::new(),
             volume_focus: cx.focus_handle().tab_stop(true),
+            queue_focus: cx.focus_handle(),
             // Replaced with the real value before the first paint; the
             // default only has to keep the layout math sane.
             content_width: 0.,
@@ -78,6 +80,7 @@ impl PlayerBar {
         slider_width: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let has_track = self.player.read(cx).now_playing().is_some();
         let progress = if duration_ms == 0 {
             0.
         } else {
@@ -102,8 +105,7 @@ impl PlayerBar {
                     cx.propagate();
                 }
             }))
-            .track_focus(&self.progress_focus)
-            .tab_stop(true)
+            .track_focus(&self.progress_focus.clone().tab_stop(has_track))
             .h(px(20.))
             .w(px(slider_width))
             .flex_none()
@@ -218,6 +220,10 @@ impl PlayerBar {
         }
     }
 
+    pub(super) fn focus_queue_toggle(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.queue_focus, cx);
+    }
+
     /// Takes the content width the workspace derived for this frame. The
     /// bar's tiers and its timeline fold read it instead of the window
     /// bounds, so a rail collapse or window resize lands in the same frame.
@@ -263,6 +269,7 @@ impl PlayerBar {
         );
         match playing_album(Some(track)) {
             Some(album) => gpui_kit::base::Button::new("player-artwork")
+                .key_context(components::CONTROL_KEY_CONTEXT)
                 .role(gpui_kit::Role::Link)
                 .tab_stop(false)
                 .accessibility_label(album.name.clone())
@@ -375,6 +382,7 @@ impl PlayerBar {
             self.scrubber.cancel();
         }
         let now_playing = player.now_playing().cloned();
+        let has_track = now_playing.is_some();
         let playing = player.playing();
         let loading = player.loading();
         let position_ms = player.display_position_ms(cx.background_executor().now());
@@ -430,7 +438,7 @@ impl PlayerBar {
                                 cx,
                             )),
                     )
-                    .child(self.liked_toggle(palette, now_playing, cx).test_support()),
+                    .child(self.liked_toggle(palette, now_playing, cx)),
             )
             .child(
                 div()
@@ -458,7 +466,6 @@ impl PlayerBar {
                                     shuffle_supported,
                                     shuffle_smart_supported,
                                 )
-                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player
@@ -473,7 +480,7 @@ impl PlayerBar {
                                     CadenceIcon::SkipBack,
                                     "Previous track",
                                 )
-                                .test_support()
+                                .disabled(!has_track)
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.previous(cx));
@@ -482,7 +489,7 @@ impl PlayerBar {
                             )
                             .child(
                                 components::button(palette, "play-toggle")
-                                    .test_support()
+                                    .disabled(!has_track)
                                     .aria_label(if playing { "Pause" } else { "Play" })
                                     .size(px(TRANSPORT_BUTTON_SIZE))
                                     .rounded(px(TRANSPORT_BUTTON_SIZE / 2.))
@@ -514,7 +521,7 @@ impl PlayerBar {
                                     CadenceIcon::SkipForward,
                                     "Next track",
                                 )
-                                .test_support()
+                                .disabled(!has_track)
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.next(cx));
@@ -570,7 +577,7 @@ impl PlayerBar {
                             17.,
                             "Queue",
                         )
-                        .test_support()
+                        .track_focus(&self.queue_focus)
                         .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let open = !this.queue_open;
@@ -580,7 +587,6 @@ impl PlayerBar {
                     )
                     .child(
                         components::icon_button_with(palette, "volume", volume_icon, 17., "Volume")
-                            .test_support()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
                             })),
@@ -656,7 +662,7 @@ impl PlayerBar {
         palette: CadencePalette,
         track: Option<model::Track>,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> gpui_kit::base::Button {
         let liked = track
             .as_ref()
             .is_some_and(|track| self.library.read(cx).is_liked(track));
@@ -670,6 +676,7 @@ impl PlayerBar {
                 "Add to Liked Songs"
             },
         )
+        .disabled(track.is_none())
         .when(track.is_none(), |button| button.opacity(0.5))
         .when_some(track, |button, track| {
             button
@@ -698,13 +705,14 @@ fn shuffle_toggle(
     mode: ShuffleMode,
     supported: bool,
     smart_supported: bool,
-) -> Stateful<Div> {
+) -> gpui_kit::base::Button {
     let active = mode.shuffles();
     let (icon, label) = match mode {
         ShuffleMode::Smart => (CadenceIcon::Sparkles, "Smart shuffle"),
         _ => (CadenceIcon::Shuffle, "Shuffle"),
     };
     components::button(palette, "shuffle-toggle")
+        .disabled(!supported)
         .size(px(40.))
         .flex_none()
         .rounded(px(20.))
@@ -809,7 +817,6 @@ impl QueueDrawer {
                             CadenceIcon::Close,
                             "Close queue",
                         )
-                        .test_support()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )
@@ -884,9 +891,16 @@ impl QueueDrawer {
         track: model::Track,
         current: bool,
         injected: bool,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
+    ) -> gpui_kit::base::Button {
+        components::button(palette, id)
+            .focusable(!current)
+            .tab_stop(!current)
+            .role(if current {
+                gpui_kit::Role::ListItem
+            } else {
+                gpui_kit::Role::Button
+            })
+            .justify_start()
             .w_full()
             .h(px(if current { 72. } else { 62. }))
             .flex_none()

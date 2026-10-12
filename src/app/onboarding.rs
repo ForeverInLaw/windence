@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::TestSupportExt as _;
 
 use super::icons::CadenceIcon;
 
@@ -49,6 +48,7 @@ pub(super) struct Onboarding {
     session: Entity<session::Session>,
     client_id_input: Entity<InputState>,
     _client_id_subscription: Subscription,
+    _focus_lost_subscription: Subscription,
     focus_handle: FocusHandle,
     /// The last error the surrounding window reported, shown alongside the form.
     last_error: Option<String>,
@@ -72,11 +72,20 @@ impl Onboarding {
                 _ => {}
             },
         );
+        let focus_handle = cx.focus_handle();
+        let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus_handle.clone());
+            window.focus(&target, cx);
+        });
+        window.focus(&focus_handle, cx);
         Self {
             session: services::AppServices::session(cx),
             client_id_input,
             _client_id_subscription: subscription,
-            focus_handle: cx.focus_handle(),
+            _focus_lost_subscription: focus_lost_subscription,
+            focus_handle,
             last_error: None,
         }
     }
@@ -517,7 +526,6 @@ impl Onboarding {
                                             "Log in with Spotify",
                                             true,
                                         )
-                                        .test_support()
                                         .h(px(48.))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.configure(window, cx);
@@ -573,6 +581,7 @@ impl Onboarding {
             .when(!configuration_blocked, |form| {
                 form.child(div().mt(px(32.)).flex().justify_start().child(if connecting {
                     components::pill(appearance::Appearance::palette(cx), "spotify-login-pending", "Log in with Spotify", true)
+                        .disabled(true)
                         .h(px(48.))
                         .gap(px(8.))
                         .cursor_default()
