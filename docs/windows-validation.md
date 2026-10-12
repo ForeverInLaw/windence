@@ -1,5 +1,31 @@
 # Native Windows validation
 
+## Store package
+
+Run these checks before the first Store certification, then repeat the update
+checks on a later Store-delivered version. Record OS build, package version and
+results in IVO-79. See the [delivery guide](microsoft-store.md) for packaging.
+
+- Install and launch on x64 Windows 10 build 19041 or newer and Windows 11.
+- Confirm Windence's name and icon in Start, Settings and the app window.
+- Confirm the privacy policy is accessible before sign-in and in Settings.
+- Complete both browser OAuth steps. Restart and confirm saved credentials work.
+- Play audio, change the default output device and test SMTC metadata/controls.
+- Launch again from Start. Confirm one player remains and comes forward.
+- Close the window while playing, reopen it, then quit completely.
+- With a closed existing Inno/ZIP copy, back up `%APPDATA%\Cadence` and install
+  the Store version. Confirm preferences, history, playlist cache and saved
+  playback survive. Confirm no old process handles the Store activation.
+- Update Store version A to B. Confirm authentication and profile data survive,
+  saved queue/position restore, and playback starts paused after relaunch.
+- Confirm Store handles downloads on a Windows metered connection. The app
+  itself does not download an installer.
+
+CI currently verifies a test-signed package installation, onboarding and the
+unvirtualized profile path. It does not cover the remaining checks above.
+
+## GPUI and appearance checks
+
 Use this checklist after a GPUI snapshot or appearance change. Portable
 interaction tests verify controls and layout. They do not prove OAuth,
 native window behavior, WASAPI output, SMTC or Windows rendering.

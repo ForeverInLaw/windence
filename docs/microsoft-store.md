@@ -1,0 +1,139 @@
+# Microsoft Store delivery
+
+Windence uses Microsoft Store for public installation and updates.
+[IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
+tracks packaging, native checks, in-app reminders and publication separately.
+The first layer builds an upload package. It does not publish the app.
+
+## Package identity
+
+These values come from the owner's Partner Center product identity page.
+They are public identifiers, not credentials.
+
+| Field | Value |
+| --- | --- |
+| Name | `redstone.md.Windence` |
+| Publisher | `CN=C0C4D47C-912F-43D4-8BBF-FE47FBB8F883` |
+| Publisher display name | `redstone.md` |
+| Store product ID | `9PJ0NRJRJWH8` |
+| Architecture | x64 |
+| Minimum Windows version | Windows 10 build 19041, version 2004 |
+
+`packaging/store/AppxManifest.xml` is the manifest template. Packaging replaces
+its placeholder version with Cargo's stable `major.minor.patch.0`. Store reserves
+the fourth component as zero. Each component must be at most 65535 and the major
+component must be nonzero. Increase the Cargo version for each Store update.
+Do not change the identity to fix a build or installation problem.
+
+## First upload
+
+1. In GitHub Actions, run **Release** on the branch containing this change.
+   It builds the development installer/ZIP and then MSIX from the same binary.
+2. Wait for a successful run. Download the `windence-store-x64` artifact and
+   extract it. The upload file is `Windence-<version>-windows-x64.msix`.
+   Its `.sha256` sidecar is a checksum, not an upload package.
+3. In Partner Center, open Windence's first submission, then **Packages**.
+   Upload the `.msix`. Do not upload the Actions ZIP or development installer.
+   Check the recognized publisher, architecture and four-part version.
+4. Complete pricing, properties, age ratings, descriptions, screenshots,
+   support information and privacy policy. [PRIVACY.md](../PRIVACY.md) contains
+   the text for the inline privacy field. Support uses the project's GitHub page.
+5. Explain `runFullTrust` if Partner Center asks. The app runs an existing Win32
+   desktop executable using GPUI, browser OAuth with a loopback callback,
+   Windows Credential Manager, WASAPI audio and system media controls. It does
+   not request administrator rights or install a service.
+6. Provide certification notes explaining the Spotify Premium requirement and
+   the guided setup of a Spotify developer Client ID. Ensure reviewers can
+   complete that setup. Do not include a client secret.
+7. After native checks and review, submit for certification in Partner Center.
+   Wait until the first version is published and live before enabling CI delivery.
+
+Microsoft signs the public package after certification. No separate paid
+certificate or repository signing key is needed for this Store channel. The CI
+artifact is unsigned, so double-clicking it is not a supported local installation
+path. A single-architecture `.msix` is an accepted Store upload; `.msixupload`
+is optional and is not needed for this first package.
+[Package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements),
+[first publication requirement](https://learn.microsoft.com/en-us/windows/apps/publish/msstore-dev-cli/overview).
+
+## Build and test locally
+
+On Windows with the pinned Rust toolchain, Visual Studio and Windows SDK:
+
+```powershell
+scripts\package-msix.ps1
+```
+
+The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
+`-ExpectedVersion v1.3.0` checks Cargo against a release tag. MakeAppx performs
+its semantic validation; it does not replace certification or native checks.
+Logo PNGs are committed. Regenerate them with the existing
+`python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
+
+CI also runs `scripts\test-msix.ps1` through Windows PowerShell on its clean
+runner. It unpacks the actual artifact, signs a separate copy with a temporary
+certificate, trusts that certificate on the runner, installs the copy and opens
+onboarding through its registered app identity. It verifies that SQLite uses
+the original profile path. It removes the test package, certificate and test
+profile afterward. The upload artifact never receives this signature.
+Only run that test on a disposable clean Windows machine with administrator rights.
+
+Before public certification, complete the
+[Store native checklist](windows-validation.md#store-package). CI onboarding
+does not prove Spotify login, audio, SMTC, migration or a Store-delivered update.
+The app's privacy policy must also be accessible from its interface before
+certification; in-app policy access belongs to the next IVO-79 layer.
+
+## Existing installations
+
+Close the current player completely before launching the Store copy. Both
+copies intentionally share the per-user single-instance pipe. Leaving the old
+copy running can bring it forward instead of starting the new app.
+
+The profile stays at `%APPDATA%\Cadence`. Credential Manager still uses
+`com.cadence.spotify`; this public rename does not change token account names.
+Back up the whole profile folder while the app is closed before testing the
+transition. Keep the old installer until the Store copy has passed the native
+checklist. Then remove the old installation manually. The app does not uninstall
+another copy or delete its profile. ZIP means no installer, not folder-local data.
+
+## Enable later CI/CD
+
+The official Store CLI currently supports updates to **free** products only.
+It cannot create this app or publish its first loose MSIX submission.
+[Microsoft's setup guide](https://learn.microsoft.com/en-us/windows/apps/publish/msstore-dev-cli/github-actions).
+
+After first publication, the owner performs these one-time steps:
+
+1. Associate a Microsoft Entra tenant with the Partner Center account.
+2. Register an automation application in Entra. Add it in Partner Center's
+   **Account settings > User management > Microsoft Entra applications** with
+   the **Manager** role.
+3. Create the `store` GitHub Environment. Restrict deployment to stable version
+   tags and set the owner as required reviewer. Add environment secrets
+   `MSSTORE_TENANT_ID`, `MSSTORE_SELLER_ID`, `MSSTORE_CLIENT_ID` and
+   `MSSTORE_CLIENT_SECRET`. Use the secret value, not its ID. Keep it out of chat,
+   commits and issue descriptions. Track its expiry date.
+4. In repository **Settings > Secrets and variables > Actions > Variables**,
+   set `STORE_PUBLISH_ENABLED` to `true`. Leave it unset until access is ready.
+
+Stable `v<major>.<minor>.<patch>` tags then build and test the MSIX. The protected
+Store job only accepts commits already merged into `windows-port`. It downloads
+that run's exact unsigned artifact and uses official CLI `v0.4.3` with the setup
+action pinned to its v1.4 commit.
+
+Before submission, the job validates the package, reads the Store product and
+requires matching identity, an existing published version and no pending
+submission. A failure stops delivery. The CLI otherwise deletes a pending
+draft and creates a submission from the last published metadata. This is why
+the guard is needed. Do not edit Partner Center while CI submits; portal edits
+after the check can still race with CLI publication.
+
+The job serializes Store submissions across tags. If a submission is pending,
+finish it in Partner Center before retrying. A CLI success means the submission
+was sent, not that Microsoft finished certification or users received the update.
+EXE/ZIP and preview tags remain Actions artifacts. This workflow no longer
+publishes executable downloads to GitHub Releases.
+
+[Pinned MSIX publisher](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/ProjectConfigurators/MSIXProjectPublisher.cs),
+[draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs).

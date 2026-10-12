@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Renders the app icon from assets/AppIcon.svg into every format the
 bundles need: AppIcon.ico for the Windows executable (see build.rs),
-AppIcon.icns for the macOS bundle, and cadence-mark.png from the
+AppIcon.icns for the macOS bundle, Store tile PNGs, and cadence-mark.png from the
 in-app mark.
 
 Rendering goes through resvg so the area outside the rounded tile stays
