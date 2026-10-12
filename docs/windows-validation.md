@@ -8,11 +8,16 @@ native window behavior, WASAPI output, SMTC or Windows rendering.
 
 - Baseline before the GPUI upgrade: commit `8241df2`,
   [artifact build](https://github.com/ForeverInLaw/windence/actions/runs/38279361089).
-  The run must finish successfully before its files count as build evidence.
-- Upgraded build: record the exact commit, successful CI run and Release
-  artifact run here after they finish.
-- Final appearance build: record its exact commit and artifact run after
-  the appearance ticket is integrated.
+- GPUI upgrade: commit `42ec112`,
+  [Windows CI](https://github.com/ForeverInLaw/windence/actions/runs/38279655986)
+  and [artifact build](https://github.com/ForeverInLaw/windence/actions/runs/38281237057).
+- Integrated code, including calm appearance, playlist search and review
+  fixes: commit `6ec7270`,
+  [Windows CI](https://github.com/ForeverInLaw/windence/actions/runs/38287231417)
+  and [artifact build](https://github.com/ForeverInLaw/windence/actions/runs/38287241242).
+
+Use files only after their run finishes successfully. The code commit is
+recorded separately from later documentation commits.
 
 The manual Release workflow builds `cadence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
@@ -62,6 +67,29 @@ Use a window that fits the screen at each scale.
 
 Record the commit and artifact used, pass/fail for each item, Windows scale,
 and screenshots. Report failures with the steps that reproduce them.
+
+## Native onboarding evidence
+
+[Comparison run](https://github.com/ForeverInLaw/windence/actions/runs/38285394728)
+captured the baseline `8241df2` and appearance build `38db4ad` in light and
+dark themes, before and after Tab. Each window was 1200 by 720 pixels at
+96 DPI (100%). The `cadence-native-onboarding` artifact includes the PNGs,
+app logs and `report.json`. Its status was `captured-needs-visual-review`;
+all eight window images were inspected. Borders are quieter, keyboard
+focus remains visible, and text and controls fit without clipping.
+
+The final artifact build above repeats this comparison for `6ec7270`.
+Read its report and inspect its images before counting it as evidence.
+This capture covers onboarding at 100% only. The functional checks and
+signed-in main-window comparisons above still need a Windows account and
+audio devices.
+
+To repeat the optional capture, manually run Release on the integration
+branch with `baseline_run_id=38279361089`. It does not sign in or seed app
+data. It uses an interactive desktop and, if needed, attempts the built-in
+display-resolution command once, then restores the original settings.
+The optional step can fail while packaging succeeds; `report.json` gives
+the capture result. It never publishes a release from a manual run.
 
 ## Sources
 
