@@ -313,6 +313,23 @@ impl PlaylistPage {
             .map(|playlist| library_index::playlist_uri(&playlist.source_id))
     }
 
+    fn show_tracks(&self, tracks: Arc<[model::ListedTrack]>, cx: &mut Context<Self>) {
+        if let Some(playlist) = self.selected.as_ref() {
+            let list_id = (
+                ElementId::from("playlist-tracks"),
+                playlist.source_id.clone(),
+            );
+            self.track_list.update(cx, |list, cx| {
+                list.show(
+                    list_id,
+                    tracks,
+                    track_list::ListContext::playlist(playlist),
+                    cx,
+                )
+            });
+        }
+    }
+
     pub(super) fn open(
         &mut self,
         playlist: model::Playlist,
@@ -324,6 +341,7 @@ impl PlaylistPage {
         }
         self.selected = Some(playlist.clone());
         self.tracks = Arc::default();
+        self.show_tracks(self.tracks.clone(), cx);
         self.loaded = false;
         self.error = None;
         // A playing station is already showing what is ahead; asking the
@@ -382,8 +400,9 @@ impl PlaylistPage {
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_search(window, cx);
         self.request = None;
-        self.selected = None;
         self.tracks = Arc::default();
+        self.show_tracks(self.tracks.clone(), cx);
+        self.selected = None;
         self.loaded = false;
 
         self.error = None;
@@ -910,19 +929,8 @@ impl Render for PlaylistPage {
         let list = if let Some(error) = self.error.as_deref() {
             components::empty_state(palette, format!("Unable to load playlist: {error}"))
                 .into_any_element()
-        } else if let Some(playlist) = self.selected.as_ref().filter(|_| !tracks.is_empty()) {
-            let list_id = (
-                ElementId::from("playlist-tracks"),
-                playlist.source_id.clone(),
-            );
-            self.track_list.update(cx, |list, cx| {
-                list.show(
-                    list_id,
-                    tracks.clone(),
-                    track_list::ListContext::playlist(playlist),
-                    cx,
-                )
-            });
+        } else if self.selected.is_some() && !tracks.is_empty() {
+            self.show_tracks(tracks.clone(), cx);
             self.track_list.clone().into_any_element()
         } else if self.selected.is_none() {
             components::empty_state(palette, "No playlist open").into_any_element()

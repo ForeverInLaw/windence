@@ -52,6 +52,48 @@ impl Fixture {
 }
 
 #[test]
+fn switching_playlists_never_plays_retained_rows_while_loading_or_without_tracks() {
+    for result in [Ok(Vec::new()), Err(anyhow::anyhow!("Playlist unavailable"))] {
+        let mut fixture = Fixture::new(false);
+        fixture.open_playlist("previous", vec![track(10)]);
+        let workspace = fixture.workspace.clone().expect("workspace fixture");
+        fixture.update(|window, cx| {
+            workspace
+                .upgrade()
+                .expect("live workspace")
+                .update(cx, |workspace, cx| {
+                    workspace.load_playlist(playlist("next", 0), window, cx);
+                });
+        });
+        let BackendCommand::LoadPlaylist { respond, .. } = fixture
+            .backend
+            .commands
+            .try_recv()
+            .expect("playlist request")
+        else {
+            panic!("expected playlist request");
+        };
+        fixture.update(|window, cx| {
+            window.click("playlist-play", cx);
+            window.click("playlist-shuffle", cx);
+        });
+        fixture.no_commands();
+
+        respond
+            .send(result.map(|tracks| PlaylistContents::Loaded {
+                playlist: None,
+                tracks,
+            }))
+            .expect("live playlist reply");
+        fixture.update(|window, cx| {
+            window.click("playlist-play", cx);
+            window.click("playlist-shuffle", cx);
+        });
+        fixture.no_commands();
+    }
+}
+
+#[test]
 fn typing_and_clearing_playlist_search_filters_rows_without_commands() {
     let mut fixture = Fixture::new(false);
     fixture.open_playlist("searchable", vec![track(10), track(11)]);
