@@ -31,6 +31,9 @@ Start-Transcript -Path (Join-Path $OutputDirectory 'probe.log') | Out-Null
 $themePath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 $originalTheme = @{}
 $themeChanged = $false
+$displayChanged = $false
+$originalScreen = $null
+$resolutionCommand = $null
 $child = $null
 $appData = $null
 $failed = $false
@@ -66,7 +69,9 @@ public static class CadenceCaptureNative {
     [CadenceCaptureNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
     Add-Type -AssemblyName System.Drawing, System.Windows.Forms
     $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $originalScreen = $screen
     $report.desktop = @{ x = $screen.X; y = $screen.Y; width = $screen.Width; height = $screen.Height }
+    $report.original_desktop = $report.desktop
 
     # BaseDirs uses the Windows known folder, not an APPDATA env override.
     $appData = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Cadence'
@@ -163,6 +168,29 @@ public static class CadenceCaptureNative {
                 if ($dpi -eq 0) { throw "Windows did not report DPI for $label." }
                 $width = [int](1200 * $dpi / 96)
                 $height = [int](720 * $dpi / 96)
+                if (($screen.Width -lt $width -or $screen.Height -lt $height) -and -not $displayChanged) {
+                    # Use the built-in Server Core command once. No alternate
+                    # driver, remote desktop or cropped-window fallback.
+                    # https://learn.microsoft.com/en-us/powershell/module/servercore/set-displayresolution
+                    $resolutionCommand = Get-Command 'ServerCore\Set-DisplayResolution' -ErrorAction SilentlyContinue
+                    if ($null -eq $resolutionCommand) {
+                        throw 'The desktop cannot fit onboarding and the built-in ServerCore Set-DisplayResolution command is unavailable.'
+                    }
+                    $report.resolution_attempt = @{ command = 'ServerCore Set-DisplayResolution'; width = 1920; height = 1080 }
+                    $displayChanged = $true
+                    & $resolutionCommand -Width 1920 -Height 1080 -Force | Out-Null
+                    $displayDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                    do {
+                        $screen = [Windows.Forms.Screen]::FromPoint($originalScreen.Location).Bounds
+                        if ($screen.Width -eq 1920 -and $screen.Height -eq 1080) { break }
+                        Start-Sleep -Milliseconds 200
+                    } while ([DateTime]::UtcNow -lt $displayDeadline)
+                    $report.desktop = @{ x = $screen.X; y = $screen.Y; width = $screen.Width; height = $screen.Height }
+                    $report.resolution_applied = $screen.Width -eq 1920 -and $screen.Height -eq 1080
+                    if (-not $report.resolution_applied) {
+                        throw "Windows did not apply the requested 1920 by 1080 display mode; actual size is $($screen.Width) by $($screen.Height)."
+                    }
+                }
                 if ($screen.Width -lt $width -or $screen.Height -lt $height) {
                     throw "The desktop is too small for the complete $width by $height onboarding window at $dpi DPI."
                 }
@@ -216,6 +244,23 @@ public static class CadenceCaptureNative {
     $report.error = $_.Exception.Message
     Write-Warning $report.error
 } finally {
+    if ($displayChanged) {
+        try {
+            & $resolutionCommand -Width $originalScreen.Width -Height $originalScreen.Height -Force | Out-Null
+            $displayDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            do {
+                $restored = [Windows.Forms.Screen]::FromPoint($originalScreen.Location).Bounds
+                if ($restored.Width -eq $originalScreen.Width -and $restored.Height -eq $originalScreen.Height) { break }
+                Start-Sleep -Milliseconds 200
+            } while ([DateTime]::UtcNow -lt $displayDeadline)
+            $report.original_resolution_restored = $restored.Width -eq $originalScreen.Width -and $restored.Height -eq $originalScreen.Height
+            if (-not $report.original_resolution_restored) { throw 'Windows did not restore the original display dimensions.' }
+        } catch {
+            $failed = $true
+            $report.status = 'failed'
+            $report.error = "$($report.error) Could not restore runner resolution: $($_.Exception.Message)".Trim()
+        }
+    }
     if ($themeChanged) {
         try {
             foreach ($property in $originalTheme.Keys) {
