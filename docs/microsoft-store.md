@@ -82,8 +82,10 @@ Use the [Store native checklist](windows-validation.md#store-package) to record
 readiness. Initial runtime checks can use a locally test-signed copy. Store
 delivery, migration and Store A-to-B checks follow the first publication.
 CI onboarding does not prove Spotify login, audio, SMTC or those later checks.
-The app's privacy policy must also be accessible from its interface before
-certification; in-app policy access belongs to the next IVO-79 layer.
+The privacy policy is available from onboarding and Settings. Its link pins
+the policy revision shipped with this build, so it works before the first Store
+listing and before the packaging branch merges. A policy change must update
+that link and the Partner Center policy text together.
 
 ## Existing installations
 

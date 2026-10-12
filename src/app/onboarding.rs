@@ -279,6 +279,13 @@ impl Onboarding {
                 )
             })
             .child(div().flex_1())
+            .child(
+                div()
+                    .mt(px(16.))
+                    .flex()
+                    .justify_start()
+                    .child(components::privacy_policy_button(palette)),
+            )
     }
 
     fn spotify_login_configuration(&self, cx: &mut Context<Self>) -> Div {

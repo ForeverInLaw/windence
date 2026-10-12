@@ -243,6 +243,13 @@ impl Settings {
                                         )
                                     }),
                             ),
+                    )
+                    .child(
+                        div()
+                            .mt(px(24.))
+                            .flex()
+                            .justify_start()
+                            .child(components::privacy_policy_button(palette)),
                     ),
             )
     }
