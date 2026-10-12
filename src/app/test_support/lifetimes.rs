@@ -1,11 +1,41 @@
 use super::{initialize, settle, track, workspace};
-use crate::app::{assets, page::PageEvent, services::AppServices};
+use crate::app::{appearance::Appearance, assets, page::PageEvent, services::AppServices, windows};
+use gpui_kit::component::Theme;
 use gpui_kit::{HeadlessAppContext, NoopTextSystem};
 use spotify_gpui_client::{backend::BackendCommand, model, storage::ThemePreference};
 use std::sync::Arc;
 
 fn context() -> HeadlessAppContext {
     HeadlessAppContext::with_asset_source(Arc::new(NoopTextSystem), Arc::new(assets::AppAssets))
+}
+
+#[test]
+fn opening_and_reopening_windows_keeps_the_bundled_font_across_theme_changes() {
+    let mut cx = context();
+    cx.update(|cx| {
+        initialize(cx, ThemePreference::Dark);
+        super::ready(cx);
+        windows::open_main_window(cx);
+    });
+
+    for preference in [ThemePreference::Light, ThemePreference::Dark] {
+        cx.update(|cx| {
+            let handle = AppServices::main_window(cx).expect("main window");
+            handle
+                .update(cx, |_, window, cx| {
+                    Appearance::set_preference(preference, window, cx);
+                    assert_eq!(Theme::global(cx).font_family.as_ref(), "Inter");
+                    window.remove_window();
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(windows::show_app_window);
+    }
+    cx.update(|cx| {
+        assert!(AppServices::main_window(cx).is_some());
+        assert_eq!(Theme::global(cx).font_family.as_ref(), "Inter");
+    });
 }
 
 #[test]

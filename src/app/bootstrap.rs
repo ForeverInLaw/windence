@@ -27,15 +27,7 @@ pub(super) fn run() {
         }
     });
     app.run(move |cx: &mut App| {
-        gpui_kit::init(cx);
-        cx.text_system()
-            .add_fonts(
-                assets::FONT_FILES
-                    .iter()
-                    .map(|bytes| Cow::Borrowed(*bytes))
-                    .collect(),
-            )
-            .expect("could not register the bundled fonts");
+        initialize_ui(cx);
         cx.set_http_client(Arc::new(
             http::ImageHttpClient::new().expect("could not configure image HTTP client"),
         ));
@@ -74,6 +66,20 @@ pub(super) fn run() {
         windows::open_initial_window(credentials_expected, cx);
         cx.activate(true);
     });
+}
+
+/// Initializes the kit and its bundled font before any window measures text.
+pub(super) fn initialize_ui(cx: &mut App) {
+    gpui_kit::init(cx);
+    cx.text_system()
+        .add_fonts(
+            assets::FONT_FILES
+                .iter()
+                .map(|bytes| Cow::Borrowed(*bytes))
+                .collect(),
+        )
+        .expect("could not register the bundled fonts");
+    Theme::update(cx, |theme| theme.font_family = "Inter".into());
 }
 
 /// Whether the store says a signed-in session should come straight up: a

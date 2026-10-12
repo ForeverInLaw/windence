@@ -24,7 +24,7 @@ iana-time-zone = "0.1"
 # `gpui_kit::component` the component library, `gpui_kit::assets` its default
 # icon bundle (the fallback the app's asset source keeps for kit-internal
 # requests).
-gpui-kit = "0.6.1"
+gpui-kit = "0.7.3"
 rust-embed = "8"
 keyring = "4.1"
 # Same protobuf major the vendored librespot 0.8 speaks: we parse its raw
@@ -71,7 +71,7 @@ souvlaki = { version = "0.8.3", default-features = false, features = ["use_dbus"
 
 [dev-dependencies]
 # Headless GPUI test dispatcher (`HeadlessAppContext`, `#[gpui_kit::test]`).
-gpui-kit = { version = "0.6.1", features = ["test-support"] }
+gpui-kit = { version = "0.7.3", features = ["test-support"] }
 
 [build-dependencies]
 # Unused by us; this pin is a resolver constraint. librespot 0.8 builds through
