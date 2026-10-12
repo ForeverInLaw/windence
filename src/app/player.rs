@@ -328,8 +328,6 @@ impl Player {
             self.clock
                 .set_playing(false, cx.background_executor().now());
             self.playing = false;
-            self.clock
-                .set_playing(false, cx.background_executor().now());
             self.loading = true;
         }
         cx.notify();
@@ -346,8 +344,6 @@ impl Player {
             self.clock
                 .set_playing(false, cx.background_executor().now());
             self.playing = false;
-            self.clock
-                .set_playing(false, cx.background_executor().now());
             self.loading = true;
         }
         cx.notify();

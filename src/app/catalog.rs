@@ -250,7 +250,7 @@ impl PlaylistPage {
             self.player.update(cx, |player, cx| player.play_dj(cx));
             return;
         }
-        let tracks = self.track_list.read(cx).displayed_tracks();
+        let tracks = self.track_list.read(cx).sorted_context_tracks();
         if tracks.is_empty() {
             return;
         }
@@ -262,7 +262,7 @@ impl PlaylistPage {
 
     /// Starts the context shuffled and moves the global toggle to Shuffle.
     pub(super) fn play_shuffled(&mut self, cx: &mut Context<Self>) {
-        let tracks = self.track_list.read(cx).displayed_tracks();
+        let tracks = self.track_list.read(cx).sorted_context_tracks();
         if tracks.is_empty() {
             return;
         }

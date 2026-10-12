@@ -189,7 +189,7 @@ impl TrackList {
     }
 
     /// The complete sorted context. Search only hides rows and never narrows playback.
-    pub(super) fn displayed_tracks(&self) -> Vec<model::Track> {
+    pub(super) fn sorted_context_tracks(&self) -> Vec<model::Track> {
         self.order
             .iter()
             .filter_map(|&default_index| self.listed.get(default_index))
@@ -282,7 +282,7 @@ impl TrackList {
 
     /// Starts the selected occurrence in the complete sorted context.
     fn play_from(&mut self, index: usize, cx: &mut Context<Self>) {
-        let tracks = self.displayed_tracks();
+        let tracks = self.sorted_context_tracks();
         let kind = self.context.kind;
         let uri = self.context.uri.clone();
         self.player.update(cx, |player, cx| {
