@@ -295,7 +295,8 @@ pub(super) struct OnboardingWindow {
     notice_timer_armed_for: Option<ArmedNotice>,
     /// How many notices have gone up. Keys the banner's arrival animation.
     notice_generation: usize,
-    _appearance_subscription: Subscription,
+    _subscriptions: [Subscription; 3],
+    notice_task: Option<gpui_kit::Task<()>>,
 }
 
 impl OnboardingWindow {
@@ -305,6 +306,7 @@ impl OnboardingWindow {
     /// no newer notice has gone up since.
     fn show_notice(&mut self, message: String, severity: NoticeSeverity, cx: &mut Context<Self>) {
         let notice = Notice::Timed(NoticeItem { message, severity });
+        self.notice_task = None;
         self.notice_timer_armed_for = self
             .notice_timer_armed_for
             .take()
@@ -316,14 +318,13 @@ impl OnboardingWindow {
                 generation: self.notice_generation,
             };
             self.notice_timer_armed_for = Some(armed);
-            let task = cx.spawn(async move |this, cx| {
+            self.notice_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
                 this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
                     .ok();
-            });
-            task.detach();
+            }));
         }
     }
 
@@ -334,6 +335,7 @@ impl OnboardingWindow {
         if self.notice_generation == armed.generation {
             self.action_notice = None;
             self.notice_timer_armed_for = None;
+            self.notice_task = None;
         }
     }
 
@@ -345,20 +347,20 @@ impl OnboardingWindow {
             }
         });
         let session = services::AppServices::session(cx);
-        cx.subscribe(&session, |this, _, event: &session::SessionEvent, cx| {
-            match event {
-                session::SessionEvent::Failed(error) => this.last_error = Some(error.clone()),
-                session::SessionEvent::Ready => this.last_error = None,
-                session::SessionEvent::Notice((message, severity)) => {
-                    this.show_notice(message.clone(), *severity, cx)
+        let session_subscription =
+            cx.subscribe(&session, |this, _, event: &session::SessionEvent, cx| {
+                match event {
+                    session::SessionEvent::Failed(error) => this.last_error = Some(error.clone()),
+                    session::SessionEvent::Ready => this.last_error = None,
+                    session::SessionEvent::Notice((message, severity)) => {
+                        this.show_notice(message.clone(), *severity, cx)
+                    }
+                    session::SessionEvent::Restarted | session::SessionEvent::LoggedOut => {}
                 }
-                session::SessionEvent::Restarted | session::SessionEvent::LoggedOut => {}
-            }
-            cx.notify();
-        })
-        .detach();
+                cx.notify();
+            });
         let onboarding = cx.new(|cx| onboarding::Onboarding::new(window, cx));
-        cx.subscribe(
+        let onboarding_subscription = cx.subscribe(
             &onboarding,
             |this, _, event: &onboarding::OnboardingEvent, cx| {
                 match event {
@@ -385,8 +387,7 @@ impl OnboardingWindow {
                 }
                 cx.notify();
             },
-        )
-        .detach();
+        );
         // The failure that opened this window was emitted before it existed;
         // seed it from the session rather than waiting for the next one.
         let last_error = session.read(cx).last_failure().cloned();
@@ -397,7 +398,12 @@ impl OnboardingWindow {
             action_notice: None,
             notice_timer_armed_for: None,
             notice_generation: 0,
-            _appearance_subscription: appearance_subscription,
+            _subscriptions: [
+                appearance_subscription,
+                session_subscription,
+                onboarding_subscription,
+            ],
+            notice_task: None,
         }
     }
 }
@@ -420,6 +426,7 @@ impl Render for OnboardingWindow {
                 cx.listener(|this, _, _, cx| {
                     this.action_notice = None;
                     this.notice_timer_armed_for = None;
+                    this.notice_task = None;
                     cx.notify();
                 }),
             )
