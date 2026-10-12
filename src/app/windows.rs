@@ -463,6 +463,55 @@ impl Render for OnboardingWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::{HeadlessAppContext, NoopTextSystem};
+
+    #[test]
+    fn reopening_sign_in_releases_the_old_root_and_authenticates_once() {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let mut backend = cx.update(|cx| test_support::initialize(cx, ThemePreference::Dark));
+        let open = |cx: &mut HeadlessAppContext| {
+            let mut root = None;
+            let window = cx
+                .open_window(size(px(1280.), px(820.)), |window, cx| {
+                    let view = cx.new(|cx| OnboardingWindow::new(window, cx));
+                    root = Some(view.clone());
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .unwrap();
+            (window, root.unwrap())
+        };
+        let (window, old_root) = open(&mut cx);
+        let weak_root = old_root.downgrade();
+        let old_onboarding = cx.update(|cx| old_root.read(cx).onboarding.clone());
+        drop(old_root);
+        cx.update_window(window.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(weak_root.upgrade().is_none());
+
+        cx.update(|cx| {
+            old_onboarding.update(cx, |_, cx| {
+                cx.emit(onboarding::OnboardingEvent::Authenticate)
+            });
+        });
+        assert!(backend.commands.try_recv().is_err());
+
+        let (_, new_root) = open(&mut cx);
+        cx.update(|cx| {
+            new_root.read(cx).onboarding.clone().update(cx, |_, cx| {
+                cx.emit(onboarding::OnboardingEvent::Authenticate);
+            });
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            backend.commands.try_recv(),
+            Ok(BackendCommand::Authenticate { .. })
+        ));
+        assert!(backend.commands.try_recv().is_err());
+    }
 
     const NOT_READY: [ConnectionState; 5] = [
         ConnectionState::Starting,
