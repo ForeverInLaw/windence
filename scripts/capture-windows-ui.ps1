@@ -225,6 +225,11 @@ public static class CadenceCaptureNative {
                 }
                 $log = Join-Path $appData 'cadence.log'
                 if (Test-Path $log) { Copy-Item $log (Join-Path $OutputDirectory "$label-app.log") }
+                # Keep each build's profile separate: a newer SQLite schema
+                # would prevent the next baseline build from opening.
+                if (Test-Path $appData) {
+                    Move-Item -LiteralPath $appData -Destination (Join-Path $buildRoot "$label-profile")
+                }
             }
         }
     }
