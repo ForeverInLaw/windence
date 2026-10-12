@@ -5034,17 +5034,19 @@ mod tests {
             assert!(futures::poll!(&mut delivery).is_pending());
 
             let (replacement, mut new_commands, _) = super::Backend::isolated();
-            let senders = replacement
-                .handle
-                .senders
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            handle.redirect(super::Senders {
-                commands: senders.commands.clone(),
-                controls: senders.controls.clone(),
-                volume: senders.volume.clone(),
-            });
-            drop(senders);
+            let replacement_senders = {
+                let senders = replacement
+                    .handle
+                    .senders
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                super::Senders {
+                    commands: senders.commands.clone(),
+                    controls: senders.controls.clone(),
+                    volume: senders.volume.clone(),
+                }
+            };
+            handle.redirect(replacement_senders);
             // A restart closes the previous worker's receiver. Capacity might
             // also become available just before that close; neither may send
             // confirmed history to the replaced worker.
