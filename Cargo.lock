@@ -8128,6 +8128,7 @@ dependencies = [
  "gpui-pre-reqwest",
  "http",
  "iana-time-zone",
+ "image",
  "keyring",
  "librespot",
  "log",

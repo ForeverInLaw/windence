@@ -72,6 +72,8 @@ souvlaki = { version = "0.8.3", default-features = false, features = ["use_dbus"
 [dev-dependencies]
 # Headless GPUI test dispatcher (`HeadlessAppContext`, `#[gpui_kit::test]`).
 gpui-kit = { version = "0.7.3", features = ["test-support"] }
+# Names the image type required by GPUI's scene-observation renderer.
+image = { version = "0.25", default-features = false }
 
 [build-dependencies]
 # Unused by us; this pin is a resolver constraint. librespot 0.8 builds through

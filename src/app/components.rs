@@ -24,12 +24,16 @@ pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Butto
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .focus(|style| {
-            style
-                .border_2()
-                .border_color(rgb(palette.focus_ring))
-                .rounded(px(12.))
-        })
+        .focus_visible(|style| style.shadow(inset_focus_ring(palette.focus_ring)))
+}
+
+/// A thin inner stroke keeps focus visible inside clipped rows without moving content.
+pub(super) fn inset_focus_ring(color: u32) -> Vec<gpui_kit::BoxShadow> {
+    vec![
+        gpui_kit::BoxShadow::new(px(0.), px(0.), rgb(color).into())
+            .spread_radius(px(1.))
+            .inset(),
+    ]
 }
 
 /// A pinned row on its way to a new place in the section.

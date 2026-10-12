@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::{AnyWindowHandle, HeadlessAppContext, WindowHandle};
+mod appearance;
 mod interactions;
 mod lifetimes;
 mod motion;

@@ -37,11 +37,19 @@ const SECONDARY_A: &str = "ctrl-a";
 
 impl Fixture {
     pub(super) fn new(settings: bool) -> Self {
-        let mut cx = HeadlessAppContext::with_asset_source(
+        let cx = HeadlessAppContext::with_asset_source(
             Arc::new(NoopTextSystem),
             Arc::new(assets::AppAssets),
         );
-        let backend = cx.update(|cx| initialize(cx, ThemePreference::Dark));
+        Self::with_context(cx, settings, ThemePreference::Dark)
+    }
+
+    pub(super) fn with_context(
+        mut cx: HeadlessAppContext,
+        settings: bool,
+        theme: ThemePreference,
+    ) -> Self {
+        let backend = cx.update(|cx| initialize(cx, theme));
         let (window, workspace) = workspace_collapsed(&mut cx, 1280., 820., false);
         if settings {
             cx.update(|cx| workspace.update(cx, |workspace, cx| workspace.open_settings(cx)));
@@ -122,7 +130,7 @@ impl Fixture {
         });
     }
 
-    fn tab_to(&mut self, id: impl Into<gpui_kit::ElementId>) {
+    pub(super) fn tab_to(&mut self, id: impl Into<gpui_kit::ElementId>) {
         let id = id.into();
         for _ in 0..128 {
             if self.update(|window, _| window.find(id.clone()).focused() == Some(true)) {
@@ -187,7 +195,7 @@ impl Fixture {
         ));
     }
 
-    fn press(&mut self, key: &str) {
+    pub(super) fn press(&mut self, key: &str) {
         self.update(|window, cx| {
             let keystroke = Keystroke::parse(key).expect("fixture key");
             window.dispatch_keystroke(keystroke.clone(), cx);
