@@ -41,6 +41,7 @@ pub(super) struct Workspace {
     pub(super) focus_handle: FocusHandle,
     pub(super) _appearance_subscription: Subscription,
     pub(super) _activation_subscription: Subscription,
+    _focus_lost_subscription: Subscription,
     /// The window width from the most recent render. The sidebar observer
     /// uses it to re-derive the tiers while the rail moves.
     last_window_width: f32,
@@ -51,6 +52,12 @@ impl Workspace {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let preferences = services::AppServices::preferences(cx);
         let focus_handle = cx.focus_handle();
+        let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus_handle.clone());
+            window.focus(&target, cx);
+        });
         appearance::Appearance::attach(window, cx);
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.update_system_appearance(window, cx);
@@ -188,9 +195,15 @@ impl Workspace {
         cx.subscribe(&player_bar, Workspace::handle_page_event)
             .detach();
         let queue_drawer = cx.new(|cx| player_bar::QueueDrawer::new(cx));
-        cx.subscribe(&queue_drawer, |this, _, _: &player_bar::CloseQueue, cx| {
-            this.close_queue(cx);
-        })
+        cx.subscribe_in(
+            &queue_drawer,
+            window,
+            |this, _, _: &player_bar::CloseQueue, window, cx| {
+                this.close_queue(cx);
+                this.player_bar
+                    .update(cx, |bar, cx| bar.focus_queue_toggle(window, cx));
+            },
+        )
         .detach();
         Self {
             router: Router::new(),
@@ -219,6 +232,7 @@ impl Workspace {
             focus_handle,
             _appearance_subscription: appearance_subscription,
             _activation_subscription: activation_subscription,
+            _focus_lost_subscription: focus_lost_subscription,
             last_window_width: 0.,
             _layout_subscription: layout_subscription,
         }

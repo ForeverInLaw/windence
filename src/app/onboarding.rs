@@ -48,6 +48,7 @@ pub(super) struct Onboarding {
     session: Entity<session::Session>,
     client_id_input: Entity<InputState>,
     _client_id_subscription: Subscription,
+    _focus_lost_subscription: Subscription,
     focus_handle: FocusHandle,
     /// The last error the surrounding window reported, shown alongside the form.
     last_error: Option<String>,
@@ -72,11 +73,18 @@ impl Onboarding {
             },
         );
         let focus_handle = cx.focus_handle();
+        let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus_handle.clone());
+            window.focus(&target, cx);
+        });
         window.focus(&focus_handle, cx);
         Self {
             session: services::AppServices::session(cx),
             client_id_input,
             _client_id_subscription: subscription,
+            _focus_lost_subscription: focus_lost_subscription,
             focus_handle,
             last_error: None,
         }

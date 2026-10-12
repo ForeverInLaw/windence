@@ -62,6 +62,14 @@ impl Fixture {
         let backend = cx.update(|cx| {
             let backend = initialize(cx, ThemePreference::Light);
             services::AppServices::session(cx).update(cx, |session, cx| {
+                session.handle_backend_event(
+                    BackendEvent::SpotifyConfigured {
+                        generation: 0,
+                        client_id: "0123456789abcdef0123456789abcdef".into(),
+                        source: spotify_gpui_client::spotify::ClientIdSource::Environment,
+                    },
+                    cx,
+                );
                 session.handle_backend_event(BackendEvent::AuthorizationRequired, cx);
                 if connecting {
                     session.set_connecting(cx);
@@ -1069,5 +1077,197 @@ fn space_changes_autoplay_without_toggling_playback() {
     fixture.press("space");
     let after = fixture.update(|_, cx| services::AppServices::preferences(cx).autoplay);
     assert_eq!(after, !before);
+    fixture.no_commands();
+}
+
+#[test]
+fn closing_the_queue_returns_focus_to_its_trigger() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to("queue-toggle");
+    fixture.press("enter");
+    fixture.tab_to("close-queue");
+    fixture.press("space");
+    fixture.update(|window, _| {
+        assert!(window.try_find("close-queue").is_none());
+        assert_eq!(window.find("queue-toggle").focused(), Some(true));
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn keyboard_activates_previous_play_and_shuffle() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| {
+            player.handle_backend_event(
+                BackendEvent::ShuffleChanged {
+                    mode: spotify_gpui_client::shuffle::ShuffleMode::Off,
+                    supported: true,
+                    smart_supported: true,
+                },
+                cx,
+            );
+        });
+    });
+    fixture.tab_to("previous");
+    fixture.press("enter");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Previous)
+    ));
+    fixture.no_commands();
+    fixture.tab_to("play-toggle");
+    fixture.press("space");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Resume)
+    ));
+    fixture.no_commands();
+    fixture.tab_to("shuffle-toggle");
+    fixture.press("enter");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::SetShuffleMode(
+            spotify_gpui_client::shuffle::ShuffleMode::Shuffle
+        ))
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn sidebar_and_settings_open_from_the_keyboard() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to("nav-playlist");
+    fixture.press("space");
+    assert_eq!(fixture.route(), Route::Playlists);
+    fixture.no_commands();
+    fixture.tab_to("account");
+    fixture.press("enter");
+    fixture.tab_to("account-settings");
+    fixture.press("space");
+    assert_eq!(fixture.route(), Route::Settings);
+    fixture.tab_to("settings-appearance-light");
+    fixture.press("enter");
+    fixture.update(|_, cx| {
+        assert_eq!(
+            appearance::Appearance::preference(cx),
+            ThemePreference::Light
+        );
+    });
+    fixture.no_commands();
+}
+
+#[test]
+fn closing_a_track_menu_keeps_keyboard_navigation_available() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to(("track-actions", 1usize));
+    fixture.press("enter");
+    fixture.tab_to(("track-menu-next", 1usize));
+    fixture.press("space");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::PlayNext(_))
+    ));
+    fixture.tab_to("queue-toggle");
+    fixture.press("enter");
+    fixture.update(|window, _| assert!(window.find("close-queue").visible()));
+    fixture.no_commands();
+}
+
+#[test]
+fn login_pending_keeps_the_remaining_form_controls_reachable() {
+    let mut fixture = Fixture::sign_in(false);
+    fixture.tab_to("spotify-login");
+    fixture.press("space");
+    fixture.update(|window, _| assert!(window.find("spotify-login-pending").visible()));
+    fixture.tab_to("login-open-spotify-dashboard");
+    fixture.no_commands();
+}
+
+#[test]
+fn a_queue_track_starts_from_the_keyboard_without_a_second_play_command() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to("queue-toggle");
+    fixture.press("enter");
+    fixture.tab_to(("queue-track", 0usize));
+    fixture.press("space");
+    match fixture.backend.commands.try_recv().expect("play command") {
+        BackendCommand::PlayContext { tracks, index, .. } => {
+            assert_eq!(index, 1);
+            assert_eq!(tracks[index].source_id, track(1).source_id);
+        }
+        other => panic!("expected queue playback, got {other:?}"),
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn tab_skips_playback_controls_without_a_live_track() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| {
+            player.handle_backend_event(
+                BackendEvent::TrackFailed {
+                    spotify_uri: track(0).spotify_uri.expect("fixture URI"),
+                    error: "unavailable".into(),
+                },
+                cx,
+            );
+        });
+    });
+    for _ in 0..64 {
+        fixture.press("tab");
+        fixture.update(|window, _| {
+            for id in [
+                "previous",
+                "play-toggle",
+                "next",
+                "player-liked",
+                "shuffle-toggle",
+                "progress-slider",
+            ] {
+                assert_ne!(
+                    window.find(id).focused(),
+                    Some(true),
+                    "{id} must be skipped"
+                );
+            }
+        });
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn a_pointer_press_focuses_the_control_for_keyboard_activation() {
+    let mut fixture = Fixture::new(false);
+    fixture.update(|window, cx| window.click("next", cx));
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Next)
+    ));
+    fixture.update(|window, _| assert_eq!(window.find("next").focused(), Some(true)));
+    fixture.press("space");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Next)
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn a_row_heart_changes_likes_from_the_keyboard_without_starting_playback() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to(("spotify-liked", 2usize));
+    fixture.press("space");
+    match fixture.backend.commands.try_recv().expect("like command") {
+        BackendCommand::SetLiked {
+            track: unliked,
+            liked,
+        } => {
+            assert_eq!(unliked.source_id, track(1).source_id);
+            assert!(!liked);
+        }
+        other => panic!("expected a like change, got {other:?}"),
+    }
     fixture.no_commands();
 }

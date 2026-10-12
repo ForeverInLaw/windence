@@ -87,7 +87,7 @@ pub(super) fn track_list_header(
                         route(event, window, cx);
                     })
             }
-            None => button.cursor_default(),
+            None => button.disabled(true).cursor_default(),
         }
     };
     let direction_for = |column: model::ListSortColumn| {
