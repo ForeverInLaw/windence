@@ -50,7 +50,7 @@ impl Settings {
                         div()
                             .child(Self::settings_section_header(palette,
                                 "Appearance",
-                                "Choose how Cadence looks.",
+                                "Choose how Windence looks.",
                             ))
                             .child(
                                 div()
@@ -150,7 +150,7 @@ impl Settings {
                             .mt(px(48.))
                             .child(Self::settings_section_header(palette,
                                 "Spotify",
-                                "Manage the developer app Cadence uses to connect to Spotify.",
+                                "Manage the developer app Windence uses to connect to Spotify.",
                             ))
                             .child(
                                 div()
@@ -238,7 +238,7 @@ impl Settings {
                                                 .line_height(relative(1.45))
                                                 .text_color(rgb(palette.text))
                                                 .child(
-                                                    "Quit Cadence and update the environment variable to change the developer app.",
+                                                    "Quit Windence and update the environment variable to change the developer app.",
                                                 ),
                                         )
                                     }),

@@ -28,7 +28,7 @@ use librespot::{
 use protobuf::{EnumOrUnknown, MessageField};
 
 /// The name the account's device list shows.
-pub const DEVICE_NAME: &str = "Cadence";
+pub const DEVICE_NAME: &str = "Windence";
 
 /// How the account knows this install: the device Spotify issued for the
 /// playback session, and the app it was issued to.

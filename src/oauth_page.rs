@@ -10,19 +10,19 @@ pub(crate) fn success_page(step: OAuthStep, next_url: Option<&str>) -> String {
         (OAuthStep::Library, Some(next_url)) => (
             "Step 1 of 2",
             "Library connected",
-            "Continue to approve playback. Spotify will ask you to authorize Cadence once more.",
+            "Continue to approve playback. Spotify will ask you to authorize Windence once more.",
             format!("<a href=\"{}\">Next step</a>", escape_attribute(next_url)),
         ),
         (OAuthStep::Library, None) => (
             "Authorization complete",
-            "Cadence is ready",
-            "Authorization is complete. Close this page and return to Cadence.",
+            "Windence is ready",
+            "Authorization is complete. Close this page and return to Windence.",
             String::new(),
         ),
         (OAuthStep::Playback, _) => (
             "Step 2 of 2",
-            "Cadence is ready",
-            "Playback is connected. Close this page and return to Cadence.",
+            "Windence is ready",
+            "Playback is connected. Close this page and return to Windence.",
             String::new(),
         ),
     };
@@ -35,7 +35,7 @@ pub(crate) fn success_page(step: OAuthStep, next_url: Option<&str>) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{title} - Cadence</title>
+  <title>{title} - Windence</title>
   <style>
     :root {{ color-scheme: light dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
     * {{ box-sizing: border-box; }}
@@ -61,7 +61,7 @@ pub(crate) fn success_page(step: OAuthStep, next_url: Option<&str>) -> String {
 </head>
 <body>
   <main>
-    <div class="brand"><img src="data:image/png;base64,{brand_mark}" alt="">Cadence</div>
+    <div class="brand"><img src="data:image/png;base64,{brand_mark}" alt="">Windence</div>
     <div class="step">{step_label}</div>
     <h1>{title}</h1>
     <p>{description}</p>

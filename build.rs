@@ -46,9 +46,9 @@ fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=assets/AppIcon.ico");
     winresource::WindowsResource::new()
         .set_icon("assets/AppIcon.ico")
-        .set("ProductName", "Cadence")
-        .set("FileDescription", "Cadence")
-        .set("InternalName", "Cadence")
-        .set("OriginalFilename", "Cadence.exe")
+        .set("ProductName", "Windence")
+        .set("FileDescription", "Windence")
+        .set("InternalName", "Windence")
+        .set("OriginalFilename", "Windence.exe")
         .compile()
 }

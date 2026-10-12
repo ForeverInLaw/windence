@@ -1,12 +1,12 @@
-# Cadence
+# Windence
 
 A minimal Spotify player, forked from [infomiho/cadence](https://github.com/infomiho/cadence) and ported to Windows as its only target platform.
 
 ## Language
 
 **Port**:
-This repository — Cadence rebuilt for Windows as the single supported platform. The macOS original is called the upstream.
-_Avoid_: fork (for the repo itself), windence (informal)
+This repository, named Windence for public distribution through Microsoft Store. It rebuilds Cadence for Windows as the single supported platform. The macOS original is called the upstream. Cadence remains in internal names and profile paths for compatibility.
+_Avoid_: fork (for the repo itself), Cadence (for the public Windows app)
 
 **Upstream**:
 The original macOS-only project at infomiho/cadence, kept as a merge source.

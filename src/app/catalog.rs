@@ -23,12 +23,12 @@ where
     let sent = backend.send(command(respond));
     async move {
         if !sent {
-            return Err("Cadence backend is busy or not running".to_owned());
+            return Err("Windence backend is busy or not running".to_owned());
         }
         match reply.await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(format!("{error:#}")),
-            Err(_) => Err("Cadence backend stopped before answering".to_owned()),
+            Err(_) => Err("Windence backend stopped before answering".to_owned()),
         }
     }
 }

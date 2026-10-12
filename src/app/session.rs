@@ -200,7 +200,7 @@ impl Session {
         if self.backend.send(command) {
             return true;
         }
-        self.fail("Cadence backend is busy or not running", cx);
+        self.fail("Windence backend is busy or not running", cx);
         false
     }
 
