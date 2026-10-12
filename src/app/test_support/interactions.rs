@@ -45,12 +45,22 @@ impl Fixture {
     }
 
     pub(super) fn with_context(
-        mut cx: HeadlessAppContext,
+        cx: HeadlessAppContext,
         settings: bool,
         theme: ThemePreference,
     ) -> Self {
+        Self::with_layout(cx, settings, theme, 1280., false)
+    }
+
+    pub(super) fn with_layout(
+        mut cx: HeadlessAppContext,
+        settings: bool,
+        theme: ThemePreference,
+        width: f32,
+        collapsed: bool,
+    ) -> Self {
         let backend = cx.update(|cx| initialize(cx, theme));
-        let (window, workspace) = workspace_collapsed(&mut cx, 1280., 820., false);
+        let (window, workspace) = workspace_collapsed(&mut cx, width, 820., collapsed);
         if settings {
             cx.update(|cx| workspace.update(cx, |workspace, cx| workspace.open_settings(cx)));
         }
@@ -63,7 +73,7 @@ impl Fixture {
         }
     }
 
-    fn sign_in(connecting: bool) -> Self {
+    pub(super) fn sign_in(connecting: bool) -> Self {
         let mut cx = HeadlessAppContext::with_asset_source(
             Arc::new(NoopTextSystem),
             Arc::new(assets::AppAssets),

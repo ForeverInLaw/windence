@@ -27,6 +27,11 @@ pub(super) fn button(palette: CadencePalette, id: impl Into<ElementId>) -> Butto
         .focus_visible(|style| style.shadow(inset_focus_ring(palette.focus_ring)))
 }
 
+/// Filled primary controls use their foreground so the inner stroke clears the fill.
+pub(super) fn filled_button(palette: CadencePalette, id: impl Into<ElementId>) -> Button {
+    button(palette, id).focus_visible(|style| style.shadow(inset_focus_ring(palette.on_accent)))
+}
+
 /// A thin inner stroke keeps focus visible inside clipped rows without moving content.
 pub(super) fn inset_focus_ring(color: u32) -> Vec<gpui_kit::BoxShadow> {
     vec![
@@ -34,6 +39,28 @@ pub(super) fn inset_focus_ring(color: u32) -> Vec<gpui_kit::BoxShadow> {
             .spread_radius(px(1.))
             .inset(),
     ]
+}
+
+/// Text fields show their active editor for pointer and keyboard focus alike.
+pub(super) fn text_field_frame(
+    palette: CadencePalette,
+    input: &Entity<InputState>,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    div()
+        .flex()
+        .items_center()
+        .px(tokens::FIELD_INSET)
+        .rounded(tokens::FIELD_RADIUS)
+        .border_1()
+        .border_color(rgb(if focused {
+            palette.focus_ring
+        } else {
+            palette.border
+        }))
+        .bg(rgb(palette.surface))
 }
 
 /// A pinned row on its way to a new place in the section.
@@ -133,7 +160,7 @@ pub(super) fn action_notice_banner(
             .min_h(px(48.))
             .px(px(14.))
             .py(px(8.))
-            .rounded(px(14.))
+            .rounded(tokens::CONTAINER_RADIUS)
             .border_color(rgb(border))
             .when(failure, |banner| banner.border_l_4())
             .when(!failure, |banner| banner.border_1())
@@ -142,7 +169,7 @@ pub(super) fn action_notice_banner(
             .flex()
             .items_center()
             .gap(px(10.))
-            .text_size(px(13.))
+            .text_size(tokens::BODY_TEXT)
             .text_color(rgb(palette.text_primary))
             .test_support()
             .aria_label(message.clone())
@@ -194,13 +221,18 @@ pub(super) fn pill(
     } else {
         (rgb(palette.control), rgb(palette.text_primary))
     };
-    button(palette, id)
+    let button = if primary {
+        filled_button(palette, id)
+    } else {
+        button(palette, id)
+    };
+    button
         .h(px(PILL_HEIGHT))
         .px(px(16.))
         .rounded(px(40.))
         .bg(background)
         .text_color(foreground)
-        .text_size(px(15.))
+        .text_size(tokens::PILL_TEXT)
         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .hover(move |style| {
             style.bg(if primary {
@@ -215,7 +247,7 @@ pub(super) fn pill(
 /// A link that reads like the copy around it until the pointer or keyboard
 /// focus reaches it, so a line of credits stays quiet at rest.
 ///
-/// Built on the base button with the link role because gpui-kit 0.6.1 cannot
+/// Built on the base button with the link role because gpui-kit 0.7 cannot
 /// observe its base link in tests. The button's neutral line height is set
 /// back to the window's so the text keeps its metrics.
 pub(super) fn link(
@@ -253,7 +285,7 @@ pub(super) fn icon_button_with(
     label: impl Into<SharedString>,
 ) -> Button {
     button(palette, id)
-        .size(px(40.))
+        .size(tokens::CONTROL_SIZE)
         .flex_none()
         .rounded(px(20.))
         .text_color(rgb(palette.text_primary))
@@ -309,7 +341,7 @@ pub(super) fn menu_item(
         .justify_start()
         .gap(px(10.))
         .rounded(px(8.))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .text_color(rgb(color))
         .hover(|style| style.bg(rgb(palette.control_hover)))
         .child(icon(name, 15., color))
@@ -327,7 +359,7 @@ pub(super) fn text_menu_item(
         .px(px(12.))
         .justify_start()
         .rounded(px(8.))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .text_color(rgb(palette.text))
         .hover(|style| style.bg(rgb(palette.control_hover)))
         .child(label)
@@ -340,13 +372,13 @@ pub(super) fn settings_button(
     label: &'static str,
 ) -> Button {
     button(palette, id)
-        .h(px(40.))
+        .h(tokens::CONTROL_SIZE)
         .px(px(14.))
-        .rounded(px(10.))
+        .rounded(tokens::CONTROL_RADIUS)
         .border_1()
         .border_color(rgb(palette.border))
         .bg(rgb(palette.surface))
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .text_color(rgb(palette.text_primary))
         .hover(|style| style.bg(rgb(palette.control_hover)))
@@ -356,16 +388,16 @@ pub(super) fn settings_button(
 pub(super) fn menu_surface(palette: CadencePalette) -> Div {
     div()
         .occlude()
-        .w(px(220.))
+        .w(tokens::MENU_WIDTH)
         .p(px(6.))
-        .rounded(px(14.))
+        .rounded(tokens::CONTAINER_RADIUS)
         .bg(rgb(palette.surface_raised))
         .border_1()
         .border_color(rgb(palette.border))
         .shadow_lg()
         .flex()
         .flex_col()
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
 }
 
 /// A page subtitle that reports a background refresh without replacing the
@@ -381,7 +413,7 @@ pub(super) fn revalidating_detail(detail: impl Into<String>, refreshing: bool) -
 
 pub(super) fn section_label(palette: CadencePalette, text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(13.))
+        .text_size(tokens::BODY_TEXT)
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(rgb(palette.text_muted))
         .child(text.into())
@@ -456,8 +488,8 @@ pub(super) fn initials(name: &str) -> String {
 /// The large title a page opens with.
 pub(super) fn page_title(palette: CadencePalette, title: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(40.))
-        .line_height(px(44.))
+        .text_size(tokens::PAGE_TITLE_TEXT)
+        .line_height(tokens::PAGE_TITLE_LINE_HEIGHT)
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(rgb(palette.text_primary))
         .child(title.into())

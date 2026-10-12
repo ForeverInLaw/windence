@@ -45,6 +45,7 @@ mod http;
 mod icons;
 mod image_cache;
 mod motion;
+mod tokens;
 
 use motion::*;
 

@@ -1,6 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
+use gpui_kit::component::FocusableExt as _;
 
 /// What the settings page asks the workspace to do.
 pub(super) enum SettingsEvent {
@@ -23,7 +24,7 @@ impl Settings {
         }
     }
 
-    fn page(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn page(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let palette = appearance::Appearance::palette(cx);
         let session = self.session.read(cx);
         let saved_configuration = session.client_id_source() == Some(ClientIdSource::Saved);
@@ -40,7 +41,7 @@ impl Settings {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(760.))
+                    .max_w(tokens::SETTINGS_MAX_WIDTH)
                     .mx_auto()
                     .px(px(40.))
                     .pt(px(28.))
@@ -55,7 +56,7 @@ impl Settings {
                                 div()
                                     .mt(px(16.))
                                     .p(px(4.))
-                                    .rounded(px(14.))
+                                    .rounded(tokens::CONTAINER_RADIUS)
                                     .bg(rgb(palette.control))
                                     .flex()
                                     .gap(px(4.))
@@ -131,6 +132,7 @@ impl Settings {
                                                         Switch::new("settings-autoplay")
                                                             .accessibility_label("Autoplay")
                                                             .checked(autoplay)
+                                                            .focus_ring(window.last_input_was_keyboard())
                                                             .on_click(cx.listener(
                                                                 |_, checked: &bool, _, cx| {
                                                                     cx.emit(SettingsEvent::SetAutoplay(
@@ -281,7 +283,7 @@ impl Settings {
             .h(px(44.))
             .flex_1()
             .gap(px(8.))
-            .rounded(px(10.))
+            .rounded(tokens::CONTROL_RADIUS)
             .bg(if selected {
                 rgb(palette.selection)
             } else {
@@ -304,7 +306,7 @@ impl Settings {
 }
 
 impl Render for Settings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.page(cx)
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.page(window, cx)
     }
 }

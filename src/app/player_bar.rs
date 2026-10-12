@@ -110,12 +110,8 @@ impl PlayerBar {
             .w(px(slider_width))
             .flex_none()
             .cursor_pointer()
-            .focus(|style| {
-                style
-                    .border_2()
-                    .border_color(rgb(palette.focus_ring))
-                    .rounded(px(6.))
-            })
+            .rounded(px(6.))
+            .focus_visible(|style| style.shadow(components::inset_focus_ring(palette.focus_ring)))
             .on_drag(scrubber::ScrubberDrag, {
                 let handle = cx.entity().downgrade();
                 move |_, _, window, cx| {
@@ -488,7 +484,7 @@ impl PlayerBar {
                                 )),
                             )
                             .child(
-                                components::button(palette, "play-toggle")
+                                components::filled_button(palette, "play-toggle")
                                     .disabled(!has_track)
                                     .aria_label(if playing { "Pause" } else { "Play" })
                                     .size(px(TRANSPORT_BUTTON_SIZE))
@@ -609,11 +605,9 @@ impl PlayerBar {
                             .flex()
                             .items_center()
                             .cursor_pointer()
-                            .focus(|style| {
-                                style
-                                    .border_2()
-                                    .border_color(rgb(palette.focus_ring))
-                                    .rounded(px(8.))
+                            .rounded(px(8.))
+                            .focus_visible(|style| {
+                                style.shadow(components::inset_focus_ring(palette.focus_ring))
                             })
                             .on_mouse_down(
                                 gpui_kit::MouseButton::Left,

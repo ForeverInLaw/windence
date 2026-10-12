@@ -128,12 +128,12 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn page(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn page(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let palette = appearance::Appearance::palette(cx);
         let context_rail = self.onboarding_context_rail(cx);
         let content = match self.session.read(cx).state() {
             ConnectionState::Failed => self.backend_failure(cx),
-            ConnectionState::SetupRequired => self.spotify_setup_form(cx),
+            ConnectionState::SetupRequired => self.spotify_setup_form(window, cx),
             ConnectionState::AuthorizationRequired | ConnectionState::Connecting => {
                 self.spotify_login_form(cx)
             }
@@ -378,7 +378,7 @@ impl Onboarding {
             )
     }
 
-    fn spotify_setup_form(&mut self, cx: &mut Context<Self>) -> Div {
+    fn spotify_setup_form(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = appearance::Appearance::palette(cx);
         let error = self.session.read(cx).setup_error().cloned();
         let has_error = error.is_some();
@@ -489,7 +489,7 @@ impl Onboarding {
                                     .child("Spotify Client ID"),
                             )
                             .child(
-                                div().mt(px(8.)).child(self.spotify_client_id_field(palette)),
+                                div().mt(px(8.)).child(self.spotify_client_id_field(palette, window, cx)),
                             )
                             .when_some(error, |form, error| {
                                 form.child(
@@ -536,17 +536,10 @@ impl Onboarding {
             )
     }
 
-    fn spotify_client_id_field(&self, palette: CadencePalette) -> Div {
-        div()
+    fn spotify_client_id_field(&self, palette: CadencePalette, window: &Window, cx: &App) -> Div {
+        components::text_field_frame(palette, &self.client_id_input, window, cx)
             .h(px(48.))
             .w_full()
-            .flex()
-            .items_center()
-            .px(px(14.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(rgb(palette.border))
-            .bg(rgb(palette.surface))
             .child(
                 Input::new(&self.client_id_input)
                     .id("client-id-input")
@@ -646,8 +639,8 @@ impl Onboarding {
 }
 
 impl Render for Onboarding {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.page(cx)
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.page(window, cx)
     }
 }
 
