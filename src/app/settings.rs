@@ -125,15 +125,20 @@ impl Settings {
                                                     ),
                                             )
                                             .child(
-                                                Switch::new("settings-autoplay")
-                                                    .checked(autoplay)
-                                                    .on_click(cx.listener(
-                                                        |_, checked: &bool, _, cx| {
-                                                            cx.emit(SettingsEvent::SetAutoplay(
-                                                                *checked,
-                                                            ));
-                                                        },
-                                                    )),
+                                                div()
+                                                    .key_context(components::CONTROL_KEY_CONTEXT)
+                                                    .child(
+                                                        Switch::new("settings-autoplay")
+                                                            .accessibility_label("Autoplay")
+                                                            .checked(autoplay)
+                                                            .on_click(cx.listener(
+                                                                |_, checked: &bool, _, cx| {
+                                                                    cx.emit(SettingsEvent::SetAutoplay(
+                                                                        *checked,
+                                                                    ));
+                                                                },
+                                                            )),
+                                                    ),
                                             ),
                                     ),
                             ),
@@ -269,7 +274,7 @@ impl Settings {
         label: &'static str,
         preference: ThemePreference,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> gpui_kit::base::Button {
         let palette = appearance::Appearance::palette(cx);
         let selected = appearance::Appearance::preference(cx) == preference;
         components::button(palette, id)

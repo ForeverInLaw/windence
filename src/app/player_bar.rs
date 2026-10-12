@@ -123,6 +123,7 @@ impl PlayerBar {
         );
         match playing_album(Some(track)) {
             Some(album) => gpui_kit::base::Button::new("player-artwork")
+                .key_context(components::CONTROL_KEY_CONTEXT)
                 .role(gpui_kit::Role::Link)
                 .tab_stop(false)
                 .accessibility_label(album.name.clone())
@@ -289,7 +290,7 @@ impl PlayerBar {
                                 cx,
                             )),
                     )
-                    .child(self.liked_toggle(palette, now_playing, cx).test_support()),
+                    .child(self.liked_toggle(palette, now_playing, cx)),
             )
             .child(
                 div()
@@ -317,7 +318,6 @@ impl PlayerBar {
                                     shuffle_supported,
                                     shuffle_smart_supported,
                                 )
-                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player
@@ -332,7 +332,6 @@ impl PlayerBar {
                                     CadenceIcon::SkipBack,
                                     "Previous track",
                                 )
-                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.previous(cx));
@@ -341,7 +340,6 @@ impl PlayerBar {
                             )
                             .child(
                                 components::button(palette, "play-toggle")
-                                    .test_support()
                                     .aria_label(if playing { "Pause" } else { "Play" })
                                     .size(px(TRANSPORT_BUTTON_SIZE))
                                     .rounded(px(TRANSPORT_BUTTON_SIZE / 2.))
@@ -373,7 +371,6 @@ impl PlayerBar {
                                     CadenceIcon::SkipForward,
                                     "Next track",
                                 )
-                                .test_support()
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.player.update(cx, |player, cx| player.next(cx));
@@ -494,7 +491,6 @@ impl PlayerBar {
                             17.,
                             "Queue",
                         )
-                        .test_support()
                         .when(self.queue_open, |button| button.bg(rgb(palette.selection)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             let open = !this.queue_open;
@@ -504,7 +500,6 @@ impl PlayerBar {
                     )
                     .child(
                         components::icon_button_with(palette, "volume", volume_icon, 17., "Volume")
-                            .test_support()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.player.update(cx, |player, cx| player.toggle_mute(cx));
                             })),
@@ -580,7 +575,7 @@ impl PlayerBar {
         palette: CadencePalette,
         track: Option<model::Track>,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> gpui_kit::base::Button {
         let liked = track
             .as_ref()
             .is_some_and(|track| self.library.read(cx).is_liked(track));
@@ -622,7 +617,7 @@ fn shuffle_toggle(
     mode: ShuffleMode,
     supported: bool,
     smart_supported: bool,
-) -> Stateful<Div> {
+) -> gpui_kit::base::Button {
     let active = mode.shuffles();
     let (icon, label) = match mode {
         ShuffleMode::Smart => (CadenceIcon::Sparkles, "Smart shuffle"),
@@ -733,7 +728,6 @@ impl QueueDrawer {
                             CadenceIcon::Close,
                             "Close queue",
                         )
-                        .test_support()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseQueue))),
                     ),
             )

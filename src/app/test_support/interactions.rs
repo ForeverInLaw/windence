@@ -54,6 +54,37 @@ impl Fixture {
         }
     }
 
+    fn sign_in(connecting: bool) -> Self {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let backend = cx.update(|cx| {
+            let backend = initialize(cx, ThemePreference::Light);
+            services::AppServices::session(cx).update(cx, |session, cx| {
+                session.handle_backend_event(BackendEvent::AuthorizationRequired, cx);
+                if connecting {
+                    session.set_connecting(cx);
+                }
+            });
+            backend
+        });
+        let window = cx
+            .open_window(size(px(1280.), px(820.)), |window, cx| {
+                appearance::Appearance::attach(window, cx);
+                let onboarding = cx.new(|cx| onboarding::Onboarding::new(window, cx));
+                cx.new(|cx| Root::new(onboarding, window, cx))
+            })
+            .expect("sign-in window");
+        settle(&mut cx, window.into());
+        Self {
+            cx,
+            window,
+            workspace: None,
+            backend,
+        }
+    }
+
     fn route(&mut self) -> Route {
         let workspace = self.workspace.clone().expect("workspace fixture");
         self.update(|_, cx| {
@@ -80,6 +111,17 @@ impl Fixture {
                 );
             });
         });
+    }
+
+    fn tab_to(&mut self, id: impl Into<gpui_kit::ElementId>) {
+        let id = id.into();
+        for _ in 0..128 {
+            if self.update(|window, _| window.find(id.clone()).focused() == Some(true)) {
+                return;
+            }
+            self.press("tab");
+        }
+        panic!("Tab never reached {id:?}");
     }
 
     fn requested_artist(&mut self) -> String {
@@ -202,7 +244,7 @@ fn player_bar_title_opens_the_album_from_the_keyboard() {
     fixture.press(SECONDARY_K);
     assert_eq!(fixture.route(), Route::Search);
 
-    fixture.press("tab");
+    fixture.tab_to("player-title");
     fixture.update(|window, _| {
         let title = window.find("player-title");
         assert_eq!(title.focused(), Some(true));
@@ -226,28 +268,13 @@ fn player_bar_credits_without_references_stay_plain() {
 }
 
 #[test]
-fn space_keeps_toggling_playback_and_leaves_the_title_link_alone() {
+fn space_opens_the_focused_title_link_without_toggling_playback() {
     let mut fixture = Fixture::new(false);
     fixture.play(credited_track());
-    fixture.press(SECONDARY_K);
-    fixture.press("tab");
-    fixture.update(|window, _| {
-        assert_eq!(window.find("player-title").focused(), Some(true));
-    });
+    fixture.tab_to("player-title");
     fixture.press("space");
-
-    // Space reaches the playback binding, not the focused link: the route is
-    // unchanged and no page load went out.
-    assert_eq!(fixture.route(), Route::Search);
-    match fixture
-        .backend
-        .commands
-        .try_recv()
-        .expect("playback command")
-    {
-        BackendCommand::Resume => {}
-        other => panic!("expected playback to toggle, got {other:?}"),
-    }
+    assert_eq!(fixture.requested_album(), "album-grease");
+    assert_eq!(fixture.route(), Route::Album);
     fixture.no_commands();
 }
 
@@ -709,28 +736,12 @@ fn tab_reaches_both_sliders_with_visible_focus() {
     fixture.play(track(0));
     fixture.no_commands();
 
-    // Walk tab from the initial root focus. The first stop to name
-    // "progress-slider" is the slider itself; however many of the bar's
-    // own buttons sit before it, tab order is stable, so the second step
-    // reaches the volume slider right after it.
-    let mut steps = 0;
-    let mut on_progress = false;
-    while steps < 40 {
-        steps += 1;
-        fixture.press("tab");
-        let reached = fixture.update(|window, _| {
-            window
-                .try_find("progress-slider")
-                .is_some_and(|slider| slider.focused() == Some(true))
-        });
-        if reached {
-            on_progress = true;
-            break;
-        }
-    }
-    assert!(on_progress, "tab never reached the progress slider");
-    assert_eq!(steps, 2, "the bar's first tab stop precedes the slider");
-    fixture.press("tab");
+    fixture.tab_to("progress-slider");
+    fixture.update(|window, _| {
+        assert!(window.last_input_was_keyboard());
+        assert_eq!(window.find("progress-slider").focused(), Some(true));
+    });
+    fixture.tab_to("volume-slider");
     fixture.update(|window, _| {
         assert_eq!(window.find("volume-slider").focused(), Some(true));
     });
@@ -744,10 +755,7 @@ fn progress_slider_keys_seek_at_documented_steps() {
     fixture.play(track(0));
     fixture.no_commands();
 
-    // Tab to the slider: the bar's first tab stop precedes it, so the
-    // second step lands on the slider itself.
-    fixture.press("tab");
-    fixture.press("tab");
+    fixture.tab_to("progress-slider");
     fixture.update(|window, _| {
         assert_eq!(window.find("progress-slider").focused(), Some(true));
     });
@@ -801,9 +809,7 @@ fn volume_slider_keys_step_and_mute() {
     let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
     fixture.no_commands();
 
-    fixture.press("tab");
-    fixture.press("tab");
-    fixture.press("tab");
+    fixture.tab_to("volume-slider");
     fixture.update(|window, _| {
         assert_eq!(window.find("volume-slider").focused(), Some(true));
     });
@@ -863,19 +869,7 @@ fn volume_slider_answers_the_keyboard_in_the_compact_tier() {
             "the compact tier must render the volume slider"
         );
     });
-    // Walk tab to the volume slider. In the compact tier the drawn
-    // progress slider is absent, so the tab walk alternates between the
-    // slider and the root focus; the even steps land on the slider.
-    for _ in 0..2 {
-        fixture.press("tab");
-    }
-    fixture.update(|window, _| {
-        assert_eq!(
-            window.find("volume-slider").focused(),
-            Some(true),
-            "two tabs from the root land on the compact volume slider"
-        );
-    });
+    fixture.tab_to("volume-slider");
     // Up steps 5 percent from the saved 0.72, and M mutes and restores.
     fixture.press("up");
     let up = fixture.backend.volume.borrow_and_update().to_owned();
@@ -1005,4 +999,75 @@ fn fixture_workspace(cx: &mut App) -> gpui_kit::Entity<Workspace> {
     // The test keeps one workspace alive in this context; reach it through
     // the services root the workspace registers at construction.
     services::AppServices::root_workspace(cx).expect("fixture workspace")
+}
+
+#[test]
+fn space_activates_next_once_without_toggling_playback() {
+    let mut fixture = Fixture::new(false);
+    fixture.play(track(0));
+    fixture.no_commands();
+    fixture.tab_to("next");
+    fixture.press("space");
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Next)
+    ));
+    fixture.no_commands();
+}
+
+#[test]
+fn keyboard_opens_row_actions_without_starting_the_track() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to(("track-actions", 0usize));
+    fixture.press("enter");
+    fixture.update(|window, _| assert!(window.find(("track-menu-play", 0usize)).visible()));
+    fixture.no_commands();
+}
+
+#[test]
+fn tab_skips_disabled_track_menu_items() {
+    let mut fixture = Fixture::new(false);
+    fixture.tab_to(("track-actions", 0usize));
+    fixture.press("enter");
+    fixture.tab_to(("track-menu-next", 0usize));
+    for _ in 0..64 {
+        fixture.press("tab");
+        fixture.update(|window, _| {
+            assert_ne!(
+                window.find(("track-menu-play", 0usize)).focused(),
+                Some(true)
+            );
+        });
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn tab_reaches_the_sign_in_button_without_a_pointer_click() {
+    let mut fixture = Fixture::sign_in(false);
+    fixture.tab_to("spotify-login");
+    fixture.no_commands();
+}
+
+#[test]
+fn tab_skips_the_pending_login_button() {
+    let mut fixture = Fixture::sign_in(true);
+    for _ in 0..32 {
+        fixture.press("tab");
+        fixture.update(|window, _| {
+            assert_ne!(window.find("spotify-login-pending").focused(), Some(true));
+        });
+    }
+    fixture.no_commands();
+}
+
+#[test]
+fn space_changes_autoplay_without_toggling_playback() {
+    let mut fixture = Fixture::new(true);
+    fixture.tab_to("settings-autoplay");
+    let before = fixture.update(|_, cx| services::AppServices::preferences(cx).autoplay);
+    fixture.press("space");
+    let after = fixture.update(|_, cx| services::AppServices::preferences(cx).autoplay);
+    assert_eq!(after, !before);
+    fixture.no_commands();
 }

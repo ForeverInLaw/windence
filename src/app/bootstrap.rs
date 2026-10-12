@@ -113,8 +113,6 @@ pub(super) fn bind_keys(cx: &mut App) {
 /// the Windows key on Windows, where gpui maps the platform modifier to Win.
 fn app_key_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("tab", Tab, None),
-        KeyBinding::new("shift-tab", TabPrev, None),
         KeyBinding::new("secondary-k", OpenSearch, None),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),
@@ -131,7 +129,8 @@ fn app_key_bindings() -> Vec<KeyBinding> {
 }
 
 fn playback_key_binding() -> KeyBinding {
-    KeyBinding::new("space", TogglePlayback, Some("Cadence && !Input"))
+    let context = format!("Cadence && !Input && !{}", components::CONTROL_KEY_CONTEXT);
+    KeyBinding::new("space", TogglePlayback, Some(&context))
 }
 
 // The slider keys sit on the focused slider element, one context below the

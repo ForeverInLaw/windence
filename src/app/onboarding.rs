@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::TestSupportExt as _;
 
 use super::icons::CadenceIcon;
 
@@ -72,11 +71,13 @@ impl Onboarding {
                 _ => {}
             },
         );
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
         Self {
             session: services::AppServices::session(cx),
             client_id_input,
             _client_id_subscription: subscription,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             last_error: None,
         }
     }
@@ -517,7 +518,6 @@ impl Onboarding {
                                             "Log in with Spotify",
                                             true,
                                         )
-                                        .test_support()
                                         .h(px(48.))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.configure(window, cx);
@@ -573,6 +573,7 @@ impl Onboarding {
             .when(!configuration_blocked, |form| {
                 form.child(div().mt(px(32.)).flex().justify_start().child(if connecting {
                     components::pill(appearance::Appearance::palette(cx), "spotify-login-pending", "Log in with Spotify", true)
+                        .disabled(true)
                         .h(px(48.))
                         .gap(px(8.))
                         .cursor_default()
