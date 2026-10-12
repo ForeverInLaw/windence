@@ -320,7 +320,7 @@ impl OnboardingWindow {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
-                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
+                this.update(cx, |this, cx| this.dismiss_expired_notice(&armed, cx))
                     .ok();
             }));
         }
@@ -329,11 +329,12 @@ impl OnboardingWindow {
     /// A timer's callback: clears the banner only for the notice the timer
     /// was armed for. The generation moved on whenever another notice went
     /// up, so an older timer leaves the newcomer alone.
-    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice, cx: &mut Context<Self>) {
         if self.notice_generation == armed.generation {
             self.action_notice = None;
             self.notice_timer_armed_for = None;
             self.notice_task = None;
+            cx.notify();
         }
     }
 
@@ -461,7 +462,60 @@ impl Render for OnboardingWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::test::TestWindowExt;
     use gpui_kit::{HeadlessAppContext, NoopTextSystem};
+    use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn copied_redirect_notice_requests_a_redraw_when_it_expires() {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        cx.update(|cx| {
+            test_support::initialize(cx, ThemePreference::Dark);
+            services::AppServices::session(cx).update(cx, |session, cx| {
+                session.handle_backend_event(BackendEvent::SetupRequired, cx);
+            });
+        });
+        let mut view = None;
+        let window = cx
+            .open_window(size(px(1280.), px(820.)), |window, cx| {
+                let onboarding = cx.new(|cx| OnboardingWindow::new(window, cx));
+                view = Some(onboarding.clone());
+                cx.new(|cx| Root::new(onboarding, window, cx))
+            })
+            .expect("onboarding window");
+        test_support::settle(&mut cx, window.into());
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("copy-spotify-redirect", cx);
+        })
+        .expect("copy redirect URI");
+        test_support::settle(&mut cx, window.into());
+        cx.update_window(window.into(), |_, window, _| {
+            assert_eq!(
+                window.find("action-notice").label(),
+                Some("Redirect URI copied")
+            );
+        })
+        .expect("confirmation banner");
+
+        let notified = Rc::new(Cell::new(false));
+        let observed = notified.clone();
+        let _subscription = cx.update(|cx| {
+            cx.observe(&view.expect("onboarding view"), move |_, _| {
+                observed.set(true)
+            })
+        });
+        cx.advance_clock(NOTICE_CONFIRMATION_LIFETIME);
+        cx.run_until_parked();
+        assert!(notified.get(), "expiry must request a redraw without input");
+        test_support::settle(&mut cx, window.into());
+        cx.update_window(window.into(), |_, window, _| {
+            assert!(window.try_find("action-notice").is_none());
+        })
+        .expect("expired confirmation banner");
+    }
 
     #[test]
     fn reopening_sign_in_releases_the_old_root_and_authenticates_once() {

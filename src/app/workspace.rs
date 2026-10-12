@@ -310,7 +310,7 @@ impl Workspace {
                 cx.background_executor()
                     .timer(NOTICE_CONFIRMATION_LIFETIME)
                     .await;
-                this.update(cx, |this, _| this.dismiss_expired_notice(&armed))
+                this.update(cx, |this, cx| this.dismiss_expired_notice(&armed, cx))
                     .ok();
             }));
         }
@@ -320,11 +320,12 @@ impl Workspace {
     /// A timer's callback: clears the banner only for the notice the timer
     /// was armed for. The generation moved on whenever another notice went
     /// up, so an older timer leaves the newcomer alone.
-    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice) {
+    fn dismiss_expired_notice(&mut self, armed: &ArmedNotice, cx: &mut Context<Self>) {
         if self.notice_generation == armed.generation {
             self.action_notice = None;
             self.notice_timer_armed_for = None;
             self.notice_task = None;
+            cx.notify();
         }
     }
 
