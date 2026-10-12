@@ -113,7 +113,8 @@ After first publication, the owner performs these one-time steps:
    **Account settings > User management > Microsoft Entra applications** with
    the **Manager** role.
 3. Create the `store` GitHub Environment. Restrict deployment to stable version
-   tags and set the owner as required reviewer. Add environment secrets
+   tags. A required reviewer is optional if you want to approve each release.
+   Add environment secrets
    `MSSTORE_TENANT_ID`, `MSSTORE_SELLER_ID`, `MSSTORE_CLIENT_ID` and
    `MSSTORE_CLIENT_SECRET`. Use the secret value, not its ID. Keep it out of chat,
    commits and issue descriptions. Track its expiry date.
@@ -140,3 +141,24 @@ publishes executable downloads to GitHub Releases.
 
 [Pinned MSIX publisher](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/ProjectConfigurators/MSIXProjectPublisher.cs),
 [draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs).
+
+## Verified first package
+
+Source commit `af634a5`, checked on 2026-10-12:
+
+- [Successful Release run](https://github.com/ForeverInLaw/windence/actions/runs/38317647506).
+- [Store artifact](https://github.com/ForeverInLaw/windence/actions/runs/38317647506/artifacts/11777613730),
+  `Windence-1.3.0-windows-x64.msix`, package version `1.3.0.0`, 16,878,558 bytes.
+- SHA256 `9be4f232ff7d60d742048fbd8ef0af6e5c4d13b0f6f94cd309afd0beda52a68a`.
+- MakeAppx validation, unsigned artifact inspection and the temporary signed
+  installation/launch test passed on Windows Server 2025, build 26100.
+- Installed family `redstone.md.Windence_dxxngvs4d91sj` matches Partner Center.
+  The profile was created in `C:\Users\runneradmin\AppData\Roaming\Cadence`.
+- Linux passed 373 portable tests, formatting and strict all-target Clippy.
+  PowerShell parsed, submission guards passed and actionlint accepted the workflow.
+- The policy link returned HTTP 200 without GitHub authentication.
+
+The Store publishing job was skipped. The repository publishing flag is unset.
+No Store submission or public release was created. Client Windows 10/11,
+authenticated playback and Store-delivered migration/update checks remain open.
+GitHub retains this artifact until 2026-10-26; it can be rebuilt from the branch.
