@@ -28,6 +28,8 @@ pub(super) struct Player {
     station: bool,
     /// The requested play state. Loading ends when the player confirms it.
     playing: bool,
+    /// A transport confirmation must not replace a newer requested state.
+    play_state_pending: bool,
     loading: bool,
     /// The shuffle toggle's value and whether it can act: a live,
     /// non-radio context. A radio is already a recommendation stream.
@@ -63,6 +65,7 @@ impl Player {
             context_kind: ContextKind::default(),
             station: false,
             playing: false,
+            play_state_pending: false,
             loading: false,
             shuffle_mode: ShuffleMode::Off,
             shuffle_supported: false,
@@ -209,6 +212,7 @@ impl Player {
             cx,
         ) {
             self.playing = playing;
+            self.play_state_pending = true;
             self.loading = playing;
         }
         cx.notify();
@@ -485,6 +489,7 @@ impl Player {
         self.queue_injected = Arc::default();
         self.station = false;
         self.playing = false;
+        self.play_state_pending = false;
         self.loading = false;
         self.shuffle_mode = ShuffleMode::Off;
         self.shuffle_supported = false;
@@ -534,6 +539,7 @@ impl Player {
                 self.position_ms = position_ms;
                 self.saved_position_ms = position_ms;
                 self.playing = playing;
+                self.play_state_pending = false;
                 self.loading = false;
                 self.restore = None;
             }
@@ -543,6 +549,7 @@ impl Player {
             }
             BackendEvent::QueueEnded => {
                 self.playing = false;
+                self.play_state_pending = false;
                 self.loading = false;
                 self.history_pending = false;
                 // A full bar with an armed Play button would lie: Play
@@ -553,6 +560,7 @@ impl Player {
             BackendEvent::Playing { spotify_uri } => {
                 // A late Playing must not undo a pause or a paused restore.
                 if self.restore.is_none() && self.playing && self.live_track_matches(&spotify_uri) {
+                    self.play_state_pending = false;
                     self.loading = false;
                     self.record_first_play();
                 }
@@ -564,8 +572,11 @@ impl Player {
             }
             BackendEvent::Paused { spotify_uri } => {
                 if self.restore.is_none() && self.live_track_matches(&spotify_uri) {
-                    self.playing = false;
-                    self.loading = false;
+                    if !self.play_state_pending || !self.playing {
+                        self.playing = false;
+                        self.loading = false;
+                        self.play_state_pending = false;
+                    }
                     if self.position_ms != self.saved_position_ms {
                         let position_ms = self.position_ms;
                         self.backend.send(BackendCommand::SavePlaybackPosition {
@@ -604,6 +615,7 @@ impl Player {
                 self.position_ms = position_ms;
                 self.saved_position_ms = position_ms;
                 self.playing = false;
+                self.play_state_pending = false;
                 self.loading = false;
                 self.history_pending = true;
             }

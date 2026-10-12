@@ -1256,6 +1256,42 @@ fn restarting_same_track_cancels_inflight_progress_gesture() {
 }
 
 #[test]
+fn rapid_pause_then_resume_survives_queued_pause_confirmation() {
+    let mut fixture = Fixture::new(false);
+    fixture.start_track(track(0));
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.history_entry();
+    fixture.update(|_, cx| {
+        services::AppServices::player(cx).update(cx, |player, cx| {
+            player.toggle(cx);
+            player.toggle(cx);
+        })
+    });
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Pause)
+    ));
+    assert!(matches!(
+        fixture.backend.commands.try_recv(),
+        Ok(BackendCommand::Resume)
+    ));
+    fixture.playback_event(BackendEvent::Paused {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.playback_event(BackendEvent::Playing {
+        spotify_uri: track(0).spotify_uri.unwrap(),
+    });
+    fixture.update(|_, cx| {
+        let player = services::AppServices::player(cx);
+        assert!(player.read(cx).playing());
+        assert!(!player.read(cx).loading());
+    });
+    fixture.no_commands();
+}
+
+#[test]
 fn releasing_progress_outside_its_bounds_clamps_and_seeks_once() {
     let mut fixture = Fixture::new(false);
     fixture.play(track(0));
