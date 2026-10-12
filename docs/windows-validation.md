@@ -13,11 +13,16 @@ native window behavior, WASAPI output, SMTC or Windows rendering.
   and [artifact build](https://github.com/ForeverInLaw/windence/actions/runs/38281237057).
 - Integrated code, including calm appearance, playlist search and review
   fixes: commit `6ec7270`,
-  [Windows CI](https://github.com/ForeverInLaw/windence/actions/runs/38287231417)
+  [Windows CI at `4b62011`](https://github.com/ForeverInLaw/windence/actions/runs/38287890799)
   and [artifact build](https://github.com/ForeverInLaw/windence/actions/runs/38287241242).
 
 Use files only after their run finishes successfully. The code commit is
-recorded separately from later documentation commits.
+recorded separately from later test and documentation commits. `4b62011`
+also fixes the lock scope in a test; its application code matches the
+packaged `6ec7270` code. CI passed build, strict Clippy and 334 portable
+tests (185 library, 149 application). Linux passed 335 tests, build,
+strict Clippy and formatting. The ZIP and installer checksums match their
+SHA-256 sidecars; the ZIP contains the EXE, runtime DLL and notices.
 
 The manual Release workflow builds `cadence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
@@ -78,8 +83,11 @@ app logs and `report.json`. Its status was `captured-needs-visual-review`;
 all eight window images were inspected. Borders are quieter, keyboard
 focus remains visible, and text and controls fit without clipping.
 
-The final artifact build above repeats this comparison for `6ec7270`.
-Read its report and inspect its images before counting it as evidence.
+The final artifact build above also captured `6ec7270`. Its report has no
+error and all four windows use the same size and DPI as the baseline.
+The final images were inspected with the same result; unchanged baseline
+images were checked against the reviewed originals. Both probes restored
+the runner's original display resolution.
 This capture covers onboarding at 100% only. The functional checks and
 signed-in main-window comparisons above still need a Windows account and
 audio devices.
