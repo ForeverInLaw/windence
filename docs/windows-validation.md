@@ -36,8 +36,11 @@ the existing controls fit. The owner helper also passed its native Credential
 Manager check using synthetic credentials.
 
 The owner enabled the server session on 2026-10-13. Provisioning renewed both
-Spotify credentials and verified Premium. This does not test playback in the app.
-Complete these checks on Windows before submitting the package:
+Spotify credentials and verified Premium. A live HTTPS check with the review
+code returned both tokens and confirmed the expected account through Spotify.
+The owner reported submitting 1.3.2.0 for certification the same day. These
+server checks do not test playback in the app. The Windows runtime results
+below have not been recorded:
 
 - [ ] From setup, open Review access, enter the private code and connect.
       With an existing developer-app configuration, first use Change developer

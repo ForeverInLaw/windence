@@ -2,6 +2,9 @@
 
 Status: accepted, 2026-10-12. Scope: [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store).
 
+Updated on 2026-10-13: the owner removed in-app update checks and reminders
+from scope. Store manages automatic delivery; CI submits new versions to Store.
+
 The Windows Port's public name is Windence. It uses an MSIX package distributed
 through Microsoft Store. Microsoft signs the package after certification and
 delivers updates. The owner does not plan to buy a separate signing certificate.
@@ -24,10 +27,12 @@ versions can use Microsoft's Store Developer CLI after the owner configures
 API access. An existing pending submission blocks automation so it does not
 overwrite listing changes. Store certification remains separate from CI success.
 
-In-app update checks and reminders are a later layer of IVO-79. They report
-Store availability and open Store. They do not download or replace executable
-files, and do not control Store's own automatic update setting.
+Microsoft Store manages update checks, downloads and installation. Windence
+does not add an Updates section, an update banner or its own check schedule.
+The remaining delivery work is CI access and verification that Store updates
+preserve the existing profile and saved playback state.
 
 Sources: [distribution paths](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path),
 [MSIX package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements),
-[CLI prerequisites](https://learn.microsoft.com/en-us/windows/apps/publish/msstore-dev-cli/overview).
+[CLI prerequisites](https://learn.microsoft.com/en-us/windows/apps/publish/msstore-dev-cli/overview),
+[automatic Store updates](https://support.microsoft.com/en-us/accounts-billing/get-updates-for-apps-and-games-in-microsoft-store).

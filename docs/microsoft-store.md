@@ -7,8 +7,12 @@ or replace checking normal browser sign-in.
 
 Windence uses Microsoft Store for public installation and updates.
 [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
-tracks packaging, native checks, in-app reminders and publication separately.
+tracks packaging, native checks, CI delivery and publication separately.
 The first layer builds an upload package. It does not publish the app.
+
+Store manages automatic updates. Windence does not add its own update checks,
+an Updates section or a reminder banner. CI builds and submits new packages;
+Microsoft certifies, signs and delivers them.
 
 ## Package identity
 
@@ -229,3 +233,11 @@ Replace the draft's 1.3.1.0 package with 1.3.2.0 after the runtime check. Update
 the inline privacy policy to its 13 October revision and add private certification
 notes using the [review access guide](store-review-access.md). Keep the review
 code out of repository files and issue descriptions.
+
+The owner reported uploading 1.3.2.0 and submitting it for certification on
+2026-10-13. The result and first publication are pending. A live HTTPS check with
+the owner's code returned both temporary tokens. Spotify confirmed Premium and
+the expected account. This check does not verify audio or SMTC on Windows.
+Keep review access available until certification finishes. For later submissions,
+renew expired access and update private certification notes before releasing.
+CI delivery stays disabled until the first publication and Entra setup.
