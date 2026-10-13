@@ -135,12 +135,14 @@ Store job only accepts commits already merged into `windows-port`. It downloads
 that run's exact unsigned artifact and uses official CLI `v0.4.3` with the setup
 action pinned to its v1.4 commit.
 
-Before submission, the job validates the package, reads the Store product and
-requires matching identity, an existing published version and no pending
-submission. A failure stops delivery. The CLI otherwise deletes a pending
-draft and creates a submission from the last published metadata. This is why
-the guard is needed. Do not edit Partner Center while CI submits; portal edits
-after the check can still race with CLI publication.
+Before submission, the job validates the package, reads the Store product through
+the CLI and requires matching identity, an existing published version and no
+pending submission. It then creates its own submission through the official
+Store API. A competing draft makes creation fail; the job never deletes a draft.
+Only the returned submission ID is updated, uploaded and committed. Existing
+listing, pricing and certification notes are preserved. A failed upload or commit
+stops delivery and leaves the API-created submission for manual recovery.
+Do not edit an API-created submission in Partner Center while CI is running.
 
 The job serializes Store submissions across tags. If a submission is pending,
 finish it in Partner Center before retrying. A CLI success means the submission
@@ -148,8 +150,9 @@ was sent, not that Microsoft finished certification or users received the update
 EXE/ZIP and preview tags remain Actions artifacts. This workflow no longer
 publishes executable downloads to GitHub Releases.
 
-[Pinned MSIX publisher](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/ProjectConfigurators/MSIXProjectPublisher.cs),
-[draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs).
+[CLI draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs),
+[Store API submission creation](https://learn.microsoft.com/en-us/windows/uwp/monetize/create-an-app-submission),
+[package upload and commit](https://learn.microsoft.com/en-us/windows/uwp/monetize/manage-app-submissions).
 
 ## Verified first package
 

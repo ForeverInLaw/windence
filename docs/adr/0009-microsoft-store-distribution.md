@@ -25,7 +25,9 @@ The first package is built in Windows CI and uploaded manually by the owner.
 First certification and publication happen in Partner Center. Later stable
 versions can use Microsoft's Store Developer CLI after the owner configures
 API access. An existing pending submission blocks automation so it does not
-overwrite listing changes. Store certification remains separate from CI success.
+overwrite listing changes. The CLI reads product identity; the official Store
+API creates and commits the update. A competing draft stops creation without
+deleting anything. Store certification remains separate from CI success.
 
 Microsoft Store manages update checks, downloads and installation. Windence
 does not add an Updates section, an update banner or its own check schedule.
