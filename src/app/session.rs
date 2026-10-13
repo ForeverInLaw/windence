@@ -157,6 +157,7 @@ impl Session {
         if !sent {
             self.pending_configuration = None;
             self.state = ConnectionState::SetupRequired;
+            self.setup_error = self.last_failure.clone();
         }
         cx.notify();
         sent

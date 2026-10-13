@@ -78,6 +78,7 @@ public static class WindenceReviewCredentials {
             Credential value = (Credential)Marshal.PtrToStructure(pointer, typeof(Credential));
             if (value.BlobSize == 0 || value.BlobSize % 2 != 0)
                 throw new InvalidOperationException("Saved credential has an invalid encoding.");
+            // Windence uses keyring set_password; its Windows backend writes UTF-16LE.
             return Marshal.PtrToStringUni(value.Blob, checked((int)value.BlobSize / 2));
         } finally { CredFree(pointer); }
     }

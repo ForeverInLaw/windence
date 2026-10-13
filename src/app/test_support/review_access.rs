@@ -8,8 +8,7 @@ use spotify_gpui_client::{
 };
 use std::sync::Arc;
 
-#[test]
-fn review_access_validates_the_code_and_keeps_it_out_of_diagnostics() {
+fn fixture() -> Fixture {
     let mut cx = HeadlessAppContext::with_asset_source(
         Arc::new(NoopTextSystem),
         Arc::new(assets::AppAssets),
@@ -29,12 +28,17 @@ fn review_access_validates_the_code_and_keeps_it_out_of_diagnostics() {
         })
         .unwrap();
     settle(&mut cx, window.into());
-    let mut fixture = Fixture {
+    Fixture {
         cx,
         window,
         workspace: None,
         backend,
-    };
+    }
+}
+
+#[test]
+fn review_access_validates_the_code_and_keeps_it_out_of_diagnostics() {
+    let mut fixture = fixture();
     fixture.update(|window, cx| window.click("open-review-access", cx));
     fixture.update(|window, cx| {
         window.click("review-code-input", cx);
@@ -65,4 +69,28 @@ fn review_access_validates_the_code_and_keeps_it_out_of_diagnostics() {
     assert!(matches!(command, BackendCommand::ConnectReview { .. }));
     assert!(!format!("{command:?}").contains(&code));
     fixture.update(|window, _| assert_eq!(window.find("review-code-input").value(), None));
+}
+
+#[test]
+fn review_access_keeps_the_code_and_reports_failed_dispatch() {
+    let mut fixture = fixture();
+    fixture.backend.commands.close();
+    fixture.update(|window, cx| window.click("open-review-access", cx));
+    fixture.update(|window, cx| {
+        window.click("review-code-input", cx);
+        window.input(&format!("review-{}", "a".repeat(64)), cx);
+    });
+    // Retrying without typing again must still reach the closed backend.
+    for _ in 0..2 {
+        fixture.update(|window, cx| window.click("connect-review-access", cx));
+        fixture.update(|_, cx| {
+            assert_eq!(
+                services::AppServices::session(cx)
+                    .read(cx)
+                    .setup_error()
+                    .map(String::as_str),
+                Some("Windence backend is busy or not running")
+            );
+        });
+    }
 }

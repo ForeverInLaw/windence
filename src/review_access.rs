@@ -59,14 +59,14 @@ impl AccessToken {
 
 impl ReviewAccess {
     pub fn new(code: &str) -> Result<Self> {
-        let code = code.trim();
+        let code = code.trim().to_ascii_lowercase();
         if !code.strip_prefix("review-").is_some_and(|secret| {
             secret.len() == 64 && secret.bytes().all(|byte| byte.is_ascii_hexdigit())
         }) {
             bail!("Enter the review code supplied for certification.");
         }
         Ok(Self {
-            code: code.to_owned(),
+            code,
             http: oauth2_reqwest::Client::builder()
                 .timeout(Duration::from_secs(40))
                 .redirect(oauth2_reqwest::redirect::Policy::none())
@@ -123,6 +123,8 @@ mod tests {
         let code = format!("review-{}", "a".repeat(64));
         let access = ReviewAccess::new(&code).unwrap();
         assert!(!format!("{access:?}").contains(&code));
+        let uppercase = format!("  REVIEW-{}  ", "A".repeat(64));
+        assert_eq!(ReviewAccess::new(&uppercase).unwrap().code, code);
         assert!(ReviewAccess::new("review-short").is_err());
         assert!(ReviewAccess::new(&format!("review-{}", "g".repeat(64))).is_err());
     }

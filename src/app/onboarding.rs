@@ -159,10 +159,13 @@ impl Onboarding {
         let code = self.review_code_input.read(cx).value();
         match spotify_gpui_client::review_access::ReviewAccess::new(&code) {
             Ok(access) => {
-                self.session
-                    .update(cx, |session, cx| session.connect_review(access, cx));
-                self.review_code_input
-                    .update(cx, |input, cx| input.set_value("", window, cx));
+                if self
+                    .session
+                    .update(cx, |session, cx| session.connect_review(access, cx))
+                {
+                    self.review_code_input
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                }
             }
             Err(error) => self.session.update(cx, |session, cx| {
                 session.reject_client_id(error.to_string(), cx)
@@ -365,7 +368,11 @@ impl Onboarding {
                 div()
                     .text_size(px(11.))
                     .text_color(rgb(palette.text_muted))
-                    .child("Saved in Windence"),
+                    .child(match self.session.read(cx).client_id_source() {
+                        Some(ClientIdSource::Review) => "Provided for this session",
+                        Some(ClientIdSource::Environment) => "From environment",
+                        _ => "Saved in Windence",
+                    }),
             )
             .child(
                 div()
