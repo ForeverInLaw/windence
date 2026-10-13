@@ -25,6 +25,31 @@ Record OS build, package version and results in IVO-79. See the
 CI currently verifies a test-signed package installation, onboarding and the
 unvirtualized profile path. It does not cover the remaining checks above.
 
+## Temporary certification access
+
+Build `a88d389`, version 1.3.2, passed
+[Windows Release CI](https://github.com/ForeverInLaw/windence/actions/runs/38329998805).
+The unsigned Store artifact and development files match their SHA256 sidecars.
+The native capture report has no error. All four light/dark onboarding images
+were inspected at 1200 by 720 pixels and 96 DPI. Review access is visible and
+the existing controls fit. The owner helper also passed its native Credential
+Manager check using synthetic credentials.
+
+The owner enabled the server session on 2026-10-13. Provisioning renewed both
+Spotify credentials and verified Premium. This does not test playback in the app.
+Complete these checks on Windows before submitting the package:
+
+- [ ] From setup, open Review access, enter the private code and connect.
+      With an existing developer-app configuration, first use Change developer
+      app to clear the old account state.
+- [ ] Open a playlist, search, play audio, seek, change the queue and test SMTC.
+- [ ] Reconnect without browser login. Quit completely and confirm a fresh
+      launch asks for the code again.
+- [ ] Sign out of review access and confirm ordinary browser setup is available.
+
+See [Store review access](store-review-access.md) for provisioning, private
+certification notes and revocation. This path does not verify browser sign-in.
+
 ## GPUI and appearance checks
 
 Use this checklist after a GPUI snapshot or appearance change. Portable

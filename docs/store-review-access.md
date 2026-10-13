@@ -81,7 +81,9 @@ If an older developer-app configuration is present, use **Change developer app**
 first; this signs out and clears the cached account state.
 
 Replace the existing MSIX in the draft submission with the new version containing
-review access. Use these notes, replacing the code placeholder privately:
+review access. Update Partner Center's inline privacy policy from
+[PRIVACY.md](../PRIVACY.md), including its optional certification access section.
+Use these notes, replacing the code placeholder privately:
 
 ```text
 Windence is an independent Spotify player requiring Spotify Premium.

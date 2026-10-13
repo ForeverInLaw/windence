@@ -70,7 +70,7 @@ scripts\package-msix.ps1
 ```
 
 The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
-`-ExpectedVersion v1.3.1` checks Cargo against a release tag. MakeAppx performs
+`-ExpectedVersion v1.3.2` checks Cargo against a release tag. MakeAppx performs
 its semantic validation; it does not replace certification or native checks.
 Logo PNGs are committed. Regenerate them with the existing
 `python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
@@ -150,8 +150,8 @@ publishes executable downloads to GitHub Releases.
 ## Verified first package
 
 This 1.3.0 package is historical evidence. It still has a Cadence sidebar label
-and its development installer uses the old name. Use the corrected 1.3.1 build
-for screenshots and replace the draft's package before certification.
+and its development installer uses the old name. Use the latest verified build
+below for screenshots and replace the draft's package before certification.
 
 Source commit `af634a5`, checked on 2026-10-12:
 
@@ -199,7 +199,33 @@ An Inno upgrade on client Windows and the signed-in main window still need the
 owner's check. The data directory, credentials and single-instance identity
 retain their existing names. This change does not migrate user data.
 
-Close the previous player, install the new development build and check the
-sidebar, Task Manager and shortcuts. In Partner Center's draft, replace the
-1.3.0.0 package with the new 1.3.1.0 MSIX before certification. CI did not send
-the submission or publish the app.
+This build completed the public rename. For certification, use the 1.3.2 build
+below, which also adds temporary review access. CI did not send the submission
+or publish the app.
+
+## Temporary review access, 1.3.2
+
+Source commit `a88d389`, checked on 2026-10-13:
+
+- [Successful Release run](https://github.com/ForeverInLaw/windence/actions/runs/38329998805).
+- [Store artifact](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782965893),
+  `Windence-1.3.2-windows-x64.msix`, package version `1.3.2.0`, 16,928,079 bytes.
+- MSIX SHA256 `d1283f70f43b60000a2c796377c018208fa2d79416f87f384b316c3ba90ff49b`.
+- [Development artifact](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782726399)
+  contains the matching installer and ZIP for the owner's Windows check.
+- [Owner helper](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782846199)
+  reads existing credentials through Windows Credential Manager. CI checked it
+  using a separate synthetic entry, then removed that entry.
+- Downloaded checksums, unsigned MSIX identity and ZIP payload were verified.
+  MakeAppx validation and installation of a separate test-signed MSIX passed.
+  All four light/dark native onboarding captures were inspected at 100% DPI.
+- Local checks passed 376 Rust tests, strict all-target Clippy, formatting,
+  actionlint and five broker tests. CI did not submit or publish to Store.
+- The owner enabled the broker successfully. Its temporary access expires on
+  2026-11-12. Real playback through review access still needs the owner's
+  Windows check. Browser OAuth, audio and SMTC are outside the CI capture.
+
+Replace the draft's 1.3.1.0 package with 1.3.2.0 after the runtime check. Update
+the inline privacy policy to its 13 October revision and add private certification
+notes using the [review access guide](store-review-access.md). Keep the review
+code out of repository files and issue descriptions.
