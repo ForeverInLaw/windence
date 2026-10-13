@@ -163,6 +163,20 @@ pub(crate) struct CuratedPlaylist {
 }
 
 impl Playback {
+    pub(crate) async fn connect_for_review(
+        access: &crate::review_access::ReviewAccess,
+    ) -> Result<Self> {
+        let session = access.session().await?;
+        let playback = Self::connect_with_access_token(session.playback.access_token).await?;
+        if playback.account_id() != session.account_id {
+            playback.stop();
+            return Err(anyhow!(
+                "The review playback session belongs to a different Spotify account."
+            ));
+        }
+        Ok(playback)
+    }
+
     /// Spotify's account ID confirmed by the playback session's authentication.
     pub(crate) fn account_id(&self) -> String {
         self.session.username()

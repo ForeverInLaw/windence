@@ -1,5 +1,7 @@
 /target
 /dist
+.env
+__pycache__/
 .continuum
 log.txt
 dj_app.log

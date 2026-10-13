@@ -24,6 +24,7 @@ use crate::{
     pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
     playlist::PlaylistSnapshot,
+    review_access::ReviewAccess,
     shuffle::{
         ContextKind, Origin, ShuffleMode, ShuffleRng, ShuffleState, injection_target,
         smart_admissible,
@@ -48,6 +49,7 @@ struct AuthorizationSuccess {
 struct PlaybackConnectionRequest {
     load_saved_token: bool,
     authorization: Option<PlaybackAuthorization>,
+    review_access: Option<ReviewAccess>,
 }
 
 #[derive(Clone)]
@@ -342,6 +344,10 @@ pub enum BackendCommand {
     ConfigureSpotify {
         generation: u64,
         client_id: String,
+    },
+    ConnectReview {
+        generation: u64,
+        access: ReviewAccess,
     },
     ResetSpotifyConfiguration {
         generation: u64,
@@ -981,6 +987,29 @@ async fn start(
             _ = wait_for_shutdown(shutdown) => return Err(receive_shutdown_acknowledgment(commands).await),
         };
         match command {
+            BackendCommand::ConnectReview { generation, access } => {
+                let candidate = tokio::select! {
+                    result = Spotify::from_review(access) => result,
+                    _ = wait_for_shutdown(shutdown) => return Err(receive_shutdown_acknowledgment(commands).await),
+                };
+                match candidate {
+                    Ok(candidate) => {
+                        configuration = Some(SpotifyConfiguration {
+                            client_id: candidate.client_id().to_owned(),
+                            source: ClientIdSource::Review,
+                        });
+                        configuration_generation = generation;
+                        playback_credentials_invalidated = true;
+                        break candidate;
+                    }
+                    Err(error) => {
+                        let _ = events.send(BackendEvent::SpotifyConfigurationFailed {
+                            generation,
+                            error: error.to_string(),
+                        });
+                    }
+                }
+            }
             BackendCommand::ConfigureSpotify {
                 generation,
                 client_id,
@@ -1249,6 +1278,11 @@ impl Worker {
             let _ = self.events.send(BackendEvent::AuthorizationRequired);
             return Ok(());
         }
+        // The submitted code's SpotifyConfigured event starts authorization.
+        // Avoid starting a second playback connection before that command.
+        if self.spotify.review_access().is_some() {
+            return Ok(());
+        }
         self.serve_cached_library().await;
         self.start_account_loads().await;
         match self.store.smart_shuffle_seen().await {
@@ -1258,6 +1292,7 @@ impl Worker {
         self.connection.begin_connect(PlaybackConnectionRequest {
             load_saved_token: true,
             authorization: None,
+            review_access: self.spotify.review_access().cloned(),
         });
         Ok(())
     }
@@ -1294,6 +1329,9 @@ impl Worker {
             return None;
         }
         let result = match command {
+            BackendCommand::ConnectReview { generation, access } => {
+                self.configure_review(generation, access, shutdown).await
+            }
             BackendCommand::ResetSpotifyConfiguration { generation } => {
                 self.reset_spotify_configuration(generation).await
             }
@@ -1565,6 +1603,43 @@ impl Worker {
             source: ClientIdSource::Saved,
         });
         let _ = self.events.send(BackendEvent::AuthorizationRequired);
+        Ok(())
+    }
+
+    async fn configure_review(
+        &mut self,
+        generation: u64,
+        access: ReviewAccess,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        if self.configuration.is_some() {
+            self.send_configuration_failed(
+                generation,
+                "Remove the current Spotify configuration before using review access.",
+            );
+            return Ok(());
+        }
+        let candidate = tokio::select! {
+            result = Spotify::from_review(access) => result,
+            _ = wait_for_shutdown(shutdown) => return Ok(()),
+        };
+        match candidate {
+            Ok(candidate) => {
+                let client_id = candidate.client_id().to_owned();
+                self.spotify = candidate;
+                self.playback_credentials_invalidated = true;
+                self.configuration = Some(SpotifyConfiguration {
+                    client_id: client_id.clone(),
+                    source: ClientIdSource::Review,
+                });
+                let _ = self.events.send(BackendEvent::SpotifyConfigured {
+                    generation,
+                    client_id,
+                    source: ClientIdSource::Review,
+                });
+            }
+            Err(error) => self.send_configuration_failed(generation, error),
+        }
         Ok(())
     }
 
@@ -2532,12 +2607,15 @@ impl Worker {
     fn finish_logout(&mut self, logout: Finished<Result<()>>) {
         self.session.logout = None;
         match logout {
-            Some(Ok(Ok(()))) => {
+            Some(Ok(result)) => {
                 let _ = self.events.send(BackendEvent::LoggedOut);
-            }
-            Some(Ok(Err(error))) => {
-                let _ = self.events.send(BackendEvent::LoggedOut);
-                send_error(&self.events, error);
+                if self.spotify.review_access().is_some() {
+                    self.configuration = None;
+                    let _ = self.events.send(BackendEvent::SetupRequired);
+                }
+                if let Err(error) = result {
+                    send_error(&self.events, error);
+                }
             }
             Some(Err(error)) => send_error(&self.events, error),
             None => {}
@@ -3769,6 +3847,7 @@ struct PlaybackConnection {
     /// A play requested while the session was still connecting, started as
     /// soon as it is up so the first click after launch is not lost.
     pending_play: Option<PendingPlay>,
+    review_access: Option<ReviewAccess>,
 }
 
 impl Drop for PlaybackConnection {
@@ -3869,10 +3948,14 @@ impl PlaybackConnection {
         self.abort_attempts();
         self.reconnect_pending = false;
         self.disconnect();
-        self.connect = Some(tokio::spawn(Playback::connect(
-            request.load_saved_token,
-            request.authorization,
-        )));
+        self.review_access = request.review_access.clone();
+        self.connect = Some(tokio::spawn(async move {
+            if let Some(access) = request.review_access {
+                Playback::connect_for_review(&access).await
+            } else {
+                Playback::connect(request.load_saved_token, request.authorization).await
+            }
+        }));
     }
 
     /// Starts a reconnect attempt when the session dropped, unless one is
@@ -3891,8 +3974,16 @@ impl PlaybackConnection {
             log::info!("playback: connection lost, reconnecting");
             self.disconnect();
             let _ = events.send(BackendEvent::PlaybackReconnecting);
-            self.reconnect = Some(tokio::spawn(async {
-                tokio::time::timeout(Duration::from_secs(15), Playback::reconnect())
+            let review_access = self.review_access.clone();
+            self.reconnect = Some(tokio::spawn(async move {
+                let reconnect = async {
+                    if let Some(access) = review_access {
+                        Playback::connect_for_review(&access).await
+                    } else {
+                        Playback::reconnect().await
+                    }
+                };
+                tokio::time::timeout(Duration::from_secs(45), reconnect)
                     .await
                     .context("Spotify playback reconnection timed out")?
             }));
@@ -4455,6 +4546,15 @@ async fn authorize_account(
     needs_playback: bool,
     playback_credentials_invalidated: bool,
 ) -> Result<AuthorizationSuccess> {
+    if let Some(access) = spotify.review_access() {
+        return Ok(AuthorizationSuccess {
+            playback: needs_playback.then(|| PlaybackConnectionRequest {
+                load_saved_token: false,
+                authorization: None,
+                review_access: Some(access.clone()),
+            }),
+        });
+    }
     let playback_authorization = if needs_playback && playback_credentials_invalidated {
         Some(Playback::prepare_authorization().await?)
     } else {
@@ -4470,6 +4570,7 @@ async fn authorize_account(
         Some(PlaybackConnectionRequest {
             load_saved_token: !playback_credentials_invalidated,
             authorization: playback_authorization,
+            review_access: None,
         })
     } else {
         None

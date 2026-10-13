@@ -27,7 +27,10 @@ impl Settings {
     fn page(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let palette = appearance::Appearance::palette(cx);
         let session = self.session.read(cx);
-        let saved_configuration = session.client_id_source() == Some(ClientIdSource::Saved);
+        let saved_configuration = matches!(
+            session.client_id_source(),
+            Some(ClientIdSource::Saved | ClientIdSource::Review)
+        );
         let environment_configuration =
             session.client_id_source() == Some(ClientIdSource::Environment);
         let client_id = session.client_id().cloned().unwrap_or_default();

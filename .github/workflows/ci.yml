@@ -20,6 +20,20 @@ env:
   RUSTUP_MAX_RETRIES: 10
 
 jobs:
+  review-broker:
+    name: Review access service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test token renewal and revocation
+        run: |
+          python3 -m venv "${{ runner.temp }}/review-broker"
+          "${{ runner.temp }}/review-broker/bin/pip" install -r services/review-broker/requirements.txt
+          "${{ runner.temp }}/review-broker/bin/python" -m unittest discover -s services/review-broker -p test_app.py -v
+
   windows:
     name: Windows x64
     runs-on: windows-2025
@@ -44,3 +58,5 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run portable tests
         run: cargo test --locked
+      - name: Check review access helper
+        run: scripts\test-review-access.ps1

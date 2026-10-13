@@ -1,5 +1,10 @@
 # Microsoft Store delivery
 
+Temporary access to the owner's Spotify session for certification is described
+in [Store review access](store-review-access.md). The owner must activate and
+test it before submitting the new package. It does not guarantee certification
+or replace checking normal browser sign-in.
+
 Windence uses Microsoft Store for public installation and updates.
 [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
 tracks packaging, native checks, in-app reminders and publication separately.

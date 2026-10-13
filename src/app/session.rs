@@ -123,18 +123,37 @@ impl Session {
     }
 
     pub(super) fn configure(&mut self, client_id: String, cx: &mut Context<Self>) -> bool {
+        self.configure_with(
+            |generation| BackendCommand::ConfigureSpotify {
+                generation,
+                client_id,
+            },
+            cx,
+        )
+    }
+
+    pub(super) fn connect_review(
+        &mut self,
+        access: spotify_gpui_client::review_access::ReviewAccess,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.configure_with(
+            |generation| BackendCommand::ConnectReview { generation, access },
+            cx,
+        )
+    }
+
+    fn configure_with(
+        &mut self,
+        command: impl FnOnce(u64) -> BackendCommand,
+        cx: &mut Context<Self>,
+    ) -> bool {
         self.setup_error = None;
         self.last_failure = None;
         self.state = ConnectionState::Connecting;
         let generation = next_request_id(&mut self.configuration_request_id);
         self.pending_configuration = Some(generation);
-        let sent = self.send(
-            BackendCommand::ConfigureSpotify {
-                generation,
-                client_id,
-            },
-            cx,
-        );
+        let sent = self.send(command(generation), cx);
         if !sent {
             self.pending_configuration = None;
             self.state = ConnectionState::SetupRequired;
@@ -243,7 +262,7 @@ impl Session {
                     self.pending_configuration = None;
                     self.state = ConnectionState::SetupRequired;
                     self.setup_error = Some(format!(
-                        "Could not configure Spotify. Check the Client ID and try again. {error}"
+                        "Could not connect. Check your details and try again. {error}"
                     ));
                     self.setup_needs_focus = true;
                 }

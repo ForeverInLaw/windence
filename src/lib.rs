@@ -15,6 +15,7 @@ pub mod playback;
 pub mod playlist;
 pub mod proto;
 pub mod proto_convert;
+pub mod review_access;
 pub mod shuffle;
 pub mod spotify;
 pub mod storage;

@@ -26,6 +26,7 @@ use crate::{
     },
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    review_access::ReviewAccess,
 };
 
 const REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
@@ -43,6 +44,7 @@ const RESOLVE_CONCURRENCY: usize = 4;
 pub enum ClientIdSource {
     Environment,
     Saved,
+    Review,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -276,6 +278,7 @@ pub struct Spotify {
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<RateLimitGate>,
     account_profile: Arc<std::sync::Mutex<AccountProfileCell>>,
+    review_access: Option<(ReviewAccess, String)>,
 }
 
 impl Spotify {
@@ -317,7 +320,33 @@ impl Spotify {
             account_profile: Arc::new(std::sync::Mutex::new(
                 Arc::new(tokio::sync::OnceCell::new()),
             )),
+            review_access: None,
         })
+    }
+
+    pub(crate) async fn from_review(access: ReviewAccess) -> Result<Self> {
+        let session = access.session().await?;
+        let mut spotify = Self::from_client_id(&session.client_id, false).await?;
+        *spotify
+            .client
+            .token
+            .lock()
+            .await
+            .map_err(|_| anyhow!("could not lock Spotify token state"))? =
+            Some(session.library.into_library_token());
+        if spotify.account_id().await? != session.account_id {
+            bail!("The review library belongs to a different Spotify account.");
+        }
+        spotify.review_access = Some((access, session.account_id));
+        Ok(spotify)
+    }
+
+    pub(crate) fn review_access(&self) -> Option<&ReviewAccess> {
+        self.review_access.as_ref().map(|(access, _)| access)
+    }
+
+    pub(crate) fn client_id(&self) -> &str {
+        &self.client.creds.id
     }
 
     pub async fn is_authorized(&self) -> Result<bool> {
@@ -339,6 +368,9 @@ impl Spotify {
             .await
             .map_err(|_| anyhow!("could not lock Spotify token state"))? = None;
         self.clear_account_profile();
+        if self.review_access.is_some() {
+            return Ok(());
+        }
         credential_worker::run(TokenVault::delete).await
     }
 
@@ -803,6 +835,21 @@ impl Spotify {
             return Ok(());
         }
 
+        if let Some((access, account_id)) = &self.review_access {
+            let session = access.session().await?;
+            if session.client_id != self.client.creds.id || session.account_id != *account_id {
+                bail!("The review account changed. Enter a new review code.");
+            }
+            *self
+                .client
+                .token
+                .lock()
+                .await
+                .map_err(|_| anyhow!("could not lock Spotify token state"))? =
+                Some(session.library.into_library_token());
+            return Ok(());
+        }
+
         let mut refreshed = timeout(TOKEN_REQUEST_TIMEOUT, self.client.refetch_token())
             .await
             .context("Spotify token refresh timed out")??
@@ -1126,6 +1173,7 @@ pub(crate) mod tests {
                     account_profile: std::sync::Arc::new(std::sync::Mutex::new(
                         std::sync::Arc::new(tokio::sync::OnceCell::new()),
                     )),
+                    review_access: None,
                 },
                 requests,
                 holds,
