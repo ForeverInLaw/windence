@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 from fastapi.testclient import TestClient
 import httpx
@@ -17,11 +18,18 @@ class BrokerTests(unittest.TestCase):
         self.path = Path(self.directory.name) / "session.json"
         self.requests = []
         self.fail_playback = False
+        self.fail_profile = False
+        self.rejected_tokens = set()
 
         def respond(request):
             self.requests.append(request)
             if request.url.path == "/v1/me":
+                if self.fail_profile:
+                    return httpx.Response(503)
                 return httpx.Response(200, json={"id": "owner", "product": "premium"})
+            refresh = parse_qs(request.content.decode())["refresh_token"][0]
+            if refresh in self.rejected_tokens:
+                return httpx.Response(400, json={"error": "invalid_grant"})
             playback = api.PLAYBACK_CLIENT_ID.encode() in request.content
             if playback and self.fail_playback:
                 return httpx.Response(400, json={"error": "secret-upstream-details"})
@@ -103,6 +111,55 @@ class BrokerTests(unittest.TestCase):
             self.enable()
         self.assertNotIn("code_hash", self.broker.read())
         self.assertEqual(self.session("anything").status_code, 401)
+
+    def test_failed_reprovisioning_preserves_active_access(self):
+        code = self.enable()
+        active = self.broker.read()
+        replacement = self.input.model_copy(update={
+            "client_id": "b" * 32,
+            "library_refresh_token": api.SecretStr("replacement-library"),
+            "playback_refresh_token": api.SecretStr("replacement-playback"),
+        })
+        self.fail_playback = True
+        with self.assertRaises(httpx.HTTPStatusError):
+            self.broker.provision(replacement)
+        saved = self.broker.read()
+        self.assertEqual(saved["code_hash"], active["code_hash"])
+        self.assertEqual(saved["valid_until"], active["valid_until"])
+        self.assertEqual(saved["client_id"], active["client_id"])
+        self.assertEqual(self.session(code).status_code, 200)
+
+    def test_retry_uses_rotation_from_failed_provisioning(self):
+        self.fail_playback = True
+        with self.assertRaises(httpx.HTTPStatusError):
+            self.enable()
+        state = self.broker.read()
+        state["pending"]["library"]["expires_at"] = 0
+        self.broker.write(state)
+        self.fail_playback = False
+        self.rejected_tokens.add("library-secret")
+        self.requests.clear()
+        code = self.enable()
+        self.assertEqual(parse_qs(self.requests[0].content.decode())["refresh_token"],
+                         ["rotated-library"])
+        self.assertEqual(self.session(code).status_code, 200)
+        self.assertNotIn("pending", self.broker.read())
+
+    def test_failed_profile_check_keeps_active_rotations(self):
+        code = self.enable()
+        state = self.broker.read()
+        for kind in ("library", "playback"):
+            state[kind]["expires_at"] = 0
+        self.broker.write(state)
+        self.rejected_tokens.update(("library-secret", "playback-secret"))
+        self.fail_profile = True
+        with self.assertRaises(httpx.HTTPStatusError):
+            self.enable()
+        self.assertEqual(self.session(code).status_code, 200)
+        self.fail_profile = False
+        replacement = self.enable()
+        self.assertEqual(self.session(code).status_code, 401)
+        self.assertEqual(self.session(replacement).status_code, 200)
 
 
 if __name__ == "__main__":

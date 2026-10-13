@@ -70,6 +70,11 @@ The helper needs Windows OpenSSH and access to Docker on the server. If either
 saved credential is unavailable, sign in again before enabling access. Credentials
 can rotate; run the helper again if the broker stops renewing successfully.
 
+A failed attempt keeps the active code and session. Pending credentials and
+rotated tokens are saved for retry; a successful attempt replaces the code only
+after both tokens and Premium are verified. Matching active credentials share
+their renewed tokens, so failure does not strand the previous session.
+
 ## Verify and submit
 
 Test on a clean Windows profile using the same package that will be submitted.
