@@ -1,6 +1,6 @@
 # Windence privacy policy
 
-Last updated: 13 October 2026.
+Last updated: 14 October 2026.
 
 Windence is an independent Spotify player for Windows. It is not affiliated
 with Spotify or Microsoft. The project is maintained at
@@ -48,15 +48,12 @@ The Windence application does not sell personal data, run advertising or a
 separate analytics service, or automatically send your Spotify account, listening
 history or local logs to the project maintainer.
 
-## Optional certification access
+## Retired certification access
 
-The maintainer may provide a temporary review code for Microsoft Store
-certification. Entering this code contacts `spotic.qvq.cz`, which receives the
-code and network information such as your IP address. The service supplies
-short-lived tokens for an account whose owner has agreed to provide review
-access. The account's refresh tokens stay on the server. Request logging is
-disabled. The review code and tokens are kept in application memory until exit.
-Ordinary Spotify sign-in does not use this service.
+Temporary Microsoft Store certification access was retired on 14 October 2026.
+The service was shut down and its stored account tokens were removed. Review
+codes no longer grant access to the service. Older app versions may still show
+the Review access option. Ordinary Spotify sign-in uses Spotify directly.
 
 ## Your controls
 
