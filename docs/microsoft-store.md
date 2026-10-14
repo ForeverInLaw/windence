@@ -125,10 +125,14 @@ It requires a valid Authenticode signature from Microsoft Corporation and writes
 a SHA256 sidecar. The `windence-store-installer` artifact contains both files.
 This job needs no Partner Center credentials and does not build or sign an installer.
 
-GitHub releases attach this Microsoft installer and the unsigned MSIX upload
-package, with checksums. Release notes identify the MSIX as a Partner Center
-artifact. The Store installer downloads the version currently certified for
-the user's market; a new source tag does not skip certification.
+After package validation, Microsoft signature validation and a successful Store
+submission, the `github-release` job creates a GitHub release with the Microsoft
+installer, unsigned MSIX and their checksums. Only this job has `contents: write`;
+it has no Partner Center credentials. Manual runs create Actions artifacts only.
+Release notes combine `docs/releases/store-downloads.md`, optional notes for the
+tagged version and GitHub-generated changes. They identify the MSIX as a Partner
+Center artifact. The Store installer downloads the version currently certified
+for the user's market; a new source tag does not skip certification.
 
 The README Windows screenshot was downloaded unchanged from the published
 [Windence Store listing](https://apps.microsoft.com/detail/9PJ0NRJRJWH8) on
@@ -178,8 +182,8 @@ Do not edit an API-created submission in Partner Center while CI is running.
 The job serializes Store submissions across tags. If a submission is pending,
 finish it in Partner Center before retrying. A delivery success means the submission
 was sent, not that Microsoft finished certification or users received the update.
-EXE/ZIP and preview tags remain Actions artifacts. This workflow no longer
-publishes executable downloads to GitHub Releases.
+Development EXE/ZIP and preview tags remain Actions artifacts. Stable tags also
+publish the Microsoft Store installer and MSIX upload package to GitHub Releases.
 
 [CLI draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs),
 [Store API submission creation](https://learn.microsoft.com/en-us/windows/uwp/monetize/create-an-app-submission),

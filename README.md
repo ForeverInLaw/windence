@@ -102,6 +102,8 @@ submission blocks a new one. See the [delivery guide](docs/microsoft-store.md).
 The Release workflow also downloads Microsoft's Store installer and verifies
 its Microsoft signature on Windows. This installer always retrieves the latest
 certified Store version; it is separate from our development setup EXE.
+After a successful Store submission, CI creates a GitHub release with this
+installer, the MSIX upload package, checksums and release notes.
 
 To build the upload package locally:
 
