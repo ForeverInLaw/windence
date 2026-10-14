@@ -1,4 +1,4 @@
-; Windows installer for Cadence. Build it with:
+; Windows installer for Windence. Build it with:
 ;
 ;   scripts\package-windows.ps1
 ;
@@ -9,18 +9,19 @@
 ; folder, so nothing asks for an administrator and the app can be removed
 ; from Settings like any other.
 
-#define AppName "Cadence"
+#define AppName "Windence"
 ; package-windows.ps1 passes the version from Cargo.toml as /DAppVersion. The
 ; fallback only shows up when ISCC is run on its own.
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
 #endif
-#define AppPublisher "Cadence"
+#define AppPublisher "redstone.md"
 #define AppUrl "https://github.com/ForeverInLaw/windence"
-#define AppExe "Cadence.exe"
+#define AppExe "Windence.exe"
 #define SourceDir "..\"
 
 [Setup]
+; Keep the existing identity so this installer upgrades earlier Cadence installs.
 AppId={{8C3F5D2A-6B41-4E88-9A17-2D5C7E4B9F31}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -32,6 +33,7 @@ AppUpdatesURL={#AppUrl}
 VersionInfoVersion={#AppVersion}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -40,7 +42,7 @@ LicenseFile={#SourceDir}LICENSE
 SetupIconFile={#SourceDir}assets\AppIcon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
-OutputDir={#SourceDir}dist
+OutputDir={#SourceDir}dist\development
 OutputBaseFilename={#AppName}-{#AppVersion}-windows-x64-setup
 Compression=lzma2/max
 SolidCompression=yes
@@ -53,11 +55,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Only remove files installed under the old public name. The profile is elsewhere.
+Type: files; Name: "{app}\Cadence.exe"
+Type: files; Name: "{userprograms}\Cadence\Cadence.lnk"
+Type: dirifempty; Name: "{userprograms}\Cadence"
+Type: files; Name: "{autodesktop}\Cadence.lnk"
+
 [Files]
 Source: "{#SourceDir}target\release\spotify-gpui-client.exe"; DestDir: "{app}"; DestName: "{#AppExe}"; Flags: ignoreversion
 ; The one runtime library the binary imports that Windows does not ship
 ; itself. Kept beside the app so nothing has to be installed separately.
-Source: "{#SourceDir}dist\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}dist\development\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 

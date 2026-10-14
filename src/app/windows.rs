@@ -103,7 +103,7 @@ pub(super) fn open_main_window(cx: &mut App) {
             window_min_size: Some(size(px(720.), px(600.))),
             is_resizable: true,
             titlebar: Some(gpui_kit::TitlebarOptions {
-                title: Some("Cadence".into()),
+                title: Some("Windence".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(traffic_light_position()),
             }),
@@ -122,7 +122,7 @@ pub(super) fn open_main_window(cx: &mut App) {
             // Windows SMTC needs this window's handle; a no-op elsewhere.
             services::AppServices::attach_media_controls(handle, cx);
         }
-        Err(error) => log::error!("could not open the Cadence window: {error}"),
+        Err(error) => log::error!("could not open the Windence window: {error}"),
     }
 }
 
@@ -154,7 +154,7 @@ pub(super) fn ensure_onboarding_window(cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             is_resizable: false,
             titlebar: Some(gpui_kit::TitlebarOptions {
-                title: Some("Cadence".into()),
+                title: Some("Windence".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(traffic_light_position()),
             }),

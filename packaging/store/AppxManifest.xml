@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap uap10 rescap">
+  <Identity Name="redstone.md.Windence"
+            Publisher="CN=C0C4D47C-912F-43D4-8BBF-FE47FBB8F883"
+            Version="0.0.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Windence</DisplayName>
+    <PublisherDisplayName>redstone.md</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-US" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="Windence" Executable="Windence.exe"
+                 uap10:RuntimeBehavior="win32App" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="Windence" Description="A Spotify player for Windows"
+                          BackgroundColor="transparent"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          Square150x150Logo="Assets\Square150x150Logo.png" />
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

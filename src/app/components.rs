@@ -385,6 +385,21 @@ pub(super) fn settings_button(
         .child(label)
 }
 
+/// Public policy for this release, available even before the first Store listing.
+pub(super) fn privacy_policy_button(palette: CadencePalette) -> Button {
+    button(palette, "privacy-policy")
+        .h(tokens::CONTROL_SIZE)
+        .px(px(12.))
+        .rounded(tokens::CONTROL_RADIUS)
+        .text_size(tokens::BODY_TEXT)
+        .text_color(rgb(palette.text_muted))
+        .hover(|style| style.bg(rgb(palette.control_hover)))
+        .child("Privacy policy")
+        .on_click(|_, _, cx| {
+            cx.open_url("https://github.com/ForeverInLaw/windence/blob/bf02ecc9bb810814b4aa469e6583c4e5342d1f89/PRIVACY.md");
+        })
+}
+
 pub(super) fn menu_surface(palette: CadencePalette) -> Div {
     div()
         .occlude()

@@ -1,12 +1,7 @@
 name: Release
 
-# Only a version tag publishes. Nothing here runs on a commit, a push to a
-# branch, or a pull request.
-#
-#   git tag -a v0.5.0 -m "Cadence 0.5.0" && git push origin v0.5.0
-#
-# Start it by hand from the Actions tab to build the installer without
-# publishing anything. An optional baseline run also captures onboarding.
+# Manual runs build Store upload packages and development artifacts.
+# Stable tags submit Store updates only after the owner enables Store delivery.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
@@ -46,7 +41,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       actions: read # download the optional baseline artifact
-      contents: write # create the release
       id-token: write # sign the build provenance
       attestations: write # store it
     defaults:
@@ -68,17 +62,44 @@ jobs:
           key: windows-x64-release
           cache-on-failure: true
 
+      - name: Check Store submission guards
+        run: scripts\test-store-submission.ps1
+
+
       - name: Build the installer and the zip
         run: |
           # On a manual run the ref is a branch, and there is no tag to check.
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
           scripts\package-windows.ps1 -ExpectedVersion $tag
 
+      - name: Package for Microsoft Store
+        if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          scripts\package-msix.ps1 -SkipBuild -ExpectedVersion $tag
+
+      - name: Validate package installation and onboarding
+        if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
+        run: |
+          $package = @(Get-ChildItem dist\store -Filter '*.msix')
+          if ($package.Count -ne 1) { throw 'Expected one Store package' }
+          powershell.exe -NoProfile -File scripts\test-msix.ps1 -PackagePath $package[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'MSIX installation or onboarding failed' }
+
+      - name: Upload Store package for Partner Center
+        if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windence-store-x64
+          path: dist/store/*
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload the build
         uses: actions/upload-artifact@v7
         with:
-          name: cadence-windows-x64
-          path: dist/Cadence-*
+          name: windence-windows-x64
+          path: dist/development/Windence-*
           if-no-files-found: error
           retention-days: 14
 
@@ -91,7 +112,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
         run: |
-          $zip = @(Get-ChildItem dist -File -Filter 'Cadence-*-windows-x64.zip')
+          $zip = @(Get-ChildItem dist\development -File -Filter 'Windence-*-windows-x64.zip')
           if ($zip.Count -ne 1) { throw 'Expected one packaged Windows ZIP' }
           powershell.exe -NoProfile -File scripts\capture-windows-ui.ps1 `
             -BaselineRunId $env:BASELINE_RUN_ID -FinalZip $zip[0].FullName `
@@ -110,37 +131,50 @@ jobs:
 
       # Lets anyone confirm the download was built here, from this commit:
       #   gh attestation verify <file> --repo ForeverInLaw/windence
-      - name: Attest the build
-        if: github.ref_type == 'tag'
+      - name: Attest the Store package
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: |
-            dist/Cadence-*.zip
-            dist/Cadence-*-setup.exe
+          subject-path: dist/store/*.msix
 
-      # Turns the commits since the previous tag into the release body. The
-      # sections and the wording live in cliff.toml.
-      - name: Write the release notes
-        if: github.ref_type == 'tag'
-        uses: orhun/git-cliff-action@v4
+  store:
+    name: Submit Microsoft Store update
+    needs: windows
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-') && vars.STORE_PUBLISH_ENABLED == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: store
+    concurrency:
+      group: microsoft-store-stable
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
         with:
-          config: cliff.toml
-          args: --current --strip header
-        env:
-          OUTPUT: RELEASE_NOTES.md
-
-      - name: Publish the release
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a release from the Windows branch
         run: |
-          # A tag with a suffix, such as v0.5.0-rc1, is a pre-release and does
-          # not become the download people land on.
-          $latest = if ($env:TAG -match '-') { '--prerelease' } else { '--latest' }
-          $assets = (Get-ChildItem dist -File -Filter 'Cadence-*').FullName
-          gh release create $env:TAG @assets `
-            --verify-tag `
-            --title "Cadence $($env:TAG -replace '^v', '')" `
-            --notes-file RELEASE_NOTES.md `
-            $latest
+          git merge-base --is-ancestor HEAD origin/windows-port
+          if ($LASTEXITCODE -ne 0) { throw 'Merge into windows-port before tagging a Store release' }
+      - uses: actions/download-artifact@v7
+        with:
+          name: windence-store-x64
+          path: dist/store
+      - name: Install the Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+      - name: Check identity and submit the stable package
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $package = @(Get-ChildItem dist\store -Filter '*.msix')
+          if ($package.Count -ne 1) { throw 'Expected one Store artifact' }
+          scripts\publish-store.ps1 -PackagePath $package[0].FullName -ExpectedVersion $env:RELEASE_TAG

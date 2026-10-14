@@ -1,5 +1,11 @@
 # Windows updater proposal
 
+Status: historical. The owner chose Microsoft Store in IVO-79 on 2026-10-12.
+[ADR-0009](../adr/0009-microsoft-store-distribution.md) replaces this
+recommendation. Use the [Store delivery guide](../microsoft-store.md) for current
+packaging and release instructions. The research below describes the earlier
+EXE/ZIP plan.
+
 Research for [IVO-76](https://linear.app/ivoxygen/issue/IVO-76). Checked on 2026-10-12 against port commit `5f3780f` and the stable versions below. This is a proposal. No updater, packaging change, signing key, or release is included.
 
 ## Recommendation

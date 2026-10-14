@@ -1,5 +1,41 @@
 # Native Windows validation
 
+## Store package
+
+Run initial installation and runtime checks before first Store certification.
+Migration and Store-delivered update checks follow the first publication.
+Record OS build, package version and results in IVO-79. See the
+[delivery guide](microsoft-store.md) for packaging.
+
+- Install and launch on x64 Windows 10 build 19041 or newer and Windows 11.
+- Confirm Windence's name and icon in Start, Settings and the app window.
+- Confirm the privacy policy is accessible before sign-in and in Settings.
+- Complete both browser OAuth steps. Restart and confirm saved credentials work.
+- Play audio, change the default output device and test SMTC metadata/controls.
+- Launch again from Start. Confirm one player remains and comes forward.
+- Close the window while playing, reopen it, then quit completely.
+- With a closed existing Inno/ZIP copy, back up `%APPDATA%\Cadence` and install
+  the Store version. Confirm preferences, history, playlist cache and saved
+  playback survive. Confirm no old process handles the Store activation.
+- Update Store version A to B. Confirm authentication and profile data survive,
+  saved queue/position restore, and playback starts paused after relaunch.
+- Confirm Store handles downloads on a Windows metered connection. The app
+  itself does not download an installer.
+
+CI currently verifies a test-signed package installation, onboarding and the
+unvirtualized profile path. It does not cover the remaining checks above.
+
+## Store publication and certification access
+
+The owner reported the first Store publication on 2026-10-14. Temporary
+certification access was retired the same day. Version 1.3.3 removes the review
+form and its special authorization path. Continue testing both normal browser
+OAuth steps, saved credentials, audio, SMTC and Store-delivered A-to-B updates
+using the checklist above. Publication does not prove those checks passed.
+See the [retirement record](store-review-access.md).
+
+## GPUI and appearance checks
+
 Use this checklist after a GPUI snapshot or appearance change. Portable
 interaction tests verify controls and layout. They do not prove OAuth,
 native window behavior, WASAPI output, SMTC or Windows rendering.
@@ -39,13 +75,19 @@ the PR for Windows CI results. The packaged build above also predates this
 feature. SQLite schema 13 keeps existing preferences and playback, but older
 builds cannot open the upgraded profile.
 
-The manual Release workflow builds `cadence-windows-x64` artifacts without
+The manual Release workflow builds `windence-windows-x64` artifacts without
 publishing. Download the full ZIP or installer from a successful run. The
 ZIP includes required runtime DLLs; copying only the EXE is insufficient.
 
-Quit the currently installed Cadence with Ctrl+Q before opening another
+Quit the currently installed player with Ctrl+Q before opening another
 build. Otherwise single-instance activation can bring forward the old
 executable. Keep the same account and preferences for the comparison.
+
+For the public rename, check the sidebar label, window title, Task Manager,
+Start shortcut and installed-app name. All should show Windence. An Inno
+upgrade keeps the previous installation directory but removes its old
+`Cadence.exe` and generated shortcuts. Authentication and profile data must
+survive. Older comparison artifacts keep their original Cadence filenames.
 
 ## Functional checks
 

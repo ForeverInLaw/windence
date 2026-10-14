@@ -197,7 +197,7 @@ impl Onboarding {
                         .text_size(px(24.))
                         .font_weight(gpui_kit::FontWeight::BOLD)
                         .text_color(rgb(palette.text_primary))
-                        .child("Cadence could not start"),
+                        .child("Windence could not start"),
                 )
                 .child(
                     div()
@@ -247,7 +247,7 @@ impl Onboarding {
                             .text_size(px(18.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(rgb(palette.text_primary))
-                            .child("Cadence"),
+                            .child("Windence"),
                     ),
             )
             .child(
@@ -257,7 +257,7 @@ impl Onboarding {
                     .line_height(relative(1.12))
                     .font_weight(gpui_kit::FontWeight::BOLD)
                     .text_color(rgb(palette.text_primary))
-                    .child("Your Spotify,\nin Cadence"),
+                    .child("Your Spotify,\nin Windence"),
             )
             .child(
                 div()
@@ -266,7 +266,7 @@ impl Onboarding {
                     .line_height(relative(1.55))
                     .text_color(rgb(palette.text_muted))
                     .child(
-                        "Use a Spotify developer app you control. Cadence stores only its public Client ID.",
+                        "Use a Spotify developer app you control. Windence stores only its public Client ID.",
                     ),
             )
             .when(show_configuration, |rail| {
@@ -279,6 +279,13 @@ impl Onboarding {
                 )
             })
             .child(div().flex_1())
+            .child(
+                div()
+                    .mt(px(16.))
+                    .flex()
+                    .justify_start()
+                    .child(components::privacy_policy_button(palette)),
+            )
     }
 
     fn spotify_login_configuration(&self, cx: &mut Context<Self>) -> Div {
@@ -303,7 +310,15 @@ impl Onboarding {
                 div()
                     .text_size(px(11.))
                     .text_color(rgb(palette.text_muted))
-                    .child("Saved in Cadence"),
+                    .child(
+                        if self.session.read(cx).client_id_source()
+                            == Some(ClientIdSource::Environment)
+                        {
+                            "From environment"
+                        } else {
+                            "Saved in Windence"
+                        },
+                    ),
             )
             .child(
                 div()
@@ -350,7 +365,7 @@ impl Onboarding {
                             .text_size(px(11.))
                             .line_height(relative(1.4))
                             .text_color(rgb(palette.text_muted))
-                            .child("Change SPOTIFY_CLIENT_ID outside Cadence."),
+                            .child("Change SPOTIFY_CLIENT_ID outside Windence."),
                     )
                 },
             )
@@ -569,7 +584,7 @@ impl Onboarding {
             .justify_center()
             .child(Self::onboarding_task_header(palette,
                 "Log in to Spotify",
-                "Spotify will ask you to approve Cadence twice: first for your library, then for playback.",
+                "Spotify will ask you to approve Windence twice: first for your library, then for playback.",
             ))
             .when(!configuration_blocked, |form| {
                 form.child(div().mt(px(32.)).flex().justify_start().child(if connecting {

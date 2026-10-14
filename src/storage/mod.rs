@@ -124,12 +124,12 @@ impl Store {
         #[cfg(target_os = "windows")]
         relocate_legacy_windows_database(&data_dir);
         std::fs::create_dir_all(&data_dir)
-            .context("could not create the Cadence data directory")?;
+            .context("could not create the Windence data directory")?;
         Self::open(data_dir.join(DATABASE_FILE))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let connection = Connection::open(path).context("could not open the Cadence database")?;
+        let connection = Connection::open(path).context("could not open the Windence database")?;
         connection.busy_timeout(Duration::from_secs(2))?;
         let store = Self { connection };
         store.migrate()?;
@@ -165,7 +165,7 @@ impl Store {
     #[cfg(not(target_os = "windows"))]
     pub fn data_dir() -> Result<PathBuf> {
         let project = ProjectDirs::from("com", "Cadence", "Cadence")
-            .context("could not resolve the Cadence data directory")?;
+            .context("could not resolve the Windence data directory")?;
         Ok(project.data_dir().to_owned())
     }
 
@@ -178,7 +178,7 @@ impl Store {
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version > SCHEMA_VERSION {
-            anyhow::bail!("database schema version {version} is newer than this Cadence build");
+            anyhow::bail!("database schema version {version} is newer than this Windence build");
         }
         if version == SCHEMA_VERSION {
             return Ok(());

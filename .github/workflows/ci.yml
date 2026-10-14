@@ -33,6 +33,8 @@ jobs:
           persist-credentials: false
       - name: Check formatting
         run: cargo fmt --all --check
+      - name: Check Store submission guards
+        run: scripts\test-store-submission.ps1
       - name: Restore the Rust cache
         uses: Swatinem/rust-cache@v2
         with:

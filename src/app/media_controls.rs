@@ -68,7 +68,7 @@ impl SystemMediaControls {
         cx: &mut App,
     ) -> Option<Self> {
         let mut controls = MediaControls::new(PlatformConfig {
-            display_name: "Cadence",
+            display_name: "Windence",
             dbus_name: "cadence",
             hwnd,
         })

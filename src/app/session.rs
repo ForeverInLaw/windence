@@ -138,6 +138,7 @@ impl Session {
         if !sent {
             self.pending_configuration = None;
             self.state = ConnectionState::SetupRequired;
+            self.setup_error = self.last_failure.clone();
         }
         cx.notify();
         sent
@@ -200,7 +201,7 @@ impl Session {
         if self.backend.send(command) {
             return true;
         }
-        self.fail("Cadence backend is busy or not running", cx);
+        self.fail("Windence backend is busy or not running", cx);
         false
     }
 

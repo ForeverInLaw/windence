@@ -80,7 +80,7 @@ impl Workspace {
         subscriptions.push(cx.subscribe(
             &player,
             |this, _, _: &player::PlaybackUnavailable, cx| {
-                this.last_error = Some("Cadence backend is busy or not running".to_owned());
+                this.last_error = Some("Windence backend is busy or not running".to_owned());
                 cx.notify();
             },
         ));

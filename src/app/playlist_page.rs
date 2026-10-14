@@ -383,7 +383,7 @@ impl PlaylistPage {
             requests: receiver,
             updates,
         }) {
-            self.error = Some("Cadence backend is busy or not running".to_owned());
+            self.error = Some("Windence backend is busy or not running".to_owned());
             cx.notify();
             return;
         }
@@ -427,7 +427,7 @@ impl PlaylistPage {
         if !pinned && self.library.read(cx).pins_at_limit() {
             cx.emit(PageEvent::Notice((
                 format!(
-                    "Spotify usually stops at {} pins. Cadence will still try to pin this one.",
+                    "Spotify usually stops at {} pins. Windence will still try to pin this one.",
                     library::PIN_WARNING_LIMIT
                 ),
                 NoticeSeverity::Confirmation,

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/cadence-mark.svg" width="96" height="96" alt="Cadence logo">
+  <img src="assets/cadence-mark.svg" width="96" height="96" alt="Windence logo">
 </p>
 
-<h1 align="center">Cadence</h1>
+<h1 align="center">Windence</h1>
 
 <p align="center">
   A minimal Spotify player for Windows.<br>
@@ -13,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="MIT license"></a>
 </p>
 
-![Cadence showing the Liked Songs library](assets/cadence.webp)
+![Windence showing the Liked Songs library](assets/cadence.webp)
 
 This repository is the Windows-only Port of
 [infomiho/cadence](https://github.com/infomiho/cadence), a minimal Spotify
@@ -59,29 +59,49 @@ You also need a Spotify Premium account.
 
 ## Set Up Spotify
 
-On first launch, Cadence guides you through these steps inside the app.
-Client IDs are public; Cadence never asks for your client secret.
+On first launch, Windence guides you through these steps inside the app.
+Client IDs are public; Windence never asks for your client secret.
 
 1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 2. Add `http://127.0.0.1:8888/callback` as a redirect URI.
-3. Copy the Client ID from **Basic Information** and enter it in Cadence.
+3. Copy the Client ID from **Basic Information** and enter it in Windence.
 
-Cadence keeps the Client ID and app preferences in its local SQLite database,
-and login and playback tokens in Windows Credential Manager. No secret is
-ever written to a plaintext file.
+Windence keeps the Client ID and app preferences in its local SQLite database,
+and login and playback tokens in Windows Credential Manager. Authentication tokens use the credential vault rather than the preferences database.
 
-## Build an Installer
+## Microsoft Store package
+
+Public installation and updates use Microsoft Store.
+[Install Windence](https://apps.microsoft.com/detail/9PJ0NRJRJWH8).
+See the [Store delivery guide](docs/microsoft-store.md) for package updates and CI/CD.
+
+```powershell
+scripts\package-msix.ps1
+```
+
+This creates an unsigned x64 MSIX in `dist\store` for Partner Center. Microsoft
+signs the package after certification. The Store package requires Windows 10
+build 19041 or newer. It keeps the existing `%APPDATA%\Cadence` profile and
+Credential Manager entries. The [privacy policy](PRIVACY.md) describes local data
+and Spotify access.
+
+## Development installer and ZIP
 
 ```powershell
 scripts\package-windows.ps1
 ```
 
 This builds the release binary and writes both an installer and a plain zip
-to `dist/`. The installer is per-user, so it never asks for an administrator,
+to `dist/development/`. The installer is per-user, so it never asks for an administrator,
 and it uninstalls from Settings like any other app. Inno Setup builds it; the
 zip is written with or without it.
 
-Neither is signed, so Windows shows its "protected your PC" box on first run.
+The current `windence-windows-x64` Actions artifact contains
+`Windence-<version>-windows-x64.zip` and its setup EXE. Upgrading with the
+installer replaces the old Cadence executable and shortcuts. It keeps the
+existing installation directory and profile.
+
+These are unsigned development artifacts. Windows can show a publisher warning.
 
 ## Run From Source
 
@@ -114,8 +134,11 @@ without a GPU snapshot renderer. Pixel rendering is limited to macOS/Metal
 in gpui-kit. Use the [native Windows checklist](docs/windows-validation.md)
 for window controls, OAuth, device audio, SMTC and visual comparisons.
 
-Run the Release workflow manually on a branch to build an installer and ZIP
-as Actions artifacts. Only version tags publish a release.
+Run the Release workflow manually on a branch to build the Store MSIX and
+development installer/ZIP as Actions artifacts. The MSIX test installs a
+temporary signed copy and checks onboarding. Stable version tags submit Store
+updates only after first publication and owner configuration. EXE/ZIP stay in
+Actions rather than GitHub Releases.
 
 ## About Upstream
 

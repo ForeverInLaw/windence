@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Renders the app icon from assets/AppIcon.svg into every format the
 bundles need: AppIcon.ico for the Windows executable (see build.rs),
-AppIcon.icns for the macOS bundle, and cadence-mark.png from the
+AppIcon.icns for the macOS bundle, Store tile PNGs, and cadence-mark.png from the
 in-app mark.
 
 Rendering goes through resvg so the area outside the rounded tile stays
@@ -33,6 +33,14 @@ def main() -> None:
     icon.save(ASSETS / "AppIcon.ico", sizes=ICO_SIZES)
     icon.save(ASSETS / "AppIcon.icns")
     render(ASSETS / "cadence-mark.svg", 64).save(ASSETS / "cadence-mark.png")
+    store_assets = ASSETS.parent / "packaging" / "store" / "Assets"
+    store_assets.mkdir(parents=True, exist_ok=True)
+    for name, size in (("Square44x44Logo", 44), ("Square150x150Logo", 150), ("StoreLogo", 50)):
+        for scale in (100, 200, 400):
+            suffix = "" if scale == 100 else f".scale-{scale}"
+            render(ASSETS / "AppIcon.svg", size * scale // 100).save(
+                store_assets / f"{name}{suffix}.png"
+            )
 
 
 if __name__ == "__main__":

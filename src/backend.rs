@@ -768,7 +768,7 @@ impl Backend {
                     let _ = acknowledged.send(());
                 }
             })
-            .expect("could not start the Cadence backend");
+            .expect("could not start the Windence backend");
         (
             Senders {
                 commands,
@@ -1471,7 +1471,7 @@ impl Worker {
         self.catalog_generation.store(generation, Ordering::Release);
         if self.configuration_is_from_environment() {
             let _ = self.events.send(BackendEvent::SpotifyConfigurationResetFailed(
-                "SPOTIFY_CLIENT_ID is configured by the environment and cannot be changed in Cadence".to_owned(),
+                "SPOTIFY_CLIENT_ID is configured by the environment and cannot be changed in Windence".to_owned(),
             ));
             return Ok(());
         }
@@ -1519,7 +1519,7 @@ impl Worker {
         if self.configuration_is_from_environment() {
             self.send_configuration_failed(
                 generation,
-                "SPOTIFY_CLIENT_ID is configured by the environment and cannot be changed in Cadence",
+                "SPOTIFY_CLIENT_ID is configured by the environment and cannot be changed in Windence",
             );
             return Ok(());
         }
@@ -2138,7 +2138,7 @@ impl Worker {
         self.connection
             .player
             .clone()
-            .context("Cadence is not connected to Spotify")
+            .context("Windence is not connected to Spotify")
     }
 
     /// Keeps the set a write left behind.
@@ -2532,12 +2532,11 @@ impl Worker {
     fn finish_logout(&mut self, logout: Finished<Result<()>>) {
         self.session.logout = None;
         match logout {
-            Some(Ok(Ok(()))) => {
+            Some(Ok(result)) => {
                 let _ = self.events.send(BackendEvent::LoggedOut);
-            }
-            Some(Ok(Err(error))) => {
-                let _ = self.events.send(BackendEvent::LoggedOut);
-                send_error(&self.events, error);
+                if let Err(error) = result {
+                    send_error(&self.events, error);
+                }
             }
             Some(Err(error)) => send_error(&self.events, error),
             None => {}
