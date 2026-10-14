@@ -77,7 +77,13 @@ function Invoke-RestMethod {
     [CmdletBinding()]
     param($Uri, $Method, $Headers, $Body, $ContentType, $TimeoutSec, $MaximumRedirection)
     $script:calls.Add("$Method $Uri")
-    if ($Uri.EndsWith('/oauth2/token')) { return @{ access_token='synthetic-token' } }
+    if ($Uri.EndsWith('/oauth2/token')) {
+        if ($script:scenario -eq 'authentication-failure') {
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('private provider details',
+                [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::Unauthorized))
+        }
+        return @{ access_token='synthetic-token' }
+    }
     if ($Uri.EndsWith('/submissions')) {
         if ($script:scenario -eq 'conflict') { throw 'HTTP 409: private upstream details' }
         return ('{"id":"owned","status":"PendingCommit","fileUploadUrl":' +
@@ -123,12 +129,16 @@ try {
     $null = [IO.Directory]::CreateDirectory($directory)
     $package = Join-Path $directory 'new.msix'
     [IO.File]::WriteAllText($package, 'synthetic package')
-    foreach ($script:scenario in @('conflict', 'upload-failure', 'commit-failure', 'success')) {
+    foreach ($script:scenario in @('authentication-failure', 'conflict', 'upload-failure', 'commit-failure', 'success')) {
         $script:calls.Clear()
         $failed = $false
         try { Submit-StorePackage -PackagePath $package -AppId 'app' } catch {
             $failed = $true
             if ($_.Exception.Message -match 'private|synthetic-token') { throw 'Provider details leaked' }
+            if ($script:scenario -eq 'authentication-failure' -and
+                $_.Exception.Message -notmatch 'authentication; HTTP 401') {
+                throw 'Delivery error omitted its safe operation and HTTP status'
+            }
         }
         if ($failed -ne ($script:scenario -ne 'success')) { throw "Unexpected $script:scenario result" }
         if ($script:calls | Where-Object { $_ -like 'Delete *' }) { throw 'Delivery deleted a draft' }
