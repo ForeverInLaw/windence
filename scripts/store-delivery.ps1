@@ -3,6 +3,7 @@ function Submit-StorePackage {
     [CmdletBinding()]
     param([string]$PackagePath, [string]$AppId)
     $bundle = Join-Path ([IO.Path]::GetTempPath()) ('windence-store-' + [Guid]::NewGuid() + '.zip')
+    $operation = 'authentication'
     try {
         $tenant = [Uri]::EscapeDataString($env:MSSTORE_TENANT_ID)
         $token = Invoke-RestMethod -Method Post `
@@ -14,8 +15,10 @@ function Submit-StorePackage {
         $headers = @{ Authorization = 'Bearer ' + $token.access_token }
         $root = 'https://manage.devcenter.microsoft.com/v1.0/my/applications/' + [Uri]::EscapeDataString($AppId)
         # The API rejects a competing draft atomically. Do not retry or delete it.
+        $operation = 'create submission'
         $submission = Invoke-RestMethod -Method Post -Uri "$root/submissions" `
             -Headers $headers -TimeoutSec 60 -MaximumRedirection 0
+        $operation = 'validate new submission'
         if (-not $submission.id -or $submission.status -ne 'PendingCommit' -or
             $null -eq $submission.applicationPackages) { throw 'Invalid new Store submission' }
         $upload = [Uri]$submission.fileUploadUrl
@@ -27,21 +30,26 @@ function Submit-StorePackage {
         $name = [IO.Path]::GetFileName($PackagePath)
         $submission.applicationPackages = @($submission.applicationPackages) + @(
             @{ fileName=$name; fileStatus='PendingUpload' })
+        $operation = 'update submission'
         $null = Invoke-RestMethod -Method Put -Uri $owned -Headers $headers `
             -ContentType 'application/json; charset=utf-8' -TimeoutSec 60 -MaximumRedirection 0 `
             -Body ([Text.Encoding]::UTF8.GetBytes(($submission | ConvertTo-Json -Depth 100)))
+        $operation = 'prepare upload'
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [IO.Compression.ZipFile]::Open($bundle, [IO.Compression.ZipArchiveMode]::Create)
         try {
             $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive,
                 (Resolve-Path $PackagePath).Path, $name, [IO.Compression.CompressionLevel]::Optimal)
         } finally { $archive.Dispose() }
+        $operation = 'upload package'
         $null = Invoke-WebRequest -Method Put -Uri $upload.AbsoluteUri -InFile $bundle `
             -Headers @{ 'x-ms-blob-type'='BlockBlob' } -ContentType 'application/zip' `
             -TimeoutSec 1800 -MaximumRedirection 0
+        $operation = 'commit submission'
         $null = Invoke-RestMethod -Method Post -Uri "$owned/commit" -Headers $headers `
             -TimeoutSec 60 -MaximumRedirection 0
         $deadline = [DateTime]::UtcNow.AddMinutes(10)
+        $operation = 'read commit status'
         do {
             $status = Invoke-RestMethod -Method Get -Uri "$owned/status" -Headers $headers `
                 -TimeoutSec 60 -MaximumRedirection 0
@@ -56,7 +64,9 @@ function Submit-StorePackage {
         throw 'Store commit timed out'
     } catch {
         # Provider errors may contain private notes, tokens or SAS URLs.
-        throw 'Store submission failed. Inspect Partner Center before retrying; no draft was deleted.'
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        $http = if ($statusCode -ge 100 -and $statusCode -le 599) { "; HTTP $statusCode" } else { '' }
+        throw "Store submission failed during $operation$http. Inspect Partner Center before retrying; no draft was deleted."
     } finally {
         if ([IO.File]::Exists($bundle)) { [IO.File]::Delete($bundle) }
     }

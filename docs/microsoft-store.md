@@ -179,6 +179,14 @@ listing, pricing and certification notes are preserved. A failed upload or commi
 stops delivery and leaves the API-created submission for manual recovery.
 Do not edit an API-created submission in Partner Center while CI is running.
 
+If delivery fails, inspect Partner Center before retrying. Public logs show only
+the operation and HTTP status, never provider messages or upload URLs. When a
+delivery fix needs newer code, run **Retry Microsoft Store delivery** on
+`windows-port` with the failed Release run ID. It checks the source tag and
+successful Windows build, downloads that run's exact MSIX and uses the current
+delivery scripts. It requires no pending submission and never deletes a draft.
+This avoids rebuilding the package or moving an existing release tag.
+
 The job serializes Store submissions across tags. If a submission is pending,
 finish it in Partner Center before retrying. A delivery success means the submission
 was sent, not that Microsoft finished certification or users received the update.
