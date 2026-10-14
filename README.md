@@ -71,9 +71,9 @@ and login and playback tokens in Windows Credential Manager. Authentication toke
 
 ## Microsoft Store package
 
-Public installation and updates use Microsoft Store. The first submission is
-being prepared; no live Store download is available yet. See the
-[Store delivery guide](docs/microsoft-store.md) for manual upload and later CI/CD.
+Public installation and updates use Microsoft Store.
+[Install Windence](https://apps.microsoft.com/detail/9PJ0NRJRJWH8).
+See the [Store delivery guide](docs/microsoft-store.md) for package updates and CI/CD.
 
 ```powershell
 scripts\package-msix.ps1

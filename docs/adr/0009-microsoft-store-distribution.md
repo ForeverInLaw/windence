@@ -5,6 +5,11 @@ Status: accepted, 2026-10-12. Scope: [IVO-79](https://linear.app/ivoxygen/issue/
 Updated on 2026-10-13: the owner removed in-app update checks and reminders
 from scope. Store manages automatic delivery; CI submits new versions to Store.
 
+Updated on 2026-10-14: the owner confirmed the first Store publication.
+Temporary certification access is retired. The broker and its stored tokens
+were removed, and version 1.3.3 removes the review-code sign-in path.
+Regular Spotify browser sign-in remains the only authentication path.
+
 The Windows Port's public name is Windence. It uses an MSIX package distributed
 through Microsoft Store. Microsoft signs the package after certification and
 delivers updates. The owner does not plan to buy a separate signing certificate.
@@ -21,10 +26,9 @@ names and single-instance pipe keep their names for compatibility. Renaming
 the public app must not create another profile or lose saved authentication.
 Native migration and Store updates still need verification.
 
-The first package is built in Windows CI and uploaded manually by the owner.
-First certification and publication happen in Partner Center. Later stable
-versions can use Microsoft's Store Developer CLI after the owner configures
-API access. An existing pending submission blocks automation so it does not
+The first package was built in Windows CI and uploaded manually by the owner.
+Later stable versions can use the Store delivery pipeline after the owner
+configures API access. An existing pending submission blocks automation so it does not
 overwrite listing changes. The CLI reads product identity; the official Store
 API creates and commits the update. A competing draft stops creation without
 deleting anything. Store certification remains separate from CI success.

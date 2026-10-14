@@ -1,9 +1,6 @@
 #[path = "playlist_search.rs"]
 mod playlist_search;
 
-#[path = "review_access.rs"]
-mod review_access;
-
 use super::test_support::{BackendProbe, initialize, settle, track, workspace_collapsed};
 use crate::app::{
     NoticeSeverity, PROGRESS_SLIDER_WIDTH, Route, Workspace, appearance, assets,

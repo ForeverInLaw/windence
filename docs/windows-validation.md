@@ -25,33 +25,14 @@ Record OS build, package version and results in IVO-79. See the
 CI currently verifies a test-signed package installation, onboarding and the
 unvirtualized profile path. It does not cover the remaining checks above.
 
-## Temporary certification access
+## Store publication and certification access
 
-Build `a88d389`, version 1.3.2, passed
-[Windows Release CI](https://github.com/ForeverInLaw/windence/actions/runs/38329998805).
-The unsigned Store artifact and development files match their SHA256 sidecars.
-The native capture report has no error. All four light/dark onboarding images
-were inspected at 1200 by 720 pixels and 96 DPI. Review access is visible and
-the existing controls fit. The owner helper also passed its native Credential
-Manager check using synthetic credentials.
-
-The owner enabled the server session on 2026-10-13. Provisioning renewed both
-Spotify credentials and verified Premium. A live HTTPS check with the review
-code returned both tokens and confirmed the expected account through Spotify.
-The owner reported submitting 1.3.2.0 for certification the same day. These
-server checks do not test playback in the app. The Windows runtime results
-below have not been recorded:
-
-- [ ] From setup, open Review access, enter the private code and connect.
-      With an existing developer-app configuration, first use Change developer
-      app to clear the old account state.
-- [ ] Open a playlist, search, play audio, seek, change the queue and test SMTC.
-- [ ] Reconnect without browser login. Quit completely and confirm a fresh
-      launch asks for the code again.
-- [ ] Sign out of review access and confirm ordinary browser setup is available.
-
-See [Store review access](store-review-access.md) for provisioning, private
-certification notes and revocation. This path does not verify browser sign-in.
+The owner reported the first Store publication on 2026-10-14. Temporary
+certification access was retired the same day. Version 1.3.3 removes the review
+form and its special authorization path. Continue testing both normal browser
+OAuth steps, saved credentials, audio, SMTC and Store-delivered A-to-B updates
+using the checklist above. Publication does not prove those checks passed.
+See the [retirement record](store-review-access.md).
 
 ## GPUI and appearance checks
 

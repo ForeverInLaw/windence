@@ -396,7 +396,7 @@ pub(super) fn privacy_policy_button(palette: CadencePalette) -> Button {
         .hover(|style| style.bg(rgb(palette.control_hover)))
         .child("Privacy policy")
         .on_click(|_, _, cx| {
-            cx.open_url("https://github.com/ForeverInLaw/windence/blob/6154c33cbe83ae6596dfdbe3c7ba788073fed119/PRIVACY.md");
+            cx.open_url("https://github.com/ForeverInLaw/windence/blob/bf02ecc9bb810814b4aa469e6583c4e5342d1f89/PRIVACY.md");
         })
 }
 

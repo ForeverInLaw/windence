@@ -47,9 +47,6 @@ pub(super) enum OnboardingEvent {
 pub(super) struct Onboarding {
     session: Entity<session::Session>,
     client_id_input: Entity<InputState>,
-    review_code_input: Entity<InputState>,
-    review_mode: bool,
-    _review_code_subscription: Subscription,
     _client_id_subscription: Subscription,
     _focus_lost_subscription: Subscription,
     focus_handle: FocusHandle,
@@ -76,22 +73,6 @@ impl Onboarding {
             },
         );
         let focus_handle = cx.focus_handle();
-        let review_code_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Review code")
-                .masked(true)
-        });
-        let review_code_subscription = cx.subscribe_in(
-            &review_code_input,
-            window,
-            |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this
-                    .session
-                    .update(cx, |session, cx| session.clear_setup_error(cx)),
-                InputEvent::PressEnter { .. } => this.connect_review(window, cx),
-                _ => {}
-            },
-        );
         let focus_lost_subscription = cx.on_focus_lost(window, |this, window, cx| {
             let target = window
                 .focus_lost_restore_target(cx)
@@ -102,9 +83,6 @@ impl Onboarding {
         Self {
             session: services::AppServices::session(cx),
             client_id_input,
-            review_code_input,
-            review_mode: false,
-            _review_code_subscription: review_code_subscription,
             _client_id_subscription: subscription,
             _focus_lost_subscription: focus_lost_subscription,
             focus_handle,
@@ -128,12 +106,7 @@ impl Onboarding {
             .session
             .update(cx, |session, _| session.take_setup_focus())
         {
-            let field = if self.review_mode {
-                &self.review_code_input
-            } else {
-                &self.client_id_input
-            };
-            window.focus(&field.read(cx).focus_handle(cx), cx);
+            window.focus(&self.client_id_input.read(cx).focus_handle(cx), cx);
         }
     }
 
@@ -155,25 +128,6 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn connect_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let code = self.review_code_input.read(cx).value();
-        match spotify_gpui_client::review_access::ReviewAccess::new(&code) {
-            Ok(access) => {
-                if self
-                    .session
-                    .update(cx, |session, cx| session.connect_review(access, cx))
-                {
-                    self.review_code_input
-                        .update(cx, |input, cx| input.set_value("", window, cx));
-                }
-            }
-            Err(error) => self.session.update(cx, |session, cx| {
-                session.reject_client_id(error.to_string(), cx)
-            }),
-        }
-        cx.notify();
-    }
-
     fn page(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let palette = appearance::Appearance::palette(cx);
         let context_rail = self.onboarding_context_rail(cx);
@@ -181,11 +135,7 @@ impl Onboarding {
             ConnectionState::Failed => self.backend_failure(cx),
             ConnectionState::SetupRequired => self.spotify_setup_form(window, cx),
             ConnectionState::AuthorizationRequired | ConnectionState::Connecting => {
-                if self.review_mode {
-                    self.review_access_form(window, cx)
-                } else {
-                    self.spotify_login_form(cx)
-                }
+                self.spotify_login_form(cx)
             }
             ConnectionState::Starting | ConnectionState::Ready => div()
                 .flex_1()
@@ -316,11 +266,7 @@ impl Onboarding {
                     .line_height(relative(1.55))
                     .text_color(rgb(palette.text_muted))
                     .child(
-                        if self.review_mode {
-                            "Temporary access to an account provided for Store certification."
-                        } else {
-                            "Use a Spotify developer app you control. Windence stores only its public Client ID."
-                        },
+                        "Use a Spotify developer app you control. Windence stores only its public Client ID.",
                     ),
             )
             .when(show_configuration, |rail| {
@@ -329,11 +275,7 @@ impl Onboarding {
                         .mt(px(12.))
                         .text_size(px(11.))
                         .text_color(rgb(palette.text_muted))
-                        .child(if self.review_mode {
-                            "Review access stays in memory until you quit."
-                        } else {
-                            token_storage_note()
-                        }),
+                        .child(token_storage_note()),
                 )
             })
             .child(div().flex_1())
@@ -368,11 +310,15 @@ impl Onboarding {
                 div()
                     .text_size(px(11.))
                     .text_color(rgb(palette.text_muted))
-                    .child(match self.session.read(cx).client_id_source() {
-                        Some(ClientIdSource::Review) => "Provided for this session",
-                        Some(ClientIdSource::Environment) => "From environment",
-                        _ => "Saved in Windence",
-                    }),
+                    .child(
+                        if self.session.read(cx).client_id_source()
+                            == Some(ClientIdSource::Environment)
+                        {
+                            "From environment"
+                        } else {
+                            "Saved in Windence"
+                        },
+                    ),
             )
             .child(
                 div()
@@ -383,10 +329,7 @@ impl Onboarding {
             )
             .when(
                 !connecting
-                    && matches!(
-                        self.session.read(cx).client_id_source(),
-                        Some(ClientIdSource::Saved | ClientIdSource::Review)
-                    ),
+                    && self.session.read(cx).client_id_source() == Some(ClientIdSource::Saved),
                 |card| {
                     card.child(
                         div().mt(px(14.)).flex().justify_start().child(
@@ -451,9 +394,6 @@ impl Onboarding {
     }
 
     fn spotify_setup_form(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        if self.review_mode {
-            return self.review_access_form(window, cx);
-        }
         let palette = appearance::Appearance::palette(cx);
         let error = self.session.read(cx).setup_error().cloned();
         let has_error = error.is_some();
@@ -609,48 +549,6 @@ impl Onboarding {
                             ),
                     ),
             )
-            .child(
-                components::settings_button(palette, "open-review-access", "Review access")
-                    .mt(px(24.))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.review_mode = true;
-                        this.session.update(cx, |session, cx| session.clear_setup_error(cx));
-                        window.focus(&this.review_code_input.read(cx).focus_handle(cx), cx);
-                        cx.notify();
-                    })),
-            )
-    }
-
-    fn review_access_form(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let palette = appearance::Appearance::palette(cx);
-        let connecting = self.session.read(cx).state() == &ConnectionState::Connecting;
-        div().flex_1().w_full().max_w(px(ONBOARDING_FORM_MAX_WIDTH)).mx_auto()
-            .p(px(48.)).flex().flex_col().justify_center()
-            .child(Self::onboarding_task_header(palette, "Review access",
-                "Enter the temporary code supplied for Microsoft Store certification."))
-            .child(Self::onboarding_detail(palette,
-                "This connects to the owner's Spotify account. Enter the code again after restarting Windence."))
-            .child(components::text_field_frame(palette, &self.review_code_input, window, cx)
-                .mt(px(24.)).h(px(48.))
-                .child(Input::new(&self.review_code_input).id("review-code-input")
-                    .appearance(false).bordered(false).focus_bordered(false).px_0().h_full().flex_1()))
-            .when_some(self.session.read(cx).setup_error().cloned(), |form, error| {
-                form.child(div().mt(px(8.)).text_size(px(14.)).text_color(rgb(palette.text_muted)).child(error))
-            })
-            .child(components::pill(palette, "connect-review-access", "Connect", true)
-                .disabled(connecting)
-                .mt(px(16.)).h(px(48.))
-                .on_click(cx.listener(|this, _, window, cx| this.connect_review(window, cx))))
-            .child(components::settings_button(palette, "leave-review-access", "Back to Spotify setup")
-                .disabled(connecting)
-                .mt(px(16.))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.review_mode = false;
-                    this.review_code_input.update(cx, |input, cx| input.set_value("", window, cx));
-                    this.session.update(cx, |session, cx| session.clear_setup_error(cx));
-                    window.focus(&this.client_id_input.read(cx).focus_handle(cx), cx);
-                    cx.notify();
-                })))
     }
 
     fn spotify_client_id_field(&self, palette: CadencePalette, window: &Window, cx: &App) -> Div {

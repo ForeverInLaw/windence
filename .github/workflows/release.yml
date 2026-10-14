@@ -1,6 +1,6 @@
 name: Release
 
-# Manual runs build the first Store upload and development artifacts.
+# Manual runs build Store upload packages and development artifacts.
 # Stable tags submit Store updates only after the owner enables Store delivery.
 on:
   push:
@@ -65,8 +65,6 @@ jobs:
       - name: Check Store submission guards
         run: scripts\test-store-submission.ps1
 
-      - name: Check review access helper
-        run: scripts\test-review-access.ps1
 
       - name: Build the installer and the zip
         run: |
@@ -129,14 +127,6 @@ jobs:
           name: cadence-native-onboarding
           path: ${{ runner.temp }}/cadence-native-ui
           if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload owner review access helper
-        uses: actions/upload-artifact@v7
-        with:
-          name: windence-review-helper
-          path: scripts/review-access.ps1
-          if-no-files-found: error
           retention-days: 14
 
       # Lets anyone confirm the download was built here, from this commit:

@@ -1,9 +1,9 @@
 # Microsoft Store delivery
 
-Temporary access to the owner's Spotify session for certification is described
-in [Store review access](store-review-access.md). The owner must activate and
-test it before submitting the new package. It does not guarantee certification
-or replace checking normal browser sign-in.
+The owner confirmed the first Store publication on 2026-10-14.
+[Install Windence](https://apps.microsoft.com/detail/9PJ0NRJRJWH8).
+Temporary certification access has been retired. Version 1.3.3 removes
+review-code sign-in; ordinary Spotify browser sign-in remains available.
 
 Windence uses Microsoft Store for public installation and updates.
 [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
@@ -74,7 +74,7 @@ scripts\package-msix.ps1
 ```
 
 The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
-`-ExpectedVersion v1.3.2` checks Cargo against a release tag. MakeAppx performs
+`-ExpectedVersion v1.3.3` checks Cargo against a release tag. MakeAppx performs
 its semantic validation; it does not replace certification or native checks.
 Logo PNGs are committed. Regenerate them with the existing
 `python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
@@ -145,7 +145,7 @@ stops delivery and leaves the API-created submission for manual recovery.
 Do not edit an API-created submission in Partner Center while CI is running.
 
 The job serializes Store submissions across tags. If a submission is pending,
-finish it in Partner Center before retrying. A CLI success means the submission
+finish it in Partner Center before retrying. A delivery success means the submission
 was sent, not that Microsoft finished certification or users received the update.
 EXE/ZIP and preview tags remain Actions artifacts. This workflow no longer
 publishes executable downloads to GitHub Releases.
@@ -210,37 +210,30 @@ This build completed the public rename. For certification, use the 1.3.2 build
 below, which also adds temporary review access. CI did not send the submission
 or publish the app.
 
-## Temporary review access, 1.3.2
+## First Store publication
 
-Source commit `a88d389`, checked on 2026-10-13:
+The owner confirmed publication on 2026-10-14. Store product ID:
+`9PJ0NRJRJWH8`. The first submitted package was version 1.3.2.0 from `a88d389`.
+Its [Release run](https://github.com/ForeverInLaw/windence/actions/runs/38329998805)
+passed package validation, test-signed installation and native onboarding.
+The owner uploaded the package and completed certification in Partner Center.
+Publication does not verify the remaining native or Store A-to-B checks.
 
-- [Successful Release run](https://github.com/ForeverInLaw/windence/actions/runs/38329998805).
-- [Store artifact](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782965893),
-  `Windence-1.3.2-windows-x64.msix`, package version `1.3.2.0`, 16,928,079 bytes.
-- MSIX SHA256 `d1283f70f43b60000a2c796377c018208fa2d79416f87f384b316c3ba90ff49b`.
-- [Development artifact](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782726399)
-  contains the matching installer and ZIP for the owner's Windows check.
-- [Owner helper](https://github.com/ForeverInLaw/windence/actions/runs/38329998805/artifacts/11782846199)
-  reads existing credentials through Windows Credential Manager. CI checked it
-  using a separate synthetic entry, then removed that entry.
-- Downloaded checksums, unsigned MSIX identity and ZIP payload were verified.
-  MakeAppx validation and installation of a separate test-signed MSIX passed.
-  All four light/dark native onboarding captures were inspected at 100% DPI.
-- Local checks passed 376 Rust tests, strict all-target Clippy, formatting,
-  actionlint and five broker tests. CI did not submit or publish to Store.
-- The owner enabled the broker successfully. Its temporary access expires on
-  2026-11-12. Real playback through review access still needs the owner's
-  Windows check. Browser OAuth, audio and SMTC are outside the CI capture.
+## Certification access retired, 1.3.3
 
-Replace the draft's 1.3.1.0 package with 1.3.2.0 after the runtime check. Update
-the inline privacy policy to its 13 October revision and add private certification
-notes using the [review access guide](store-review-access.md). Keep the review
-code out of repository files and issue descriptions.
+On 2026-10-14 the owner requested retirement of temporary review access.
+The broker code and stored Spotify tokens were cleared. Both review containers,
+their network and Caddy volumes were removed. All eight unrelated containers
+kept their IDs and start times. The review endpoint no longer accepts connections.
 
-The owner reported uploading 1.3.2.0 and submitting it for certification on
-2026-10-13. The result and first publication are pending. A live HTTPS check with
-the owner's code returned both temporary tokens. Spotify confirmed Premium and
-the expected account. This check does not verify audio or SMTC on Windows.
-Keep review access available until certification finishes. For later submissions,
-renew expired access and update private certification notes before releasing.
-CI delivery stays disabled until the first publication and Entra setup.
+Version 1.3.3 removes the review form, broker client, backend command and special
+playback/refresh path. The service source, owner helper and their CI jobs were
+removed. Normal Spotify authorization, profile paths and Credential Manager
+entries keep working through their existing paths.
+
+The already published 1.3.2 package still contains the old Review access option.
+Its server access is disabled. Upload the 1.3.3 MSIX to replace that UI in Store,
+and update the inline privacy policy using [PRIVACY.md](../PRIVACY.md).
+Retired access cannot be used for later certification. Future certification notes
+must describe ordinary sign-in and provide any reviewer access Microsoft requires.
+See the [retirement record](store-review-access.md).
