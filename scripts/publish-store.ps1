@@ -14,17 +14,9 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'store-submission.ps1')
 . (Join-Path $PSScriptRoot 'store-delivery.ps1')
+. (Join-Path $PSScriptRoot 'store-access.ps1')
 $appId = '9PJ0NRJRJWH8'
 $identity = Get-StorePackageIdentity -PackagePath $PackagePath -ExpectedVersion ($ExpectedVersion -replace '^v', '')
-foreach ($key in @('MSSTORE_TENANT_ID', 'MSSTORE_SELLER_ID', 'MSSTORE_CLIENT_ID', 'MSSTORE_CLIENT_SECRET')) {
-    if (-not [Environment]::GetEnvironmentVariable($key)) { throw "Configure $key in the store environment" }
-}
-msstore reconfigure --tenantId $env:MSSTORE_TENANT_ID --sellerId $env:MSSTORE_SELLER_ID `
-    --clientId $env:MSSTORE_CLIENT_ID --clientSecret $env:MSSTORE_CLIENT_SECRET
-if ($LASTEXITCODE -ne 0) { throw 'Store CLI authentication configuration failed' }
-# v0.4.3 sends diagnostics to stderr and PascalCase application JSON to stdout.
-$json = & msstore --output-stream stderr apps get $appId
-if ($LASTEXITCODE -ne 0) { throw 'Could not read the Store product; nothing submitted' }
-$application = ($json -join "`n") | ConvertFrom-Json
+$application = Get-StoreApplication -AppId $appId
 Assert-StoreApplication -Application $application -AppId $appId -Name $identity.Name -Publisher $identity.Publisher
 Submit-StorePackage -PackagePath $PackagePath -AppId $appId

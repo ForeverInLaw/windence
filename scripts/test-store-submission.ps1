@@ -25,6 +25,51 @@ foreach ($case in @('draft', 'unpublished', 'missing', 'identity', 'publisher', 
 }
 Write-Host 'Store guards passed: published product accepted; draft, missing data and identity mismatches rejected'
 
+# Check the CLI boundary without real credentials or a Store request.
+. (Join-Path $PSScriptRoot 'store-access.ps1')
+$script:cliCalls = [Collections.Generic.List[string]]::new()
+function msstore {
+    $script:cliCalls.Add($args[0])
+    $global:LASTEXITCODE = 0
+    if ($args[0] -eq 'reconfigure') {
+        if ($script:cliScenario -eq 'configuration-failure') { $global:LASTEXITCODE = 1 }
+        return 'private configuration details'
+    }
+    if ($script:cliScenario -eq 'read-failure') {
+        $global:LASTEXITCODE = 1
+        return 'private product details'
+    }
+    if ($script:cliScenario -eq 'invalid-json') { return 'private malformed response' }
+    return $valid | ConvertTo-Json
+}
+$cliEnvironment = @{}
+foreach ($name in @('MSSTORE_TENANT_ID', 'MSSTORE_SELLER_ID', 'MSSTORE_CLIENT_ID', 'MSSTORE_CLIENT_SECRET')) {
+    $cliEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+    [Environment]::SetEnvironmentVariable($name, 'synthetic')
+}
+try {
+    foreach ($script:cliScenario in @('configuration-failure', 'read-failure', 'invalid-json', 'success')) {
+        $script:cliCalls.Clear()
+        $failed = $false
+        try {
+            $application = Get-StoreApplication -AppId 'app'
+            Assert-StoreApplication -Application $application @arguments
+        } catch {
+            $failed = $true
+            if ($_.Exception.Message -match 'private|synthetic') { throw 'CLI provider details leaked' }
+        }
+        if ($failed -ne ($script:cliScenario -ne 'success')) { throw "Unexpected $script:cliScenario result" }
+        $expectedCalls = if ($script:cliScenario -eq 'configuration-failure') { 1 } else { 2 }
+        if ($script:cliCalls.Count -ne $expectedCalls) { throw 'CLI continued after configuration failed' }
+    }
+} finally {
+    Remove-Item Function:msstore
+    foreach ($name in $cliEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $cliEnvironment[$name])
+    }
+}
+Write-Host 'Store access passed: published identity read, CLI failures and invalid JSON rejected without provider details'
+
 # Exercise delivery with mocked HTTP, including a draft created after the guard.
 . (Join-Path $PSScriptRoot 'store-delivery.ps1')
 $script:calls = [Collections.Generic.List[string]]::new()

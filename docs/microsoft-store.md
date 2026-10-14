@@ -121,13 +121,19 @@ After first publication, the owner performs these one-time steps:
 2. Register an automation application in Entra. Add it in Partner Center's
    **Account settings > User management > Microsoft Entra applications** with
    the **Manager** role.
-3. Create the `store` GitHub Environment. Restrict deployment to stable version
-   tags. A required reviewer is optional if you want to approve each release.
+3. Create the `store` GitHub Environment. Allow the `windows-port` branch for the
+   manual access check and `v*.*.*` tags for releases. A required reviewer is
+   optional if you want to approve each release.
    Add environment secrets
    `MSSTORE_TENANT_ID`, `MSSTORE_SELLER_ID`, `MSSTORE_CLIENT_ID` and
    `MSSTORE_CLIENT_SECRET`. Use the secret value, not its ID. Keep it out of chat,
    commits and issue descriptions. Track its expiry date.
-4. In repository **Settings > Secrets and variables > Actions > Variables**,
+4. After merging the workflow into `windows-port`, run **Check Microsoft Store
+   access** from GitHub Actions on that branch. It reads the product and checks
+   identity, first publication and pending submissions without building or
+   submitting a package. It does not print credentials or listing metadata.
+   Resolve any access error or pending submission before enabling delivery.
+5. In repository **Settings > Secrets and variables > Actions > Variables**,
    set `STORE_PUBLISH_ENABLED` to `true`. Leave it unset until access is ready.
 
 Stable `v<major>.<minor>.<patch>` tags then build and test the MSIX. The protected

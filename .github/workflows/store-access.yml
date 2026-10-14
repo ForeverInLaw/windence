@@ -1,0 +1,41 @@
+name: Check Microsoft Store access
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/windows-port'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    environment: store
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+      - name: Check access without submitting an update
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . scripts\store-access.ps1
+          . scripts\store-submission.ps1
+          $appId = '9PJ0NRJRJWH8'
+          [xml]$manifest = Get-Content packaging\store\AppxManifest.xml
+          $application = Get-StoreApplication -AppId $appId
+          Assert-StoreApplication -Application $application -AppId $appId `
+            -Name $manifest.Package.Identity.Name -Publisher $manifest.Package.Identity.Publisher
+          Write-Host 'Store access verified: Windence is published, identity matches, no submission is pending.'
