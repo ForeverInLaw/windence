@@ -8,7 +8,9 @@ review-code sign-in; ordinary Spotify browser sign-in remains available.
 Windence uses Microsoft Store for public installation and updates.
 [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
 tracks packaging, native checks, CI delivery and publication separately.
-The first layer builds an upload package. It does not publish the app.
+CI delivery is enabled. Microsoft Entra access and the published product were
+verified in the [Store access check](https://github.com/ForeverInLaw/windence/actions/runs/38623594545).
+The first automatic package submission is tracked separately from that read-only check.
 
 Store manages automatic updates. Windence does not add its own update checks,
 an Updates section or a reminder banner. CI builds and submits new packages;
@@ -109,7 +111,30 @@ transition. Keep the old installer until the Store copy has passed the native
 checklist. Then remove the old installation manually. The app does not uninstall
 another copy or delete its profile. ZIP means no installer, not folder-local data.
 
-## Enable later CI/CD
+## Microsoft Store installer
+
+Microsoft generates a small EXE that installs the latest certified Windence
+version from Store. It uses the Store service and keeps Store-managed updates.
+It is available from the Store listing and the README download link.
+See [Microsoft's Web Installer guide](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-use-store-web-installer-for-distribution).
+
+The Release workflow downloads that file in its own `store-installer` job.
+`scripts/download-store-installer.ps1` uses the URL in Microsoft's official
+[badge implementation](https://get.microsoft.com/badge/ms-store-badge.bundled.js).
+It requires a valid Authenticode signature from Microsoft Corporation and writes
+a SHA256 sidecar. The `windence-store-installer` artifact contains both files.
+This job needs no Partner Center credentials and does not build or sign an installer.
+
+GitHub releases attach this Microsoft installer and the unsigned MSIX upload
+package, with checksums. Release notes identify the MSIX as a Partner Center
+artifact. The Store installer downloads the version currently certified for
+the user's market; a new source tag does not skip certification.
+
+The README Windows screenshot was downloaded unchanged from the published
+[Windence Store listing](https://apps.microsoft.com/detail/9PJ0NRJRJWH8) on
+2026-10-14. It replaces the upstream Cadence screenshot.
+
+## Configure CI/CD
 
 The official Store CLI currently supports updates to **free** products only.
 It cannot create this app or publish its first loose MSIX submission.

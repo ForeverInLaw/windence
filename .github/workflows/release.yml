@@ -1,6 +1,7 @@
 name: Release
 
 # Manual runs build Store upload packages and development artifacts.
+# A separate job downloads and verifies Microsoft's public Store installer.
 # Stable tags submit Store updates only after the owner enables Store delivery.
 on:
   push:
@@ -136,6 +137,26 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/store/*.msix
+
+  store-installer:
+    name: Microsoft Store installer
+    if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download and verify Microsoft's installer
+        shell: pwsh
+        run: scripts\download-store-installer.ps1
+      - name: Upload Microsoft's installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windence-store-installer
+          path: dist/store-installer/*
+          if-no-files-found: error
+          retention-days: 14
 
   store:
     name: Submit Microsoft Store update
