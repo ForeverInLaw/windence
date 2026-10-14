@@ -84,6 +84,13 @@ function Invoke-RestMethod {
         }
         return @{ access_token='synthetic-token' }
     }
+    if ($Uri.EndsWith('/submissions') -or $Uri.EndsWith('/commit')) {
+        if ($ContentType -ne 'application/json') {
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('private request rejection',
+                [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::BadRequest))
+        }
+        if ($null -ne $Body) { throw 'Create and commit must not send a request body' }
+    }
     if ($Uri.EndsWith('/submissions')) {
         if ($script:scenario -eq 'conflict') { throw 'HTTP 409: private upstream details' }
         return ('{"id":"owned","status":"PendingCommit","fileUploadUrl":' +

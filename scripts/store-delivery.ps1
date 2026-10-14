@@ -17,7 +17,7 @@ function Submit-StorePackage {
         # The API rejects a competing draft atomically. Do not retry or delete it.
         $operation = 'create submission'
         $submission = Invoke-RestMethod -Method Post -Uri "$root/submissions" `
-            -Headers $headers -TimeoutSec 60 -MaximumRedirection 0
+            -Headers $headers -ContentType 'application/json' -TimeoutSec 60 -MaximumRedirection 0
         $operation = 'validate new submission'
         if (-not $submission.id -or $submission.status -ne 'PendingCommit' -or
             $null -eq $submission.applicationPackages) { throw 'Invalid new Store submission' }
@@ -47,7 +47,7 @@ function Submit-StorePackage {
             -TimeoutSec 1800 -MaximumRedirection 0
         $operation = 'commit submission'
         $null = Invoke-RestMethod -Method Post -Uri "$owned/commit" -Headers $headers `
-            -TimeoutSec 60 -MaximumRedirection 0
+            -ContentType 'application/json' -TimeoutSec 60 -MaximumRedirection 0
         $deadline = [DateTime]::UtcNow.AddMinutes(10)
         $operation = 'read commit status'
         do {
