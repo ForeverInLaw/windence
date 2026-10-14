@@ -8,7 +8,9 @@ review-code sign-in; ordinary Spotify browser sign-in remains available.
 Windence uses Microsoft Store for public installation and updates.
 [IVO-79](https://linear.app/ivoxygen/issue/IVO-79/ustanovka-i-avtoobnovleniya-cherez-microsoft-store)
 tracks packaging, native checks, CI delivery and publication separately.
-The first layer builds an upload package. It does not publish the app.
+CI delivery is enabled. Microsoft Entra access and the published product were
+verified in the [Store access check](https://github.com/ForeverInLaw/windence/actions/runs/38623594545).
+The first automatic package submission is tracked separately from that read-only check.
 
 Store manages automatic updates. Windence does not add its own update checks,
 an Updates section or a reminder banner. CI builds and submits new packages;
@@ -109,7 +111,34 @@ transition. Keep the old installer until the Store copy has passed the native
 checklist. Then remove the old installation manually. The app does not uninstall
 another copy or delete its profile. ZIP means no installer, not folder-local data.
 
-## Enable later CI/CD
+## Microsoft Store installer
+
+Microsoft generates a small EXE that installs the latest certified Windence
+version from Store. It uses the Store service and keeps Store-managed updates.
+It is available from the Store listing and the README download link.
+See [Microsoft's Web Installer guide](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-use-store-web-installer-for-distribution).
+
+The Release workflow downloads that file in its own `store-installer` job.
+`scripts/download-store-installer.ps1` uses the URL in Microsoft's official
+[badge implementation](https://get.microsoft.com/badge/ms-store-badge.bundled.js).
+It requires a valid Authenticode signature from Microsoft Corporation and writes
+a SHA256 sidecar. The `windence-store-installer` artifact contains both files.
+This job needs no Partner Center credentials and does not build or sign an installer.
+
+After package validation, Microsoft signature validation and a successful Store
+submission, the `github-release` job creates a GitHub release with the Microsoft
+installer, unsigned MSIX and their checksums. Only this job has `contents: write`;
+it has no Partner Center credentials. Manual runs create Actions artifacts only.
+Release notes combine `docs/releases/store-downloads.md`, optional notes for the
+tagged version and GitHub-generated changes. They identify the MSIX as a Partner
+Center artifact. The Store installer downloads the version currently certified
+for the user's market; a new source tag does not skip certification.
+
+The README Windows screenshot was downloaded unchanged from the published
+[Windence Store listing](https://apps.microsoft.com/detail/9PJ0NRJRJWH8) on
+2026-10-14. It replaces the upstream Cadence screenshot.
+
+## Configure CI/CD
 
 The official Store CLI currently supports updates to **free** products only.
 It cannot create this app or publish its first loose MSIX submission.
@@ -153,8 +182,8 @@ Do not edit an API-created submission in Partner Center while CI is running.
 The job serializes Store submissions across tags. If a submission is pending,
 finish it in Partner Center before retrying. A delivery success means the submission
 was sent, not that Microsoft finished certification or users received the update.
-EXE/ZIP and preview tags remain Actions artifacts. This workflow no longer
-publishes executable downloads to GitHub Releases.
+Development EXE/ZIP and preview tags remain Actions artifacts. Stable tags also
+publish the Microsoft Store installer and MSIX upload package to GitHub Releases.
 
 [CLI draft handling](https://github.com/microsoft/msstore-cli/blob/v0.4.3/MSStore.CLI/Helpers/IStorePackagedAPIExtensions.cs),
 [Store API submission creation](https://learn.microsoft.com/en-us/windows/uwp/monetize/create-an-app-submission),

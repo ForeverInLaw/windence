@@ -1,6 +1,7 @@
 name: Release
 
 # Manual runs build Store upload packages and development artifacts.
+# A separate job downloads and verifies Microsoft's public Store installer.
 # Stable tags submit Store updates only after the owner enables Store delivery.
 on:
   push:
@@ -137,10 +138,30 @@ jobs:
         with:
           subject-path: dist/store/*.msix
 
+  store-installer:
+    name: Microsoft Store installer
+    if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download and verify Microsoft's installer
+        shell: pwsh
+        run: scripts\download-store-installer.ps1
+      - name: Upload Microsoft's installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windence-store-installer
+          path: dist/store-installer/*
+          if-no-files-found: error
+          retention-days: 14
+
   store:
     name: Submit Microsoft Store update
     needs: windows
-    if: github.ref_type == 'tag' && !contains(github.ref_name, '-') && vars.STORE_PUBLISH_ENABLED == 'true'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !contains(github.ref_name, '-') && vars.STORE_PUBLISH_ENABLED == 'true'
     runs-on: windows-2025
     timeout-minutes: 45
     environment: store
@@ -178,3 +199,44 @@ jobs:
           $package = @(Get-ChildItem dist\store -Filter '*.msix')
           if ($package.Count -ne 1) { throw 'Expected one Store artifact' }
           scripts\publish-store.ps1 -PackagePath $package[0].FullName -ExpectedVersion $env:RELEASE_TAG
+
+  github-release:
+    name: Publish GitHub downloads
+    needs: [windows, store-installer, store]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: windence-store-x64
+          path: dist/store
+      - uses: actions/download-artifact@v7
+        with:
+          name: windence-store-installer
+          path: dist/store-installer
+      - name: Publish the verified downloads and release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          $notes = Get-Content docs\releases\store-downloads.md -Raw
+          $changes = Join-Path docs\releases "$version.md"
+          if (Test-Path $changes) { $notes += "`n" + (Get-Content $changes -Raw) }
+          $notesFile = Join-Path $env:RUNNER_TEMP 'windence-release-notes.md'
+          $notes | Set-Content $notesFile -Encoding utf8
+          $assets = @(Get-ChildItem dist\store, dist\store-installer -File | ForEach-Object FullName)
+          if ($assets.Count -ne 4) { throw 'Expected MSIX, Microsoft installer and their two checksums' }
+          gh release create $env:RELEASE_TAG @assets --verify-tag --latest `
+            --title "Windence $version" --notes-file $notesFile --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }

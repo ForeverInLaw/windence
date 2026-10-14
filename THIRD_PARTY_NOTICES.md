@@ -1,5 +1,13 @@
 # Third-Party Notices
 
+## Microsoft Store badge
+
+`assets/microsoft-store-badge.svg` is Microsoft's official English Store badge,
+downloaded unchanged from
+[get.microsoft.com](https://get.microsoft.com/images/en-us%20dark.svg).
+It links to Windence's published Microsoft Store listing. See Microsoft's
+[distribution guide](https://learn.microsoft.com/en-us/windows/apps/distribute-through-store/how-to-use-store-web-installer-for-distribution).
+
 ## Inter font
 
 The UI renders with the Inter typeface by Rasmus Andersson, bundled in
