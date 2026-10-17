@@ -574,6 +574,8 @@ mod services;
 mod session;
 mod settings;
 mod sidebar;
+#[cfg(target_os = "windows")]
+mod taskbar_controls;
 mod track_list;
 mod track_row;
 mod windows;

@@ -16,7 +16,9 @@ struct Published {
 /// the transport commands it sends back, so Cadence can be driven without its
 /// window.
 pub(super) struct SystemMediaControls {
-    controls: MediaControls,
+    #[cfg(target_os = "windows")]
+    taskbar: Option<super::taskbar_controls::TaskbarControls>,
+    controls: Option<MediaControls>,
     published: Option<Published>,
     /// Dropped with the binding so queued commands cannot reach a closed host.
     _command_forwarder: gpui_kit::Task<()>,
@@ -67,21 +69,48 @@ impl SystemMediaControls {
         hwnd: Option<*mut std::ffi::c_void>,
         cx: &mut App,
     ) -> Option<Self> {
+        let (commands, incoming) = async_channel::unbounded();
+        // Install the window callback before SMTC initialization can pump messages.
+        #[cfg(target_os = "windows")]
+        let taskbar = hwnd.and_then(|hwnd| {
+            // SAFETY: GPUI owns this live HWND on the current UI thread. The
+            // binding removes its subclass before releasing callback state.
+            match unsafe {
+                super::taskbar_controls::TaskbarControls::attach(hwnd, commands.clone())
+            } {
+                Ok(taskbar) => Some(taskbar),
+                Err(error) => {
+                    log::warn!("taskbar controls unavailable: {error}");
+                    None
+                }
+            }
+        });
         let mut controls = MediaControls::new(PlatformConfig {
             display_name: "Windence",
             dbus_name: "cadence",
             hwnd,
         })
-        .ok()?;
+        .inspect_err(|error| log::warn!("system media controls unavailable: {error}"))
+        .ok();
 
-        let (commands, incoming) = async_channel::unbounded();
         // The system calls this from its own thread, so hand the event to the
         // foreground executor rather than touching the player here.
-        controls
-            .attach(move |event| {
-                let _ = commands.send_blocking(event);
+        let system_commands = commands.clone();
+        if let Some(binding) = controls.as_mut()
+            && let Err(error) = binding.attach(move |event| {
+                let _ = system_commands.send_blocking(event);
             })
-            .ok()?;
+        {
+            log::warn!("could not attach system media controls: {error}");
+            controls = None;
+        }
+        #[cfg(target_os = "windows")]
+        let available = controls.is_some() || taskbar.is_some();
+        #[cfg(not(target_os = "windows"))]
+        let available = controls.is_some();
+        if !available {
+            return None;
+        }
 
         let command_forwarder = cx.spawn(async move |cx| {
             while let Ok(event) = incoming.recv().await {
@@ -92,6 +121,8 @@ impl SystemMediaControls {
         });
 
         Some(Self {
+            #[cfg(target_os = "windows")]
+            taskbar,
             controls,
             published: None,
             _command_forwarder: command_forwarder,
@@ -101,6 +132,13 @@ impl SystemMediaControls {
     /// Pushes the player's state to the system, skipping what it already knows.
     pub(super) fn sync(&mut self, player: &player::Player) {
         let now_playing = player.now_playing();
+        #[cfg(target_os = "windows")]
+        if let Some(taskbar) = self.taskbar.as_ref() {
+            taskbar.sync(now_playing.is_some(), player.playing());
+        }
+        let Some(controls) = self.controls.as_mut() else {
+            return;
+        };
         let published = Published {
             track: now_playing.map(|track| (track.provider, track.source_id.clone())),
             playing: player.playing(),
@@ -116,11 +154,11 @@ impl SystemMediaControls {
         self.published = Some(published);
 
         let Some(track) = now_playing else {
-            let _ = self.controls.set_playback(MediaPlayback::Stopped);
+            let _ = controls.set_playback(MediaPlayback::Stopped);
             return;
         };
         if track_changed {
-            let _ = self.controls.set_metadata(MediaMetadata {
+            let _ = controls.set_metadata(MediaMetadata {
                 title: Some(&track.title),
                 album: Some(&track.album),
                 artist: Some(&track.artist),
@@ -131,7 +169,7 @@ impl SystemMediaControls {
         let progress = Some(MediaPosition(Duration::from_millis(u64::from(
             player.position_ms(),
         ))));
-        let _ = self.controls.set_playback(if player.playing() {
+        let _ = controls.set_playback(if player.playing() {
             MediaPlayback::Playing { progress }
         } else {
             MediaPlayback::Paused { progress }

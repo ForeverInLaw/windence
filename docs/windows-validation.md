@@ -9,6 +9,16 @@ Record OS build, package version and results in IVO-79. See the
 
 - Install and launch on x64 Windows 10 build 19041 or newer and Windows 11.
 - Confirm Windence's name and icon in Start, Settings and the app window.
+- Check the taskbar icon in light and dark Windows themes at 100%, 150% and
+  200% display scaling. Its rounded corners should have no colored backplate.
+- Hover over the taskbar icon. Previous, play/pause and next should act once
+  each, and the middle icon should follow playback. Repeat after closing and
+  reopening the window and after restarting Explorer. Without a track the
+  buttons should be disabled.
+- Maximize the window, click the volume midpoint and drag left and right.
+  Repeat after restoring the window; it should follow the pointer in both states.
+- In a track list with a long album name, confirm an ellipsis and a clear gap
+  before Date added. Check both the wide and compact layouts.
 - Confirm the privacy policy is accessible before sign-in and in Settings.
 - Complete both browser OAuth steps. Restart and confirm saved credentials work.
 - Play audio, change the default output device and test SMTC metadata/controls.
