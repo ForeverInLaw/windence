@@ -102,6 +102,9 @@ pub(super) fn open_main_window(cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(720.), px(600.))),
             is_resizable: true,
+            // Register the thumbnail toolbar callback before Windows creates
+            // the taskbar button and sends TaskbarButtonCreated.
+            show: !cfg!(target_os = "windows"),
             titlebar: Some(gpui_kit::TitlebarOptions {
                 title: Some("Windence".into()),
                 appears_transparent: true,
@@ -121,6 +124,8 @@ pub(super) fn open_main_window(cx: &mut App) {
             services::AppServices::set_main_window(Some(handle), cx);
             // Windows SMTC needs this window's handle; a no-op elsewhere.
             services::AppServices::attach_media_controls(handle, cx);
+            #[cfg(target_os = "windows")]
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
         }
         Err(error) => log::error!("could not open the Windence window: {error}"),
     }
