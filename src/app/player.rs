@@ -442,7 +442,8 @@ impl Player {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let window_width = f32::from(window.window_bounds().get_bounds().size.width);
+        // window_bounds() keeps the restore rectangle while Windows is maximized.
+        let window_width = f32::from(window.viewport_size().width);
         self.volume = volume_for_pointer(f32::from(pointer_x), window_width);
         if self.volume > 0. {
             self.volume_before_mute = self.volume;

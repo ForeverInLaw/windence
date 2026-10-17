@@ -912,6 +912,71 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
 }
 
 #[test]
+fn volume_uses_the_visible_window_after_maximizing_and_restoring() {
+    let mut fixture = Fixture::new(false);
+    for width in [1280., 1920., 2560., 1280.] {
+        fixture.update(|window, cx| {
+            window.resize(size(px(width), px(820.)));
+            window.bounds_changed(cx);
+        });
+        fixture.update(|window, cx| {
+            let viewport = window.viewport_size();
+            let slider = window.find("volume-slider").bounds();
+            let midpoint = slider.center();
+            // Windows reports the restore rectangle through window_bounds()
+            // even while its drawable viewport is maximized. The headless
+            // platform has no maximize state, so keep that rectangle smaller
+            // without changing the already painted viewport.
+            window.resize(size(px(1280.), viewport.height));
+            assert_eq!(window.viewport_size(), viewport);
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: midpoint,
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: midpoint,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert_eq!(services::AppServices::player(cx).read(cx).volume(), 0.5);
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(slider.left() + slider.size.width / 4., midpoint.y),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert_eq!(services::AppServices::player(cx).read(cx).volume(), 0.25);
+            window.dispatch_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: midpoint,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.resize(viewport);
+        });
+        assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.25);
+        fixture.no_commands();
+    }
+}
+
+#[test]
 fn mute_sends_volume_and_restores_the_previous_level() {
     let mut fixture = Fixture::new(false);
     let initial = fixture.update(|_, cx| services::AppServices::player(cx).read(cx).volume());
