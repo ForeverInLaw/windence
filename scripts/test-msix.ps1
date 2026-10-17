@@ -11,6 +11,7 @@ audio, SMTC or a Store-delivered update.
 param([Parameter(Mandatory = $true)][string]$PackagePath)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-package.ps1')
+. (Join-Path $PSScriptRoot 'store-resources.ps1')
 $scratch = Join-Path $env:TEMP ([Guid]::NewGuid().ToString())
 $certificate = $null
 $trusted = $null
@@ -32,9 +33,10 @@ try {
     [xml]$manifest = Get-Content (Join-Path $unpacked 'AppxManifest.xml')
     $name = $manifest.Package.Identity.Name
     if (Get-AppxPackage -Name $name) { throw 'A package with this identity is already installed' }
-    foreach ($file in @('Windence.exe', 'vcruntime140.dll', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($file in @('Windence.exe', 'vcruntime140.dll', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'resources.pri')) {
         if (-not (Test-Path (Join-Path $unpacked $file))) { throw "Missing package payload: $file" }
     }
+    Test-StoreResourceIndex -Directory $unpacked -DumpPath (Join-Path $scratch 'resources.xml')
     $testPackage = Join-Path $scratch 'test.msix'
     Copy-Item $PackagePath $testPackage
     $certificate = New-SelfSignedCertificate -Type Custom -Subject $manifest.Package.Identity.Publisher `

@@ -35,6 +35,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Check Store submission guards
         run: scripts\test-store-submission.ps1
+      - name: Check Store taskbar resources
+        run: scripts\test-store-resources.ps1
       - name: Restore the Rust cache
         uses: Swatinem/rust-cache@v2
         with:
