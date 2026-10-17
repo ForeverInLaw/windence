@@ -754,6 +754,62 @@ fn queue_toggle_and_close_button_control_the_panel_without_backend_commands() {
 }
 
 #[test]
+fn long_album_names_leave_date_added_visible_until_the_narrowest_tier() {
+    let mut fixture = Fixture::new(false);
+    for album in [
+        "Short album".to_owned(),
+        "A very long album name ".repeat(30),
+    ] {
+        fixture.update(|_, cx| {
+            let mut current = track(0);
+            current.album = album;
+            services::AppServices::library(cx).update(cx, |library, cx| {
+                library.handle_backend_event(
+                    BackendEvent::LibraryLoaded {
+                        generation: 0,
+                        liked_tracks: vec![model::ListedTrack {
+                            track: current,
+                            added_at: Some(chrono::Utc::now()),
+                        }],
+                        playlists: Vec::new(),
+                    },
+                    0,
+                    cx,
+                );
+            });
+        });
+        for width in [1920., 1280., 1112., 1111., 960., 959., 928., 927., 1280.] {
+            fixture.update(|window, cx| {
+                window.resize(size(px(width), px(820.)));
+                window.bounds_changed(cx);
+            });
+            fixture.update(|window, _| {
+                let date = window.try_find(("track-date-added", 0usize));
+                let album = window.try_find(("track-album", 0usize));
+                assert_eq!(date.is_some(), width >= 928., "Date added at width {width}");
+                assert_eq!(album.is_some(), width >= 1112., "Album at width {width}");
+                assert_eq!(window.try_find("sort-date-added").is_some(), date.is_some());
+                if let Some(date) = date {
+                    let row = window.find(("spotify-track", 0usize)).bounds();
+                    let date = date.bounds();
+                    assert_eq!(date.size.width, px(110.));
+                    assert!(date.left() >= row.left() && date.right() <= row.right());
+                    if let Some(album) = album {
+                        let album = album.bounds();
+                        assert!(album.size.width <= px(320.), "Album must truncate earlier");
+                        assert!(
+                            album.right() <= date.left(),
+                            "Album must not cover Date added"
+                        );
+                    }
+                }
+            });
+        }
+    }
+    fixture.no_commands();
+}
+
+#[test]
 fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback() {
     let mut fixture = Fixture::new(false);
     // Our port carries no favorites list: the liked list itself carries the
@@ -908,6 +964,71 @@ fn window_size_matrix_keeps_the_tiers_and_nothing_clips() {
         // The entity handle goes before the context, or the leak detector
         // reads it as a Workspace left alive across contexts.
         drop(workspace);
+    }
+}
+
+#[test]
+fn volume_uses_the_visible_window_after_maximizing_and_restoring() {
+    let mut fixture = Fixture::new(false);
+    for width in [1280., 1920., 2560., 1280.] {
+        fixture.update(|window, cx| {
+            window.resize(size(px(width), px(820.)));
+            window.bounds_changed(cx);
+        });
+        fixture.update(|window, cx| {
+            let viewport = window.viewport_size();
+            let slider = window.find("volume-slider").bounds();
+            let midpoint = slider.center();
+            // Windows reports the restore rectangle through window_bounds()
+            // even while its drawable viewport is maximized. The headless
+            // platform has no maximize state, so keep that rectangle smaller
+            // without changing the already painted viewport.
+            window.resize(size(px(1280.), viewport.height));
+            assert_eq!(window.viewport_size(), viewport);
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: midpoint,
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: midpoint,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert_eq!(services::AppServices::player(cx).read(cx).volume(), 0.5);
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: point(slider.left() + slider.size.width / 4., midpoint.y),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert_eq!(services::AppServices::player(cx).read(cx).volume(), 0.25);
+            window.dispatch_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: midpoint,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.resize(viewport);
+        });
+        assert_eq!(*fixture.backend.volume.borrow_and_update(), 0.25);
+        fixture.no_commands();
     }
 }
 

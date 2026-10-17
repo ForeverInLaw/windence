@@ -194,11 +194,10 @@ const COMPACT_BREAKPOINT: f32 = 960. - 232.;
 /// The compact-player breakpoint against the content width, converted the
 /// same way from the window breakpoint (1136).
 const COMPACT_PLAYER_BREAKPOINT: f32 = 1136. - 232.;
-/// Track-table breakpoints, against the content width. Below the first the
-/// date-added column folds away; below the second the album column follows,
-/// leaving `#`, title, and time. The heart and row actions survive every
-/// width.
-const TRACK_DATE_ADDED_BREAKPOINT: f32 = 1100.;
+/// Fold Album before Date added as content narrows. Dates keep their own
+/// space until the narrowest tier leaves only `#`, title and time. The
+/// heart and row actions survive every width.
+const TRACK_DATE_ADDED_BREAKPOINT: f32 = 728.;
 const TRACK_ALBUM_BREAKPOINT: f32 = 880.;
 
 /// Which optional columns of a track table fit the content's width.
@@ -574,6 +573,8 @@ mod services;
 mod session;
 mod settings;
 mod sidebar;
+#[cfg(target_os = "windows")]
+mod taskbar_controls;
 mod track_list;
 mod track_row;
 mod windows;
@@ -659,18 +660,19 @@ mod tests {
     }
 
     #[test]
-    fn track_table_columns_fold_from_the_widest_to_the_thinnest() {
-        let full = track_table_columns(1100.);
+    fn track_table_columns_keep_dates_after_album_folds() {
+        let full = track_table_columns(1048.);
         assert!(full.album && full.date_added);
-        // The date column folds first: its breakpoint is 1100.
-        let no_date = track_table_columns(1099.);
-        assert!(no_date.album && !no_date.date_added);
-        // Then the album column: its breakpoint is 880.
+        assert!(track_table_columns(880.).album);
+        // Album folds first, leaving dates available at normal window widths.
         let no_album = track_table_columns(879.);
-        assert!(!no_album.album && !no_album.date_added);
+        assert!(!no_album.album && no_album.date_added);
+        assert!(track_table_columns(728.).date_added);
+        let minimal = track_table_columns(727.);
+        assert!(!minimal.album && !minimal.date_added);
         // The minimal table keeps `#`, title, and time; heart and actions
         // survive every width, so nothing further folds.
-        assert_eq!(track_table_columns(500.), no_album);
+        assert_eq!(track_table_columns(500.), minimal);
     }
 
     #[test]

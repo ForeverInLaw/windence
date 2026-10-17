@@ -65,7 +65,8 @@ jobs:
 
       - name: Check Store submission guards
         run: scripts\test-store-submission.ps1
-
+      - name: Check Store taskbar resources
+        run: scripts\test-store-resources.ps1
 
       - name: Build the installer and the zip
         run: |

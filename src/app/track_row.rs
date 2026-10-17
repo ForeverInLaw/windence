@@ -1,7 +1,7 @@
 use super::*;
 
 use super::icons::CadenceIcon;
-use gpui_kit::ClickEvent;
+use gpui_kit::{ClickEvent, TestSupportExt as _};
 
 /// Breathing room between the Title column and whatever follows it.
 const COLUMN_GUTTER: f32 = 16.;
@@ -12,6 +12,8 @@ const TIME_COLUMN_WIDTH: f32 = 60.;
 const ACTIONS_COLUMN_WIDTH: f32 = 36.;
 /// Wide enough for "Sep 28, 2026"; never squeezed below its content.
 const DATE_ADDED_COLUMN_WIDTH: f32 = 110.;
+/// Album names truncate within this column instead of taking half the table.
+const ALBUM_COLUMN_MAX_WIDTH: f32 = 320.;
 /// The corner radius a track list is cut to. The header carries it on its
 /// own top corners as well: clipping is rectangular, so a square header
 /// would paint into the rounded corners it sits inside.
@@ -36,6 +38,15 @@ pub(super) struct TrackHeaderActions {
     pub(super) title: Option<RowCallback>,
     pub(super) album: Option<RowCallback>,
     pub(super) date_added: Option<RowCallback>,
+}
+
+/// Keep the header and album cells under the same width limit.
+fn album_column() -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .max_w(px(ALBUM_COLUMN_MAX_WIDTH))
+        .pr(px(COLUMN_GUTTER))
 }
 
 /// The column header for a track list. Lives beside `TrackRow` so the fixed
@@ -120,18 +131,12 @@ pub(super) fn track_list_header(
                 )),
         )
         .when(columns.album, |header| {
-            header.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .pr(px(COLUMN_GUTTER))
-                    .child(sortable(
-                        "sort-album",
-                        "Album",
-                        direction_for(model::ListSortColumn::Album),
-                        actions.album,
-                    )),
-            )
+            header.child(album_column().child(sortable(
+                "sort-album",
+                "Album",
+                direction_for(model::ListSortColumn::Album),
+                actions.album,
+            )))
         })
         .when(columns.date_added, |header| {
             header.child(
@@ -376,16 +381,24 @@ impl RenderOnce for TrackRow {
             )
             .when(self.columns.album, |row| {
                 row.child(
-                    div().flex_1().min_w_0().flex().flex_col().child(
-                        ellipsized_line(13.)
-                            .text_color(rgb(palette.text))
-                            .child(self.track.album.clone()),
-                    ),
+                    album_column()
+                        .id(("track-album", index))
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(
+                            ellipsized_line(13.)
+                                .text_color(rgb(palette.text))
+                                .child(self.track.album.clone()),
+                        ),
                 )
             })
             .when(self.columns.date_added, |row| {
                 row.child({
                     let date = div()
+                        .id(("track-date-added", index))
+                        .test_support()
                         .w(px(DATE_ADDED_COLUMN_WIDTH))
                         .flex_none()
                         .text_size(px(13.))

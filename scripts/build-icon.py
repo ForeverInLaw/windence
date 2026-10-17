@@ -20,6 +20,7 @@ from PIL import Image
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+TARGET_SIZES = (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)
 
 
 def render(svg: Path, size: int) -> Image.Image:
@@ -41,6 +42,18 @@ def main() -> None:
             render(ASSETS / "AppIcon.svg", size * scale // 100).save(
                 store_assets / f"{name}{suffix}.png"
             )
+    # Windows selects unplated icons for the taskbar instead of adding a tile.
+    for size in TARGET_SIZES:
+        target = render(ASSETS / "AppIcon.svg", size)
+        for form in ("", "_altform-unplated", "_altform-lightunplated"):
+            target.save(store_assets / f"Square44x44Logo.targetsize-{size}{form}.png")
+    taskbar_assets = ASSETS / "taskbar"
+    taskbar_assets.mkdir(exist_ok=True)
+    for name in ("skip-back", "play", "pause", "skip-forward"):
+        # A neutral glyph remains visible on both shell backgrounds.
+        svg = (ASSETS / "icons" / f"{name}.svg").read_text().replace("currentColor", "#808080")
+        png = resvg_py.svg_to_bytes(svg_string=svg, width=256, height=256)
+        Image.open(BytesIO(bytes(png))).save(taskbar_assets / f"{name}.png")
 
 
 if __name__ == "__main__":

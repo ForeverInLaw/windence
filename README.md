@@ -64,6 +64,7 @@ data and Spotify access.
 - Playlist pages and a local cache for faster browsing.
 - Queue, playback history, shuffle, Smart Shuffle and track radio.
 - Windows system media controls (SMTC).
+- Previous, play/pause and next controls in the taskbar thumbnail preview.
 - Keyboard navigation and light, dark or system appearance.
 - Saved playback position and library state across restarts.
 

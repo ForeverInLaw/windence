@@ -11,6 +11,7 @@ param([switch]$SkipBuild, [string]$ExpectedVersion)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-package.ps1')
+. (Join-Path $PSScriptRoot 'store-resources.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
@@ -31,6 +32,8 @@ try {
     [xml]$manifest = Get-Content (Join-Path $root 'packaging\store\AppxManifest.xml')
     $manifest.Package.Identity.Version = "$version.0"
     $manifest.Save((Join-Path $stage 'AppxManifest.xml'))
+
+    New-StoreResourceIndex -Directory $stage -ConfigPath (Join-Path $root 'target\msix\priconfig.xml')
 
     $output = Join-Path $root 'dist\store'
     if (Test-Path $output) { Remove-Item $output -Recurse -Force }
