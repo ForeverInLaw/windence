@@ -778,7 +778,7 @@ fn long_album_names_leave_date_added_visible_until_the_narrowest_tier() {
                 );
             });
         });
-        for width in [1920., 1280., 1112., 1111., 960., 959., 1280.] {
+        for width in [1920., 1280., 1112., 1111., 960., 959., 928., 927., 1280.] {
             fixture.update(|window, cx| {
                 window.resize(size(px(width), px(820.)));
                 window.bounds_changed(cx);
@@ -786,7 +786,7 @@ fn long_album_names_leave_date_added_visible_until_the_narrowest_tier() {
             fixture.update(|window, _| {
                 let date = window.try_find(("track-date-added", 0usize));
                 let album = window.try_find(("track-album", 0usize));
-                assert_eq!(date.is_some(), width >= 960., "Date added at width {width}");
+                assert_eq!(date.is_some(), width >= 928., "Date added at width {width}");
                 assert_eq!(album.is_some(), width >= 1112., "Album at width {width}");
                 assert_eq!(window.try_find("sort-date-added").is_some(), date.is_some());
                 if let Some(date) = date {
