@@ -376,11 +376,17 @@ impl RenderOnce for TrackRow {
             )
             .when(self.columns.album, |row| {
                 row.child(
-                    div().flex_1().min_w_0().flex().flex_col().child(
-                        ellipsized_line(13.)
-                            .text_color(rgb(palette.text))
-                            .child(self.track.album.clone()),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pr(px(COLUMN_GUTTER))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            ellipsized_line(13.)
+                                .text_color(rgb(palette.text))
+                                .child(self.track.album.clone()),
+                        ),
                 )
             })
             .when(self.columns.date_added, |row| {
