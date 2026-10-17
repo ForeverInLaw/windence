@@ -78,6 +78,7 @@ struct State {
     hwnd: HWND,
     created_message: u32,
     attached: Cell<bool>,
+    taskbar_created: Cell<bool>,
     playback: Cell<Playback>,
     taskbar: RefCell<Option<ITaskbarList3>>,
     icons: RefCell<Icons>,
@@ -117,6 +118,8 @@ impl State {
         // this live window's taskbar button; all icon handles remain owned.
         let taskbar: ITaskbarList3 =
             unsafe { CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)? };
+        // SAFETY: This initialized interface and these live icons belong to
+        // the same UI thread and window as the TaskbarButtonCreated message.
         unsafe {
             taskbar.HrInit()?;
             taskbar.ThumbBarAddButtons(self.hwnd, &self.buttons())?;
@@ -186,6 +189,7 @@ impl TaskbarControls {
             hwnd,
             created_message,
             attached: Cell::new(true),
+            taskbar_created: Cell::new(false),
             playback: Cell::default(),
             taskbar: RefCell::default(),
             icons: RefCell::new(Icons::new(hwnd)?),
@@ -215,7 +219,18 @@ impl TaskbarControls {
 
     pub(super) fn sync(&self, has_track: bool, playing: bool) {
         let playback = Playback { has_track, playing };
-        if self.0.playback.replace(playback) != playback && self.0.attached.get() {
+        let changed = self.0.playback.replace(playback) != playback;
+        if !self.0.attached.get() || !self.0.taskbar_created.get() {
+            return;
+        }
+        let needs_registration = self.0.taskbar.borrow().is_none();
+        if needs_registration {
+            // Playback ticks retry a transient shell failure, but only after
+            // Windows has announced the taskbar button at least once.
+            if let Err(error) = self.0.register() {
+                log::warn!("could not create taskbar controls: {error}");
+            }
+        } else if changed {
             self.0.update();
         }
     }
@@ -253,12 +268,13 @@ unsafe extern "system" fn window_proc(
     };
     if message == WM_NCDESTROY {
         // SAFETY: WM_NCDESTROY runs on the owning thread before HWND disposal.
-        unsafe { RemoveWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID) };
+        let _ = unsafe { RemoveWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID) };
         if state.attached.replace(false) {
             // SAFETY: Release the reference transferred to this subclass once.
             drop(unsafe { Rc::from_raw(pointer) });
         }
     } else if message == state.created_message {
+        state.taskbar_created.set(true);
         if let Err(error) = state.register() {
             log::warn!("could not create taskbar controls: {error}");
         }
