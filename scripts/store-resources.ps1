@@ -10,7 +10,7 @@ function New-StoreResourceIndex {
     [xml]$config = Get-Content $priConfig
     # Keep every scale and theme in this single MSIX, without resource packs.
     $config.resources.RemoveChild($config.resources.packaging) | Out-Null
-    $config.resources.index.startIndexAt = 'Assets'
+    # Keep the package root so resource URIs retain the manifest's Assets path.
     $config.Save($priConfig)
     & $makePri new /pr $Directory /cf $priConfig /mn (Join-Path $Directory 'AppxManifest.xml') `
         /of (Join-Path $Directory 'resources.pri') /o
