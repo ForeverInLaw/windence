@@ -18,7 +18,9 @@ Record OS build, package version and results in IVO-79. See the
 - Maximize the window, click the volume midpoint and drag left and right.
   Repeat after restoring the window; it should follow the pointer in both states.
 - In a track list with a long album name, confirm an ellipsis and a clear gap
-  before Date added. Check both the wide and compact layouts.
+  before Date added. Album is capped at 320 logical pixels. Narrow the window:
+  Album should hide before Date added, and dates should fit the default 1280 px
+  window with its sidebar open. Check the header stays aligned with the rows.
 - Confirm the privacy policy is accessible before sign-in and in Settings.
 - Complete both browser OAuth steps. Restart and confirm saved credentials work.
 - Play audio, change the default output device and test SMTC metadata/controls.

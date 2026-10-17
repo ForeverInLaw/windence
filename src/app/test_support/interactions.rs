@@ -754,6 +754,62 @@ fn queue_toggle_and_close_button_control_the_panel_without_backend_commands() {
 }
 
 #[test]
+fn long_album_names_leave_date_added_visible_until_the_narrowest_tier() {
+    let mut fixture = Fixture::new(false);
+    for album in [
+        "Short album".to_owned(),
+        "A very long album name ".repeat(30),
+    ] {
+        fixture.update(|_, cx| {
+            let mut current = track(0);
+            current.album = album;
+            services::AppServices::library(cx).update(cx, |library, cx| {
+                library.handle_backend_event(
+                    BackendEvent::LibraryLoaded {
+                        generation: 0,
+                        liked_tracks: vec![model::ListedTrack {
+                            track: current,
+                            added_at: Some(chrono::Utc::now()),
+                        }],
+                        playlists: Vec::new(),
+                    },
+                    0,
+                    cx,
+                );
+            });
+        });
+        for width in [1920., 1280., 1112., 1111., 960., 959., 1280.] {
+            fixture.update(|window, cx| {
+                window.resize(size(px(width), px(820.)));
+                window.bounds_changed(cx);
+            });
+            fixture.update(|window, _| {
+                let date = window.try_find(("track-date-added", 0usize));
+                let album = window.try_find(("track-album", 0usize));
+                assert_eq!(date.is_some(), width >= 960., "Date added at width {width}");
+                assert_eq!(album.is_some(), width >= 1112., "Album at width {width}");
+                assert_eq!(window.try_find("sort-date-added").is_some(), date.is_some());
+                if let Some(date) = date {
+                    let row = window.find(("spotify-track", 0usize)).bounds();
+                    let date = date.bounds();
+                    assert_eq!(date.size.width, px(110.));
+                    assert!(date.left() >= row.left() && date.right() <= row.right());
+                    if let Some(album) = album {
+                        let album = album.bounds();
+                        assert!(album.size.width <= px(320.), "Album must truncate earlier");
+                        assert!(
+                            album.right() <= date.left(),
+                            "Album must not cover Date added"
+                        );
+                    }
+                }
+            });
+        }
+    }
+    fixture.no_commands();
+}
+
+#[test]
 fn duplicate_track_actions_preserve_row_index_and_liked_does_not_start_playback() {
     let mut fixture = Fixture::new(false);
     // Our port carries no favorites list: the liked list itself carries the
