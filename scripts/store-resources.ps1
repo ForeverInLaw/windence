@@ -25,7 +25,16 @@ function Test-StoreResourceIndex {
     & $makePri dump /if (Join-Path $Directory 'resources.pri') /of $priDump /dt Detailed /o
     if ($LASTEXITCODE -ne 0) { throw 'MakePRI could not read the packaged resource index' }
     [xml]$resources = Get-Content $priDump
-    $candidates = $resources.SelectNodes('//NamedResource[@name="Square44x44Logo.png"]/Candidate')
+    [xml]$manifest = Get-Content (Join-Path $Directory 'AppxManifest.xml')
+    $logo = $manifest.SelectSingleNode('//*[local-name()="VisualElements"]/@Square44x44Logo').Value
+    $resourceUri = "ms-resource://$($manifest.Package.Identity.Name)/Files/" + $logo.Replace('\', '/')
+    $resource = @($resources.SelectNodes('//NamedResource') | Where-Object { $_.uri -eq $resourceUri })
+    if ($resource.Count -ne 1) {
+        $found = @($resources.SelectNodes('//NamedResource[@name="Square44x44Logo.png"]') |
+            ForEach-Object { $_.uri }) -join ', '
+        throw "Taskbar icon URI does not match the manifest: expected $resourceUri; found $found"
+    }
+    $candidates = $resource[0].SelectNodes('Candidate')
     Add-Type -AssemblyName System.Drawing
     foreach ($size in @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)) {
         foreach ($form in @('', '_altform-unplated', '_altform-lightunplated')) {
