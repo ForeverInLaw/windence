@@ -76,7 +76,7 @@ scripts\package-msix.ps1
 ```
 
 The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
-`-ExpectedVersion v1.3.5` checks Cargo against a release tag. MakeAppx performs
+`-ExpectedVersion v1.3.6` checks Cargo against a release tag. MakeAppx performs
 its semantic validation; it does not replace certification or native checks.
 Logo PNGs are committed. Regenerate them with the existing
 `python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
@@ -84,7 +84,10 @@ The package includes target-size icons for light and dark taskbars. MakePRI
 indexes every variant in one `resources.pri` before MakeAppx runs. Without
 these [unplated variants](https://learn.microsoft.com/en-us/windows/apps/design/iconography/app-icon-construction),
 Windows can add a colored backplate even when a PNG is transparent.
-CI checks their indexing, size and transparent corners with the real Windows SDK.
+Index from the package root so the resource key retains `Files/Assets/`, matching
+the manifest. Starting at `Assets` removes that part of the key, so Windows cannot
+find the taskbar variants. CI checks the full resource URI against the manifest,
+each variant's size and its transparent corners with the real Windows SDK.
 
 CI also runs `scripts\test-msix.ps1` through Windows PowerShell on its clean
 runner. It unpacks the actual artifact, checks the icon resources, signs a separate copy with a temporary
