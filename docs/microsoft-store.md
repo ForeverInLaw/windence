@@ -76,7 +76,7 @@ scripts\package-msix.ps1
 ```
 
 The Store output is `dist\store`. `-SkipBuild` reuses the release binary.
-`-ExpectedVersion v1.3.6` checks Cargo against a release tag. MakeAppx performs
+`-ExpectedVersion v1.4.0` checks Cargo against a release tag. MakeAppx performs
 its semantic validation; it does not replace certification or native checks.
 Logo PNGs are committed. Regenerate them with the existing
 `python scripts/build-icon.py` tool and its `resvg-py`/Pillow dependencies.
