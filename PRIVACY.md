@@ -1,6 +1,6 @@
 # Windence privacy policy
 
-Last updated: 14 October 2026.
+Last updated: 31 October 2026.
 
 Windence is an independent Spotify player for Windows. It is not affiliated
 with Spotify or Microsoft. The project is maintained at
@@ -13,6 +13,11 @@ Spotify account identifier, display name, profile image and country, along with
 your saved music, playlists and playback information. It uses these to display
 your library and play music. Searches, playback reports and actions such as
 saving a track send requests directly to Spotify.
+
+If you turn on "Report plays to Spotify" in Settings, Windence also tells Spotify
+which track you played, for how long and from which playlist or album, along with
+an id for this device. Spotify may then add the play to your history. This setting
+is off by default.
 
 Spotify handles sign-in in your browser. Windence does not ask for or store your
 Spotify password. It uses authorization and playback tokens to access Spotify.

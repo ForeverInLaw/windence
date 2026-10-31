@@ -311,6 +311,20 @@ impl AppServices {
             .map(|store| store.set_autoplay(autoplay))
     }
 
+    /// Saves first, and changes the switch only if that worked. Reports follow
+    /// the stored value, so a switch that says "off" must mean nothing is sent.
+    pub(super) fn set_report_plays(report_plays: bool, cx: &mut App) -> Option<anyhow::Result<()>> {
+        let services = cx.global_mut::<Self>();
+        let saved = services
+            .store
+            .as_mut()
+            .map(|store| store.set_report_plays(report_plays));
+        if matches!(saved, Some(Ok(()))) {
+            services.preferences.report_plays = report_plays;
+        }
+        saved
+    }
+
     /// Revalidates the library on a timer, backstopping the activation
     /// trigger in the workspace. A revalidation is two head requests unless
     /// something actually changed, so the cadence is not the cost concern it
@@ -542,6 +556,28 @@ impl AppServices {
 mod tests {
     use super::*;
     use gpui_kit::{HeadlessAppContext, NoopTextSystem};
+
+    #[test]
+    fn report_plays_keeps_the_stored_value_when_it_cannot_be_saved() {
+        let mut cx = HeadlessAppContext::with_asset_source(
+            Arc::new(NoopTextSystem),
+            Arc::new(assets::AppAssets),
+        );
+        let _backend = cx.update(|cx| test_support::initialize(cx, ThemePreference::Dark));
+
+        cx.update(|cx| {
+            assert!(matches!(
+                AppServices::set_report_plays(true, cx),
+                Some(Ok(()))
+            ));
+            cx.global_mut::<AppServices>().store = None;
+
+            assert!(AppServices::set_report_plays(false, cx).is_none());
+
+            // Reports still follow the stored "on", so the switch must say so.
+            assert!(AppServices::preferences(cx).report_plays);
+        });
+    }
 
     #[test]
     fn library_timer_stops_when_services_shutdown() {

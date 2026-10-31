@@ -149,6 +149,24 @@ impl Workspace {
                     }
                     cx.notify();
                 }
+                settings::SettingsEvent::SetReportPlays(report_plays) => {
+                    // Like autoplay, the backend reads this from disk. The
+                    // listener must be able to trust that "off" sends nothing.
+                    match services::AppServices::set_report_plays(*report_plays, cx) {
+                        Some(Ok(())) => {}
+                        Some(Err(error)) => {
+                            this.last_error =
+                                Some(format!("Could not save the report plays setting: {error}"));
+                        }
+                        None => {
+                            this.last_error = Some(
+                                "Could not save the report plays setting: settings storage is unavailable"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    cx.notify();
+                }
             },
         ));
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(preferences.sidebar_collapsed, cx));

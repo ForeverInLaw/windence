@@ -6,6 +6,7 @@ pub mod dj;
 pub mod feed;
 pub mod library_index;
 pub mod lifecycle;
+pub mod listening;
 pub mod model;
 pub(crate) mod narration;
 mod oauth_callback;
