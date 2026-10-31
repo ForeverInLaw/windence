@@ -1,6 +1,6 @@
 # Windence privacy policy
 
-Last updated: 14 October 2026.
+Last updated: 31 October 2026.
 
 Windence is an independent Spotify player for Windows. It is not affiliated
 with Spotify or Microsoft. The project is maintained at
