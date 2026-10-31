@@ -248,7 +248,9 @@ impl Meter {
             .and_then(|previous| position_ms.checked_sub(previous))
             .filter(|step| (1..=MAX_POSITION_STEP_MS).contains(step));
         if let Some(step) = step {
-            run.started_at.get_or_insert(now);
+            // This step has already played, so the listen began before `now`.
+            let began = now.checked_sub(Duration::from_millis(step.into()));
+            run.started_at.get_or_insert(began.unwrap_or(now));
             run.played_ms = run.played_ms.saturating_add(step);
         }
         run.position_ms = Some(position_ms);
@@ -587,7 +589,7 @@ mod tests {
 
         assert_eq!(listen.played_ms, 500);
         assert_eq!(listen.reason, EndReason::TrackDone);
-        assert_eq!(listen.started_at, at(1_250));
+        assert_eq!(listen.started_at, at(1_000));
         assert_eq!(listen.ended_at, at(1_600));
     }
 
