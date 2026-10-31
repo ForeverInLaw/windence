@@ -11,11 +11,12 @@
 //! skipped parts do not, and nothing here can make up a play.
 
 use std::{
+    future::Future,
     io::Write as _,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use flate2::{Compression, write::GzEncoder};
 use librespot::{
     core::{FileId, SpotifyUri, config},
@@ -55,6 +56,9 @@ const REPORTING_VERSION: &str = "1.2.96.518";
 const REPORTING_VERSION_CODE: i64 = 129_600_518;
 const REPORTING_CORE_VERSION: i64 = 6_005_400_000_002_005;
 const REPORTING_SDK: &str = "0.9.4-rl-essopt-loginsend-onlinesend-bcdsend-heartbeat300.0s/30.0s-modern-payload125kB-batch100";
+
+/// How many times one event is offered when Spotify says "try later".
+const PUBLISH_ATTEMPTS: u32 = 3;
 
 /// The biggest step between two position updates that still counts as
 /// playing. Updates arrive every 250 ms, so a bigger step is a jump.
@@ -268,6 +272,44 @@ pub fn rejection(response: &[u8]) -> Result<Option<Rejection>> {
     }))
 }
 
+/// Sends one event until Spotify takes it, refuses it or runs out of tries.
+///
+/// When Spotify says "try later", `send` goes again with the same bytes, so a
+/// retry cannot count as a second play. `still_wanted` is asked before each
+/// retry: a listener who turned reporting off during the wait sends nothing more.
+pub async fn publish_with_retry<S, SendFut, W, WantedFut>(
+    delay: Duration,
+    mut send: S,
+    mut still_wanted: W,
+) -> Result<()>
+where
+    S: FnMut() -> SendFut,
+    SendFut: Future<Output = Result<Vec<u8>>>,
+    W: FnMut() -> WantedFut,
+    WantedFut: Future<Output = bool>,
+{
+    let mut attempt = 1;
+    loop {
+        let response = send().await?;
+        match rejection(&response)? {
+            None => return Ok(()),
+            Some(rejection) if rejection.transient && attempt < PUBLISH_ATTEMPTS => {
+                tokio::time::sleep(delay * attempt).await;
+                if !still_wanted().await {
+                    return Ok(());
+                }
+                attempt += 1;
+            }
+            Some(rejection) => {
+                return Err(anyhow!(
+                    "Spotify rejected the play, reason {}",
+                    rejection.reason
+                ));
+            }
+        }
+    }
+}
+
 fn timestamp_ms(time: SystemTime) -> i64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -479,7 +521,7 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, io::Read as _, time::Duration};
+    use std::{cell::Cell, collections::HashMap, io::Read as _};
 
     use flate2::read::GzDecoder;
 
@@ -738,12 +780,58 @@ mod tests {
         assert_eq!(first.event[0].sequence_id, second.event[0].sequence_id);
     }
 
+    // error[0]: index 0, transient true, reason 2.
+    const TRY_LATER: [u8; 6] = [0x0a, 0x04, 0x10, 0x01, 0x18, 0x02];
+
+    /// Runs a publish whose responses come from `responses`, and says how
+    /// many times it sent and what it ended with.
+    fn publish(responses: &[&[u8]], wanted: bool) -> (usize, Result<()>) {
+        let sends = Cell::new(0);
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(publish_with_retry(
+                Duration::ZERO,
+                || {
+                    let response = responses[sends.get()].to_vec();
+                    sends.set(sends.get() + 1);
+                    std::future::ready(Ok(response))
+                },
+                || std::future::ready(wanted),
+            ));
+        (sends.get(), result)
+    }
+
+    #[test]
+    fn try_later_sends_again_until_spotify_takes_the_event() {
+        let (sends, result) = publish(&[&TRY_LATER, &[]], true);
+
+        assert_eq!(sends, 2);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn turning_reporting_off_during_the_wait_stops_the_retry() {
+        let (sends, result) = publish(&[&TRY_LATER, &[]], false);
+
+        assert_eq!(sends, 1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn retries_stop_after_the_last_attempt() {
+        let (sends, result) = publish(&[&TRY_LATER, &TRY_LATER, &TRY_LATER, &[]], true);
+
+        assert_eq!(sends, 3);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn a_success_response_can_still_reject_the_event() {
         assert_eq!(rejection(&[]).unwrap(), None);
-        // error[0]: index 0, transient true, reason 2.
         assert_eq!(
-            rejection(&[0x0a, 0x04, 0x10, 0x01, 0x18, 0x02]).unwrap(),
+            rejection(&TRY_LATER).unwrap(),
             Some(Rejection {
                 reason: 2,
                 transient: true,

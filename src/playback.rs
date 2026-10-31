@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -55,8 +56,6 @@ const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const KEYCHAIN_SERVICE: &str = "com.cadence.spotify";
 const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
-/// How many times one finished listen is offered when Spotify says "try later".
-const LISTEN_REPORT_ATTEMPTS: u64 = 3;
 /// The collection set Spotify keeps the account's pins in.
 const PIN_SET: &str = "ylpin";
 /// The content type the collection service speaks, on the way in and on the
@@ -621,15 +620,18 @@ impl Playback {
         }
     }
 
-    /// Adds one finished listen to the account's history.
-    ///
-    /// When Spotify says "try later", the same bytes go again, so a retry
-    /// cannot count as a second play.
-    pub(crate) async fn report_listen(
+    /// Adds one finished listen to the account's history. See
+    /// [`listening::publish_with_retry`] for what `still_wanted` does.
+    pub(crate) async fn report_listen<F, Fut>(
         &self,
         reporter: &mut listening::Reporter,
         listen: &listening::Listen,
-    ) -> Result<()> {
+        still_wanted: F,
+    ) -> Result<()>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = bool>,
+    {
         use protobuf::Message as _;
         let spclient = self.session.spclient();
         let audio_files = spclient
@@ -661,30 +663,23 @@ impl Playback {
                 HeaderValue::from_static(listening::REPORTING_VERSION_HEADER),
             ),
         ]);
-        for attempt in 1..=LISTEN_REPORT_ATTEMPTS {
-            let response = spclient
-                .request(
-                    &http::Method::POST,
-                    listening::EVENTS_ENDPOINT,
-                    Some(headers.clone()),
-                    Some(&body),
-                )
-                .await
-                .context("Spotify events endpoint failed")?;
-            match listening::rejection(&response)? {
-                None => return Ok(()),
-                Some(rejection) if rejection.transient && attempt < LISTEN_REPORT_ATTEMPTS => {
-                    tokio::time::sleep(Duration::from_secs(attempt)).await;
-                }
-                Some(rejection) => {
-                    return Err(anyhow!(
-                        "Spotify rejected the play, reason {}",
-                        rejection.reason
-                    ));
-                }
-            }
-        }
-        Ok(())
+        listening::publish_with_retry(
+            Duration::from_secs(1),
+            || async {
+                let response = spclient
+                    .request(
+                        &http::Method::POST,
+                        listening::EVENTS_ENDPOINT,
+                        Some(headers.clone()),
+                        Some(&body),
+                    )
+                    .await
+                    .context("Spotify events endpoint failed")?;
+                Ok(response.to_vec())
+            },
+            still_wanted,
+        )
+        .await
     }
 
     /// Follows the connection ids Spotify issues for this session.

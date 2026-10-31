@@ -4558,8 +4558,17 @@ struct ListenObserver {
     flush: tokio::sync::oneshot::Sender<()>,
 }
 
+/// Whether the listener wants plays reported. A setting that cannot be read
+/// counts as off.
+async fn report_plays_on(store: &BlockingStore) -> bool {
+    store
+        .call(|store| store.preferences())
+        .await
+        .is_ok_and(|preferences| preferences.report_plays)
+}
+
 /// Measures what the player plays, and reports each finished listen if the
-/// listener turned that on. The setting is read for each listen, so turning
+/// listener turned that on. The setting is read before each send, so turning
 /// it off stops the reports at once.
 fn observe_listens(
     player: &Playback,
@@ -4573,11 +4582,13 @@ fn observe_listens(
     let reports = tokio::spawn(async move {
         let mut reporter = Reporter::default();
         while let Some(listen) = finished.recv().await {
-            let enabled = store
-                .call(|store| store.preferences())
-                .await
-                .is_ok_and(|preferences| preferences.report_plays);
-            if enabled && let Err(error) = playback.report_listen(&mut reporter, &listen).await {
+            if !report_plays_on(&store).await {
+                continue;
+            }
+            let reported = playback
+                .report_listen(&mut reporter, &listen, || report_plays_on(&store))
+                .await;
+            if let Err(error) = reported {
                 log::warn!("listening: could not report a play: {error:#}");
             }
         }

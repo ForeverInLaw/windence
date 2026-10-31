@@ -18,8 +18,9 @@ Windence can send a `RawCoreStream` event to
 official client sends. librespot does not send it.
 
 The setting "Report plays to Spotify" controls this. **It is off by default.** A
-listener has to turn it on, and each report reads the setting first, so turning
-it off stops reports at once.
+listener has to turn it on. Windence reads the setting before each send, retries
+included, so turning it off stops reports at once. A request already on its way
+cannot be called back.
 
 - The time in a report is only time the player moved through the track. Paused
   time and skipped parts do not count, and there is no way to report a play
