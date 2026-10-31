@@ -6,7 +6,7 @@ use std::{
         mpsc::{self, Sender as StdSender},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -20,6 +20,7 @@ use crate::{
     audio::NarrationClip,
     connect, dj,
     library_index::{self, LibraryIndex, RootlistScan},
+    listening::{EndReason, Meter, PlayContext, Reporter},
     model::{Album, Artist, HomeFeed, HomeShelfPage, ListedTrack, Playlist, Track, UserProfile},
     pins::{self, Pins},
     playback::{Playback, PlaybackAuthorization, delete_playback_refresh_token},
@@ -1084,6 +1085,7 @@ async fn run(
                     reconnected,
                     &worker.events,
                     &worker.unavailable,
+                    &worker.store,
                 ) {
                     // Both watches were reading the session that just went
                     // away, so they are ended rather than waited on: the
@@ -1687,16 +1689,21 @@ impl Worker {
 
     /// Tells Spotify what Cadence is playing.
     ///
-    /// This is what puts a play into the account's history and moves the
-    /// playlist up the library list on the listener's other devices. It
-    /// runs on its own so a slow or refused report never holds up playback,
-    /// and a failure is logged rather than shown: nothing the listener can
-    /// hear depends on it.
+    /// It runs on its own so a slow or refused report never holds up
+    /// playback, and a failure is logged rather than shown: nothing the
+    /// listener can hear depends on it. It also keeps the play context that
+    /// a finished listen names, see [`observe_listens`].
     fn report_playback(&self, reason: PutStateReason) {
         let Some(playback) = self.connection.player.clone() else {
             return;
         };
         let report = self.queue.report();
+        self.connection
+            .play_context
+            .send_replace(report.as_ref().map(|report| PlayContext {
+                track_uri: report.track_uri.clone(),
+                context_uri: report.context_uri.clone(),
+            }));
         tokio::spawn(async move {
             if let Err(error) = playback.report_state(report.as_ref(), reason).await {
                 log::warn!("connect: could not report what is playing: {error:#}");
@@ -2382,6 +2389,7 @@ impl Worker {
             send_error(&self.events, error);
         }
         self.connection.abort_attempts();
+        self.connection.flush_listens().await;
         self.connection.disconnect();
     }
 
@@ -2391,7 +2399,7 @@ impl Worker {
             Some(Ok(Ok(player))) => {
                 log::info!("playback: connected");
                 self.connection
-                    .adopt(player, &self.events, &self.unavailable);
+                    .adopt(player, &self.events, &self.unavailable, &self.store);
                 self.playback_credentials_invalidated = false;
                 if let Err(error) = self.store.set_playback_credentials_invalidated(false).await {
                     send_error(&self.events, error);
@@ -3759,6 +3767,9 @@ struct PlaybackConnection {
     player: Option<Playback>,
     observer: Option<tokio::task::JoinHandle<()>>,
     position_observer: Option<tokio::task::JoinHandle<()>>,
+    listens: Option<ListenObserver>,
+    /// What the queue is playing, for the listen observer to read.
+    play_context: tokio::sync::watch::Sender<Option<PlayContext>>,
     reconnect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     connect: Option<tokio::task::JoinHandle<Result<Playback>>>,
     reconnect_pending: bool,
@@ -3784,6 +3795,13 @@ impl PlaybackConnection {
         }
         abort_task(&mut self.observer);
         abort_task(&mut self.position_observer);
+        self.abort_listens();
+    }
+
+    fn abort_listens(&mut self) {
+        if let Some(listens) = self.listens.take() {
+            listens.task.abort();
+        }
     }
 
     fn adopt(
@@ -3791,11 +3809,27 @@ impl PlaybackConnection {
         player: Playback,
         events: &UnboundedSender<BackendEvent>,
         unavailable: &UnboundedSender<String>,
+        store: &BlockingStore,
     ) {
         abort_task(&mut self.observer);
         abort_task(&mut self.position_observer);
         self.observer = Some(observe_playback(&player, events, unavailable.clone()));
+        self.abort_listens();
+        self.listens = Some(observe_listens(
+            &player,
+            store.clone(),
+            self.play_context.subscribe(),
+        ));
         self.player = Some(player);
+    }
+
+    /// Reports the listen in progress before the app closes. The wait is
+    /// short because closing the window must not hang on the network.
+    async fn flush_listens(&mut self) {
+        if let Some(listens) = self.listens.take() {
+            let _ = listens.flush.send(());
+            let _ = tokio::time::timeout(LISTEN_FLUSH_TIMEOUT, listens.task).await;
+        }
     }
 
     /// AddEventSender follows Seek or Load on the player's command stream.
@@ -3907,12 +3941,13 @@ impl PlaybackConnection {
         reconnected: Finished<Result<Playback>>,
         events: &UnboundedSender<BackendEvent>,
         unavailable: &UnboundedSender<String>,
+        store: &BlockingStore,
     ) -> bool {
         self.reconnect = None;
         match reconnected {
             Some(Ok(Ok(player))) => {
                 log::info!("playback: reconnected");
-                self.adopt(player, events, unavailable);
+                self.adopt(player, events, unavailable, store);
                 self.reconnect_pending = false;
                 let _ = events.send(BackendEvent::PlaybackReconnected);
                 return true;
@@ -4512,6 +4547,62 @@ fn observe_playback(
             }
         }
     })
+}
+
+/// How long closing the app waits for the last listen to be reported.
+const LISTEN_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The task that measures listens for one playback session.
+struct ListenObserver {
+    task: tokio::task::JoinHandle<()>,
+    flush: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Measures what the player plays, and reports each finished listen if the
+/// listener turned that on. The setting is read for each listen, so turning
+/// it off stops the reports at once.
+fn observe_listens(
+    player: &Playback,
+    store: BlockingStore,
+    play_context: tokio::sync::watch::Receiver<Option<PlayContext>>,
+) -> ListenObserver {
+    let mut player_events = player.events();
+    let (flush, mut flushed) = tokio::sync::oneshot::channel();
+    let (listens, mut finished) = tokio::sync::mpsc::unbounded_channel();
+    let playback = player.clone();
+    let reports = tokio::spawn(async move {
+        let mut reporter = Reporter::default();
+        while let Some(listen) = finished.recv().await {
+            let enabled = store
+                .call(|store| store.preferences())
+                .await
+                .is_ok_and(|preferences| preferences.report_plays);
+            if enabled && let Err(error) = playback.report_listen(&mut reporter, &listen).await {
+                log::warn!("listening: could not report a play: {error:#}");
+            }
+        }
+    });
+    let task = tokio::spawn(async move {
+        let mut meter = Meter::default();
+        loop {
+            tokio::select! {
+                event = player_events.recv() => {
+                    let Some(event) = event else { break };
+                    let context = play_context.borrow().clone();
+                    if let Some(listen) = meter.observe(&event, context.as_ref(), SystemTime::now()) {
+                        let _ = listens.send(listen);
+                    }
+                }
+                _ = &mut flushed => break,
+            }
+        }
+        if let Some(listen) = meter.finish(EndReason::EndPlay, SystemTime::now()) {
+            let _ = listens.send(listen);
+        }
+        drop(listens);
+        let _ = reports.await;
+    });
+    ListenObserver { task, flush }
 }
 
 /// Keeps the main subscription's state and failure events intact while replacing

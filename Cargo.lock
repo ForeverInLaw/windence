@@ -8148,6 +8148,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "sha1",
  "souvlaki",
  "symphonia",
  "tokio",

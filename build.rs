@@ -9,9 +9,24 @@
 use std::{fs, path::Path};
 
 /// The messages Cadence speaks that librespot-protocol ships but does not
-/// compile. Both are copied unchanged from librespot-protocol's `proto`
-/// directory; see `docs/adr/0006-library-order-and-pins-from-the-internal-protocol.md`.
-const PROTO_FILES: [&str; 2] = ["collection2v2.proto", "recently_played_backend.proto"];
+/// compile. They come from librespot-protocol's `proto` directory; see
+/// `docs/adr/0006-library-order-and-pins-from-the-internal-protocol.md` and
+/// `docs/adr/0010-report-listens-to-spotify-history.md`, which says which two
+/// differ from that copy.
+const PROTO_FILES: [&str; 12] = [
+    "collection2v2.proto",
+    "recently_played_backend.proto",
+    "RawCoreStream.proto",
+    "gabito.proto",
+    "audio_files_extension.proto",
+    "context_application_desktop.proto",
+    "context_client_id.proto",
+    "context_device_desktop.proto",
+    "context_installation_id.proto",
+    "context_monotonic_clock.proto",
+    "context_sdk.proto",
+    "context_time.proto",
+];
 
 fn generate_protobuf() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");

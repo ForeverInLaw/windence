@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel as async_chan;
+use http::{HeaderMap, HeaderName, HeaderValue};
 use keyring::Entry;
 use librespot::{
     core::{
@@ -38,9 +39,10 @@ use tokio::net::TcpListener;
 
 use crate::{
     audio::{self, NarrationClip},
-    connect, credential_worker, dj, feed, model, narration,
+    connect, credential_worker, dj, feed, listening, model, narration,
     oauth_callback::receive_callback,
     oauth_page::{OAuthStep, success_page},
+    proto::audio_files_extension::AudioFilesExtensionResponse,
     proto::collection2v2::{
         CollectionItem, DeltaRequest, DeltaResponse, PageRequest, PageResponse, WriteRequest,
     },
@@ -53,6 +55,8 @@ const PLAYBACK_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 const KEYCHAIN_SERVICE: &str = "com.cadence.spotify";
 const KEYCHAIN_ACCOUNT: &str = "playback-refresh-token";
 const LOGGED_OUT_CREDENTIAL: &str = "cadence-logged-out";
+/// How many times one finished listen is offered when Spotify says "try later".
+const LISTEN_REPORT_ATTEMPTS: u64 = 3;
 /// The collection set Spotify keeps the account's pins in.
 const PIN_SET: &str = "ylpin";
 /// The content type the collection service speaks, on the way in and on the
@@ -596,12 +600,8 @@ impl Playback {
         report: Option<&connect::Report>,
         reason: PutStateReason,
     ) -> Result<()> {
-        let identity = connect::Identity {
-            device_id: self.session.device_id().to_owned(),
-            client_id: self.session.client_id(),
-        };
         let request = connect::state_request(
-            &identity,
+            &self.identity(),
             report,
             reason,
             chrono::Utc::now().timestamp_millis(),
@@ -611,6 +611,79 @@ impl Playback {
             .put_connect_state_request(&request)
             .await
             .context("Spotify refused the device state")?;
+        Ok(())
+    }
+
+    fn identity(&self) -> connect::Identity {
+        connect::Identity {
+            device_id: self.session.device_id().to_owned(),
+            client_id: self.session.client_id(),
+        }
+    }
+
+    /// Adds one finished listen to the account's history.
+    ///
+    /// When Spotify says "try later", the same bytes go again, so a retry
+    /// cannot count as a second play.
+    pub(crate) async fn report_listen(
+        &self,
+        reporter: &mut listening::Reporter,
+        listen: &listening::Listen,
+    ) -> Result<()> {
+        use protobuf::Message as _;
+        let spclient = self.session.spclient();
+        let audio_files = spclient
+            .get_metadata(ExtensionKind::AUDIO_FILES, &listen.uri)
+            .await
+            .context("Spotify audio files endpoint failed")?;
+        let audio_id = AudioFilesExtensionResponse::parse_from_bytes(&audio_files)
+            .context("Spotify audio files returned an undecodable message")?
+            .audio_id;
+        if audio_id.is_empty() {
+            return Err(anyhow!("Spotify did not name the recording"));
+        }
+        let body = reporter.event_body(listen, &self.identity(), &audio_id)?;
+        let headers = HeaderMap::from_iter([
+            (
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/x-protobuf"),
+            ),
+            (
+                http::header::CONTENT_ENCODING,
+                HeaderValue::from_static("gzip"),
+            ),
+            (
+                HeaderName::from_static("app-platform"),
+                HeaderValue::from_static("Win32"),
+            ),
+            (
+                HeaderName::from_static("spotify-app-version"),
+                HeaderValue::from_static(listening::REPORTING_VERSION_HEADER),
+            ),
+        ]);
+        for attempt in 1..=LISTEN_REPORT_ATTEMPTS {
+            let response = spclient
+                .request(
+                    &http::Method::POST,
+                    listening::EVENTS_ENDPOINT,
+                    Some(headers.clone()),
+                    Some(&body),
+                )
+                .await
+                .context("Spotify events endpoint failed")?;
+            match listening::rejection(&response)? {
+                None => return Ok(()),
+                Some(rejection) if rejection.transient && attempt < LISTEN_REPORT_ATTEMPTS => {
+                    tokio::time::sleep(Duration::from_secs(attempt)).await;
+                }
+                Some(rejection) => {
+                    return Err(anyhow!(
+                        "Spotify rejected the play, reason {}",
+                        rejection.reason
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

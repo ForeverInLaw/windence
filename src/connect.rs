@@ -2,17 +2,16 @@
 //!
 //! Every Spotify client PUTs a device state to
 //! `/connect-state/v1/devices/<device_id>`: who the device is, and what its
-//! player is doing. That report is how a play reaches the account's history
-//! and how other clients learn to move a playlist up their own library
-//! list. Without it Spotify does not know this app exists, and a play here
-//! is invisible everywhere else.
+//! player is doing. Without it Spotify does not know this app exists.
+//!
+//! This report does not add a play to the account's history. Only a separate
+//! event does that, and [`crate::listening`] sends it when the listener asks.
 //!
 //! Cadence reports and takes no orders. It does announce itself as a
 //! player that can play, because a device that says it cannot play while
-//! reporting a track is telling Spotify two different things, and the
-//! account's history is what gets dropped. The commands are still all
-//! refused: nothing here can be transferred to or controlled from another
-//! device, so tapping Cadence in the Connect picker does nothing.
+//! reporting a track is telling Spotify two different things. The commands
+//! are still all refused: nothing here can be transferred to or controlled
+//! from another device, so tapping Cadence in the Connect picker does nothing.
 //!
 //! Everything here is pure. See [`crate::playback`] for the request that
 //! carries it.

@@ -311,6 +311,15 @@ impl AppServices {
             .map(|store| store.set_autoplay(autoplay))
     }
 
+    pub(super) fn set_report_plays(report_plays: bool, cx: &mut App) -> Option<anyhow::Result<()>> {
+        let services = cx.global_mut::<Self>();
+        services.preferences.report_plays = report_plays;
+        services
+            .store
+            .as_mut()
+            .map(|store| store.set_report_plays(report_plays))
+    }
+
     /// Revalidates the library on a timer, backstopping the activation
     /// trigger in the workspace. A revalidation is two head requests unless
     /// something actually changed, so the cadence is not the cost concern it

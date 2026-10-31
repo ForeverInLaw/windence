@@ -8,6 +8,7 @@ pub(super) enum SettingsEvent {
     RequestAppChange,
     SetTheme(ThemePreference),
     SetAutoplay(bool),
+    SetReportPlays(bool),
 }
 
 /// The settings page: appearance and the Spotify developer app.
@@ -32,7 +33,9 @@ impl Settings {
             session.client_id_source() == Some(ClientIdSource::Environment);
         let client_id = session.client_id().cloned().unwrap_or_default();
         let dashboard_url = format!("{}/{client_id}", onboarding::SPOTIFY_DASHBOARD_URL);
-        let autoplay = services::AppServices::preferences(cx).autoplay;
+        let preferences = services::AppServices::preferences(cx);
+        let autoplay = preferences.autoplay;
+        let report_plays = preferences.report_plays;
 
         div()
             .id("settings-page")
@@ -88,7 +91,7 @@ impl Settings {
                             .mt(px(48.))
                             .child(Self::settings_section_header(palette,
                                 "Playback",
-                                "What happens when the queue runs out.",
+                                "What happens when the queue ends, and where your plays are recorded.",
                             ))
                             .child(
                                 div()
@@ -98,51 +101,26 @@ impl Settings {
                                     .border_color(rgb(palette.border))
                                     .bg(rgb(palette.surface_raised))
                                     .p(px(20.))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap(px(20.))
-                                            .child(
-                                                div()
-                                                    .min_w_0()
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.))
-                                                            .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                                            .text_color(rgb(palette.text))
-                                                            .child("Autoplay"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .mt(px(6.))
-                                                            .text_size(px(13.))
-                                                            .line_height(relative(1.45))
-                                                            .text_color(rgb(palette.text_muted))
-                                                            .child(
-                                                                "Keep the music going with similar songs when the queue ends.",
-                                                            ),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .key_context(components::CONTROL_KEY_CONTEXT)
-                                                    .child(
-                                                        Switch::new("settings-autoplay")
-                                                            .accessibility_label("Autoplay")
-                                                            .checked(autoplay)
-                                                            .focus_ring(window.last_input_was_keyboard())
-                                                            .on_click(cx.listener(
-                                                                |_, checked: &bool, _, cx| {
-                                                                    cx.emit(SettingsEvent::SetAutoplay(
-                                                                        *checked,
-                                                                    ));
-                                                                },
-                                                            )),
-                                                    ),
-                                            ),
-                                    ),
+                                    .child(Self::switch_row(
+                                        palette,
+                                        "settings-autoplay",
+                                        "Autoplay",
+                                        "Keep the music going with similar songs when the queue ends.",
+                                        autoplay,
+                                        SettingsEvent::SetAutoplay,
+                                        window,
+                                        cx,
+                                    ))
+                                    .child(div().mt(px(20.)).child(Self::switch_row(
+                                        palette,
+                                        "settings-report-plays",
+                                        "Report plays to Spotify",
+                                        "Add songs you play here to your Spotify history. Spotify does not support this for other apps, so turn it on at your own risk.",
+                                        report_plays,
+                                        SettingsEvent::SetReportPlays,
+                                        window,
+                                        cx,
+                                    ))),
                             ),
                     )
                     .child(
@@ -251,6 +229,56 @@ impl Settings {
                             .justify_start()
                             .child(components::privacy_policy_button(palette)),
                     ),
+            )
+    }
+
+    /// One setting that is either on or off: its name, what it does and its
+    /// switch. Clicking the switch emits `event` with the new value.
+    #[allow(clippy::too_many_arguments)]
+    fn switch_row(
+        palette: CadencePalette,
+        id: &'static str,
+        title: &'static str,
+        detail: &'static str,
+        checked: bool,
+        event: fn(bool) -> SettingsEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(20.))
+            .child(
+                div()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(rgb(palette.text))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .mt(px(6.))
+                            .text_size(px(13.))
+                            .line_height(relative(1.45))
+                            .text_color(rgb(palette.text_muted))
+                            .child(detail),
+                    ),
+            )
+            .child(
+                div().key_context(components::CONTROL_KEY_CONTEXT).child(
+                    Switch::new(id)
+                        .accessibility_label(title)
+                        .checked(checked)
+                        .focus_ring(window.last_input_was_keyboard())
+                        .on_click(cx.listener(move |_, checked: &bool, _, cx| {
+                            cx.emit(event(*checked));
+                        })),
+                ),
             )
     }
 

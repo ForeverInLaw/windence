@@ -1,0 +1,13 @@
+// Extracted from: Spotify 1.2.52.442 (windows)
+// Trimmed: only `audio_id` is kept. The full message imports metadata.proto,
+// which would generate a second copy of librespot's metadata messages.
+
+syntax = "proto3";
+
+package spotify.extendedmetadata.audiofiles;
+
+option optimize_for = CODE_SIZE;
+
+message AudioFilesExtensionResponse {
+    bytes audio_id = 4;
+}

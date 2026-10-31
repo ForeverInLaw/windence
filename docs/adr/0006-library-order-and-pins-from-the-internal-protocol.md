@@ -104,6 +104,7 @@ own.
   incoming connect commands onto Cadence's existing actions. Full `Spirc` is
   rejected: it carries its own queue, context, and shuffle state machine, which
   would fight the one Cadence already has under DJ X and Smart Shuffle.
+  Correction: this report does not add a play to the history. See ADR 0010.
 
 ## Amendment (Cadence 1.2)
 

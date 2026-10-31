@@ -39,6 +39,9 @@ pub struct AppPreferences {
     pub sidebar_collapsed: bool,
     pub theme: ThemePreference,
     pub autoplay: bool,
+    /// Adds songs played here to the Spotify history. Off unless the listener
+    /// turns it on, see `docs/adr/0010-report-listens-to-spotify-history.md`.
+    pub report_plays: bool,
     /// Playback volume, 0.0 to 1.0.
     pub volume: f32,
 }
@@ -50,6 +53,7 @@ impl Default for AppPreferences {
             theme: ThemePreference::default(),
             // Autoplay is on unless the listener turned it off.
             autoplay: true,
+            report_plays: false,
             volume: DEFAULT_VOLUME,
         }
     }
@@ -403,6 +407,7 @@ impl Store {
             _ => ThemePreference::System,
         };
         let autoplay = self.preference("autoplay")?.as_deref() != Some("false");
+        let report_plays = self.preference("report_plays")?.as_deref() == Some("true");
         // A value that is missing, unparsable or out of range is not
         // trusted: the slider only ever spans 0.0 to 1.0.
         let volume = self
@@ -414,6 +419,7 @@ impl Store {
             sidebar_collapsed,
             theme,
             autoplay,
+            report_plays,
             volume,
         })
     }
@@ -426,6 +432,10 @@ impl Store {
 
     pub fn set_autoplay(&mut self, autoplay: bool) -> Result<()> {
         self.set_preference("autoplay", if autoplay { "true" } else { "false" })
+    }
+
+    pub fn set_report_plays(&mut self, report_plays: bool) -> Result<()> {
+        self.set_preference("report_plays", if report_plays { "true" } else { "false" })
     }
 
     pub fn set_sidebar_collapsed(&mut self, collapsed: bool) -> Result<()> {
@@ -1134,6 +1144,7 @@ mod tests {
         store.set_sidebar_collapsed(true).unwrap();
         store.set_theme_preference(ThemePreference::Dark).unwrap();
         store.set_autoplay(false).unwrap();
+        store.set_report_plays(true).unwrap();
         store.set_volume(0.4).unwrap();
         assert_eq!(
             store.preferences().unwrap(),
@@ -1141,9 +1152,25 @@ mod tests {
                 sidebar_collapsed: true,
                 theme: ThemePreference::Dark,
                 autoplay: false,
+                report_plays: true,
                 volume: 0.4,
             }
         );
+    }
+
+    #[test]
+    fn reporting_plays_stays_off_unless_the_listener_turned_it_on() {
+        let mut store = Store::in_memory().unwrap();
+        assert!(!store.preferences().unwrap().report_plays);
+
+        store.set_preference("report_plays", "yes").unwrap();
+        assert!(!store.preferences().unwrap().report_plays);
+
+        store.set_report_plays(true).unwrap();
+        assert!(store.preferences().unwrap().report_plays);
+
+        store.set_report_plays(false).unwrap();
+        assert!(!store.preferences().unwrap().report_plays);
     }
 
     #[test]

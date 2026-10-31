@@ -6,4 +6,8 @@
 //! come from Spotify's own client and are documented in
 //! `docs/adr/0006-library-order-and-pins-from-the-internal-protocol.md`.
 
+// Codegen names each module after its file, and `RawCoreStream.proto` is
+// Spotify's own name.
+#![allow(non_snake_case)]
+
 include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));

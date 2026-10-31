@@ -14,6 +14,11 @@ your saved music, playlists and playback information. It uses these to display
 your library and play music. Searches, playback reports and actions such as
 saving a track send requests directly to Spotify.
 
+If you turn on "Report plays to Spotify" in Settings, Windence also tells Spotify
+which track you played, for how long and from which playlist or album, along with
+an id for this device. Spotify may then add the play to your history. This setting
+is off by default.
+
 Spotify handles sign-in in your browser. Windence does not ask for or store your
 Spotify password. It uses authorization and playback tokens to access Spotify.
 The Spotify developer Client ID you enter is public configuration, not a client
